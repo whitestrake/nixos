@@ -38,12 +38,12 @@
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
 
     # Github SSH keys
-    gh-keys.url = "https://github.com/whitestrake.keys";
-    gh-keys.flake = false;
+    whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
+    whitestrake-github-keys.flake = false;
 
     # GitLab SSH keys
-    gl-keys.url = "https://gitlab.com/Whitestrake.keys";
-    gl-keys.flake = false;
+    whitestrake-gitlab-keys.url = "https://gitlab.com/Whitestrake.keys";
+    whitestrake-gitlab-keys.flake = false;
   };
 
   outputs = {
@@ -78,7 +78,7 @@
         ];
       };
 
-      ishtar = nixpkgs.lib.nixosSystem rec {
+      ishtar = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
         modules = [
@@ -88,7 +88,7 @@
         ];
       };
 
-      omnius = nixpkgs.lib.nixosSystem rec {
+      omnius = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
         modules = [
@@ -100,7 +100,7 @@
     };
 
     darwinConfigurations = {
-      andred = nix-darwin.lib.darwinSystem rec {
+      andred = nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
         specialArgs = {inherit inputs;};
         modules = [

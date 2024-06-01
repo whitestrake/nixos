@@ -15,8 +15,8 @@
     extraGroups = ["wheel" "docker" "www-data" "mediaserver"];
     shell = pkgs.fish;
     openssh.authorizedKeys.keyFiles = [
-      inputs.gl-keys.outPath
-      inputs.gh-keys.outPath
+      inputs.whitestrake-github-keys.outPath
+      inputs.whitestrake-gitlab-keys.outPath
     ];
   };
   home-manager = {

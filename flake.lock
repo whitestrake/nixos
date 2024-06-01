@@ -72,30 +72,6 @@
         "type": "github"
       }
     },
-    "gh-keys": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-7GAV6dLhov6hOd4psL7Hh5AloreXOZGF8NABikQZOjI=",
-        "type": "file",
-        "url": "https://github.com/whitestrake.keys"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://github.com/whitestrake.keys"
-      }
-    },
-    "gl-keys": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-yAXFueUok2iLWwJD3LoXVwWIJ2cJcT7ujbu/HMDy3nY=",
-        "type": "file",
-        "url": "https://gitlab.com/Whitestrake.keys"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://gitlab.com/Whitestrake.keys"
-      }
-    },
     "home-manager": {
       "inputs": {
         "nixpkgs": [
@@ -211,14 +187,14 @@
     "root": {
       "inputs": {
         "deploy-rs": "deploy-rs",
-        "gh-keys": "gh-keys",
-        "gl-keys": "gl-keys",
         "home-manager": "home-manager",
         "nix-darwin": "nix-darwin",
         "nixos-wsl": "nixos-wsl",
         "nixpkgs": "nixpkgs",
         "nixpkgs-unstable": "nixpkgs-unstable",
-        "sops-nix": "sops-nix"
+        "sops-nix": "sops-nix",
+        "whitestrake-github-keys": "whitestrake-github-keys",
+        "whitestrake-gitlab-keys": "whitestrake-gitlab-keys"
       }
     },
     "sops-nix": {
@@ -288,6 +264,30 @@
         "owner": "numtide",
         "repo": "flake-utils",
         "type": "github"
+      }
+    },
+    "whitestrake-github-keys": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-7GAV6dLhov6hOd4psL7Hh5AloreXOZGF8NABikQZOjI=",
+        "type": "file",
+        "url": "https://github.com/whitestrake.keys"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://github.com/whitestrake.keys"
+      }
+    },
+    "whitestrake-gitlab-keys": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-yAXFueUok2iLWwJD3LoXVwWIJ2cJcT7ujbu/HMDy3nY=",
+        "type": "file",
+        "url": "https://gitlab.com/Whitestrake.keys"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://gitlab.com/Whitestrake.keys"
       }
     }
   },
