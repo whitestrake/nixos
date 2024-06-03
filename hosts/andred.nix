@@ -93,7 +93,8 @@
   services.nix-daemon.enable = true;
   nix.package = pkgs.nix;
   nix.settings = {
-    "extra-experimental-features" = ["nix-command" "flakes"];
+    experimental-features = ["nix-command" "flakes"];
+    auto-optimise-store = true;
   };
 
   # User configuration
