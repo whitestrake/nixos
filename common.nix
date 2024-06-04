@@ -9,6 +9,12 @@
     trusted-users = ["@wheel"];
   };
 
+  nix.gc = {
+    automatic = true;
+    dates = "weekly";
+    options = "--delete-older-than 30d";
+  };
+
   # Add unstable package set to pkgs
   nixpkgs.overlays = [
     (final: _prev: {
@@ -27,7 +33,7 @@
   # ];
 
   # Allow sudo via SSH key
-  security.pam.enableSSHAgentAuth = true;
+  security.pam.sshAgentAuth.enable = true;
   security.pam.services.sudo.sshAgentAuth = true;
 
   # Allow unfree and configure base system packages
@@ -62,11 +68,10 @@
   programs.git.enable = true;
 
   # Set up basic SSH protection
-  services.fail2ban.enable = true;
+  services.sshguard.enable = true;
   services.openssh.enable = true;
   services.openssh.settings = {
     PermitRootLogin = "no";
     PasswordAuthentication = false;
-    LogLevel = "VERBOSE";
   };
 }
