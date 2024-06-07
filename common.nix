@@ -25,12 +25,12 @@
     })
   ];
 
-  # Fix to allow non-nix executables
-  # programs.nix-ld.enable = true;
-  # programs.nix-ld.libraries = with pkgs; [
-  #   # Add any missing dynamic libraries for unpackaged programs
-  #   # here, NOT in environment.systemPackages
-  # ];
+  # # Fix to allow non-nix executables
+  programs.nix-ld.enable = true;
+  programs.nix-ld.libraries = with pkgs; [
+    # Add any missing dynamic libraries for unpackaged programs
+    # here, NOT in environment.systemPackages
+  ];
 
   # Allow sudo via SSH key
   security.pam.sshAgentAuth.enable = true;
@@ -59,6 +59,7 @@
     sops
     age
     deploy-rs
+    alejandra
   ];
 
   # Enable the fish shell by default
