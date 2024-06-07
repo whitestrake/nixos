@@ -85,6 +85,12 @@
         specialArgs = {inherit inputs;};
         modules = [./hosts/omnius];
       };
+
+      pascal = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = {inherit inputs;};
+        modules = [./hosts/pascal];
+      };
     };
 
     darwinConfigurations = {
@@ -114,6 +120,11 @@
       nodes.omnius = {
         hostname = "omnius.fell-monitor.ts.net";
         profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.omnius;
+      };
+
+      nodes.pascal = {
+        hostname = "pascal.fell-monitor.ts.net";
+        profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.pascal;
       };
     };
     # This is highly advised, and will prevent many possible mistakes
