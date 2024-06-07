@@ -65,41 +65,25 @@
       brutus = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
-        modules = [
-          ./common.nix
-          ./hosts/brutus.nix
-          ./users/whitestrake
-        ];
+        modules = [./hosts/brutus];
       };
 
       charon = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
-        modules = [
-          ./common.nix
-          ./hosts/charon.nix
-          ./users/whitestrake
-        ];
+        modules = [./hosts/charon];
       };
 
       ishtar = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
-        modules = [
-          ./common.nix
-          ./hosts/ishtar
-          ./users/whitestrake
-        ];
+        modules = [./hosts/ishtar];
       };
 
       omnius = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
-        modules = [
-          ./common.nix
-          ./hosts/omnius
-          ./users/whitestrake
-        ];
+        modules = [./hosts/omnius];
       };
     };
 
@@ -107,9 +91,7 @@
       andred = nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
         specialArgs = {inherit inputs;};
-        modules = [
-          ./hosts/andred.nix
-        ];
+        modules = [./hosts/andred];
       };
     };
 

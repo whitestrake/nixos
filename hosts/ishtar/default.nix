@@ -6,6 +6,9 @@
 }: {
   imports = [
     ./hardware-configuration.nix
+    ../../users/whitestrake
+    ../common.nix
+
     ../../extra/docker.nix
     ../../extra/sensu.nix
     ../../secrets

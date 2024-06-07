@@ -103,7 +103,7 @@
   users.users.whitestrake.shell = pkgs.fish;
   users.users.whitestrake.home = "/Users/whitestrake";
   home-manager.users.whitestrake = {lib, ...}: {
-    imports = [../users/whitestrake/home.nix];
+    imports = [../../users/whitestrake/home.nix];
     home.sessionVariables.EDITOR = lib.mkForce "code"; # VS Code
     home.sessionVariables.CLICOLOR = lib.mkForce "1"; # Enable colours in terminal outputs
     home.shellAliases.tailscale = lib.mkForce "/Applications/Tailscale.app/Contents/MacOS/Tailscale";

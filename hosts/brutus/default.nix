@@ -6,10 +6,13 @@
 }: {
   imports = [
     (modulesPath + "/virtualisation/proxmox-lxc.nix")
-    ../extra/vaapi.nix
-    ../extra/docker.nix
-    ../extra/sensu.nix
-    ../secrets
+    ../../users/whitestrake
+    ../common.nix
+
+    ../../extra/vaapi.nix
+    ../../extra/docker.nix
+    ../../extra/sensu.nix
+    ../../secrets
   ];
   system.stateVersion = "23.11";
 
