@@ -60,46 +60,35 @@
     deploy-rs,
     sops-nix,
     ...
-  } @ inputs: {
-    nixosConfigurations = {
-      brutus = nixpkgs.lib.nixosSystem {
+  } @ inputs: let
+    mkNixosSystem = name:
+      nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = {inherit inputs;};
-        modules = [./hosts/brutus];
+        modules = [./hosts/${name}];
       };
 
-      charon = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = {inherit inputs;};
-        modules = [./hosts/charon];
-      };
-
-      ishtar = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = {inherit inputs;};
-        modules = [./hosts/ishtar];
-      };
-
-      omnius = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = {inherit inputs;};
-        modules = [./hosts/omnius];
-      };
-
-      pascal = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = {inherit inputs;};
-        modules = [./hosts/pascal];
-      };
-    };
-
-    darwinConfigurations = {
-      andred = nix-darwin.lib.darwinSystem {
+    mkDarwinSystem = name:
+      nix-darwin.lib.darwinSystem {
         system = "aarch64-darwin";
         specialArgs = {inherit inputs;};
-        modules = [./hosts/andred];
+        modules = [./hosts/${name}];
       };
+
+    mkDeployNixosConfiguration = name: domain: {
+      hostname = "${name}.${domain}";
+      profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
     };
+  in {
+    nixosConfigurations = {
+      brutus = mkNixosSystem "brutus";
+      charon = mkNixosSystem "charon";
+      ishtar = mkNixosSystem "ishtar";
+      omnius = mkNixosSystem "omnius";
+      pascal = mkNixosSystem "pascal";
+    };
+
+    darwinConfigurations.andred = mkDarwinSystem "andred";
 
     deploy = {
       user = "root";
@@ -107,26 +96,14 @@
       # interactiveSudo = true;
       # remoteBuild = true;
 
-      nodes.brutus = {
-        hostname = "brutus.lab.whitestrake.net";
-        profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.brutus;
-      };
-
-      nodes.ishtar = {
-        hostname = "ishtar.fell-monitor.ts.net";
-        profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.ishtar;
-      };
-
-      nodes.omnius = {
-        hostname = "omnius.fell-monitor.ts.net";
-        profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.omnius;
-      };
-
-      nodes.pascal = {
-        hostname = "pascal.fell-monitor.ts.net";
-        profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations.pascal;
+      nodes = {
+        brutus = mkDeployNixosConfiguration "brutus" "lab.whitestrake.net";
+        ishtar = mkDeployNixosConfiguration "ishtar" "fell-monitor.ts.net";
+        omnius = mkDeployNixosConfiguration "omnius" "fell-monitor.ts.net";
+        pascal = mkDeployNixosConfiguration "pascal" "fell-monitor.ts.net";
       };
     };
+
     # This is highly advised, and will prevent many possible mistakes
     checks = builtins.mapAttrs (system: deployLib: deployLib.deployChecks self.deploy) deploy-rs.lib;
   };
