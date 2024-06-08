@@ -1,4 +1,8 @@
-{pkgs, ...}: {
+{
+  pkgs,
+  config,
+  ...
+}: {
   imports = [
     ./hardware-configuration.nix
     ../../users/whitestrake
@@ -25,4 +29,9 @@
   # Networking
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
+
+  sops.secrets.netdataClaimToken = {};
+  services.netdata.enable = true;
+  services.netdata.package = pkgs.unstable.netdataCloud;
+  services.netdata.claimTokenFile = config.sops.secrets.netdataClaimToken.path;
 }
