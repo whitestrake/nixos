@@ -10,6 +10,7 @@
 
     ../../extra/docker.nix
     ../../extra/sensu.nix
+    ../../extra/netdata.nix
     ../../secrets
   ];
   system.stateVersion = "22.05"; # System state compatibility

@@ -12,6 +12,7 @@
     ../../extra/vaapi.nix
     ../../extra/docker.nix
     ../../extra/sensu.nix
+    ../../extra/netdata.nix
     ../../secrets
   ];
   system.stateVersion = "23.11";
