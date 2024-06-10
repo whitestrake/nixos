@@ -1,0 +1,3 @@
+{
+  imports = [./sender.nix];
+}

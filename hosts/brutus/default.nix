@@ -12,7 +12,7 @@
     ../../extra/vaapi.nix
     ../../extra/docker.nix
     ../../extra/sensu.nix
-    ../../extra/netdata.nix
+    ../../extra/netdata
     ../../secrets
   ];
   system.stateVersion = "23.11";
@@ -20,6 +20,10 @@
   networking.hostName = "brutus";
   networking.domain = "lab.whitestrake.net";
   time.timeZone = "Australia/Brisbane";
+
+  # Tailscale networking
+  services.tailscale.enable = true;
+  services.tailscale.package = pkgs.unstable.tailscale;
 
   # www-data user
   users.users.www-data.isSystemUser = true;

@@ -6,7 +6,7 @@
 
     ../../extra/docker.nix
     ../../extra/sensu.nix
-    ../../extra/netdata.nix
+    ../../extra/netdata
     ../../secrets
   ];
   system.stateVersion = "24.05";
