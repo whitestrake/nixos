@@ -60,9 +60,7 @@
     deploy-rs
     nil
     alejandra
-
-    # https://github.com/NixOS/nixpkgs/issues/287861
-    unstable.ncdu
+    ncdu
   ];
 
   # Add shells to /etc/shells so that they can be selected for by users

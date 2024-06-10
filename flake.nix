@@ -61,16 +61,11 @@
     sops-nix,
     ...
   } @ inputs: let
-    mkNixosSystem = name:
-      nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = {inherit inputs;};
-        modules = [./hosts/${name}];
-      };
-
-    mkDarwinSystem = name:
-      nix-darwin.lib.darwinSystem {
-        system = "aarch64-darwin";
+    mkNixosSystem = name: mkSystem name "x86_64-linux" nixpkgs.lib.nixosSystem;
+    mkDarwinSystem = name: mkSystem name "aarch64-darwin" nix-darwin.lib.darwinSystem;
+    mkSystem = name: system: function:
+      function {
+        inherit system;
         specialArgs = {inherit inputs;};
         modules = [./hosts/${name}];
       };
