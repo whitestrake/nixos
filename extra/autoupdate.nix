@@ -1,17 +1,10 @@
-{
+{config, ...}: {
   system.autoUpgrade = {
     enable = true;
-    dates = "02:00";
-    randomizedDelaySec = "1h";
-    allowReboot = true;
+    dates = "*:20"; # Every 20 minutes
+    randomizedDelaySec = "5m";
 
-    flake = "github:whitestrake/nixos";
+    flake = "github:whitestrake/nixos#${config.networking.hostName}";
     flags = ["--refresh"];
-  };
-
-  nix.gc = {
-    automatic = true;
-    dates = "03:00";
-    options = "--delete-older-than 7d";
   };
 }
