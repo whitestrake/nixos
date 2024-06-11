@@ -1,5 +1,10 @@
-{pkgs, ...}: {
+{
+  inputs,
+  pkgs,
+  ...
+}: {
   imports = [
+    inputs.vscode-server.nixosModules.default
     ./hardware-configuration.nix
     ../../users/whitestrake
     ../common.nix
