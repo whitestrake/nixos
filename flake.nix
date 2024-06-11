@@ -78,16 +78,16 @@
   in {
     # NixOS machines
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
-      brutus = "x86_64-linux";
-      charon = "x86_64-linux";
-      ishtar = "x86_64-linux";
-      omnius = "x86_64-linux";
-      pascal = "x86_64-linux";
+      brutus = "x86_64-linux"; # LXC
+      charon = "x86_64-linux"; # WSL
+      ishtar = "x86_64-linux"; # VPS
+      omnius = "x86_64-linux"; # XCP-ng
+      pascal = "x86_64-linux"; # PVE
     };
 
     # MacOS machines
     darwinConfigurations = builtins.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
-      andred = "aarch64-darwin";
+      andred = "aarch64-darwin"; # MBP
     };
 
     deploy = {
