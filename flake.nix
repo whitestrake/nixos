@@ -73,7 +73,7 @@
       };
   in {
     # NixOS machines
-    nixosConfigurations = nixpkgs.lib.attrsets.genAttrs [
+    nixosConfigurations = nixpkgs.lib.genAttrs [
       "brutus"
       "charon"
       "ishtar"
@@ -82,7 +82,7 @@
     ] (name: mkSystem nixpkgs.lib.nixosSystem "x86_64-linux" name);
 
     # MacOS machines
-    darwinConfigurations = nixpkgs.lib.attrsets.genAttrs [
+    darwinConfigurations = nixpkgs.lib.genAttrs [
       "andred"
     ] (name: mkSystem nix-darwin.lib.darwinSystem "aarch64-darwin" name);
 
@@ -93,7 +93,7 @@
       # remoteBuild = true;
 
       nodes =
-        nixpkgs.lib.attrsets.genAttrs [
+        nixpkgs.lib.genAttrs [
           "brutus"
           "ishtar"
           "omnius"
