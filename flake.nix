@@ -61,29 +61,26 @@
     sops-nix,
     ...
   } @ inputs: let
-    mkNixosSystem = name: mkSystem name "x86_64-linux" nixpkgs.lib.nixosSystem;
-    mkDarwinSystem = name: mkSystem name "aarch64-darwin" nix-darwin.lib.darwinSystem;
-    mkSystem = name: system: function:
+    mkSystem = function: system: name:
       function {
         inherit system;
         specialArgs = {inherit inputs;};
-        modules = [./hosts/${name}];
+        modules = [./hosts ./hosts/${name}];
       };
-
-    mkDeployNixosConfiguration = name: domain: {
-      hostname = "${name}.${domain}";
-      profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
-    };
   in {
-    nixosConfigurations = {
-      brutus = mkNixosSystem "brutus";
-      charon = mkNixosSystem "charon";
-      ishtar = mkNixosSystem "ishtar";
-      omnius = mkNixosSystem "omnius";
-      pascal = mkNixosSystem "pascal";
-    };
+    # NixOS machines
+    nixosConfigurations = nixpkgs.lib.attrsets.genAttrs [
+      "brutus"
+      "charon"
+      "ishtar"
+      "omnius"
+      "pascal"
+    ] (name: mkSystem nixpkgs.lib.nixosSystem "x86_64-linux" name);
 
-    darwinConfigurations.andred = mkDarwinSystem "andred";
+    # MacOS machines
+    darwinConfigurations = nixpkgs.lib.attrsets.genAttrs [
+      "andred"
+    ] (name: mkSystem nix-darwin.lib.darwinSystem "aarch64-darwin" name);
 
     deploy = {
       user = "root";
@@ -91,12 +88,16 @@
       # interactiveSudo = true;
       # remoteBuild = true;
 
-      nodes = {
-        brutus = mkDeployNixosConfiguration "brutus" "lab.whitestrake.net";
-        ishtar = mkDeployNixosConfiguration "ishtar" "fell-monitor.ts.net";
-        omnius = mkDeployNixosConfiguration "omnius" "fell-monitor.ts.net";
-        pascal = mkDeployNixosConfiguration "pascal" "fell-monitor.ts.net";
-      };
+      nodes =
+        nixpkgs.lib.attrsets.genAttrs [
+          "brutus"
+          "ishtar"
+          "omnius"
+          "pascal"
+        ] (name: {
+          hostname = "${name}.fell-monitor.ts.net";
+          profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
+        });
     };
 
     # This is highly advised, and will prevent many possible mistakes

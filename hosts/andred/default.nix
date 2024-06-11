@@ -24,16 +24,6 @@
     })
   ];
 
-  # Unstable nixpkgs access
-  nixpkgs.overlays = [
-    (final: _prev: {
-      unstable = import inputs.nixpkgs-unstable {
-        system = final.system;
-        config.allowUnfree = true;
-      };
-    })
-  ];
-
   # List packages installed in system profile. To search by name, run:
   # $ nix-env -qaP | grep wget
   nixpkgs.config.allowUnfree = true;
@@ -55,12 +45,14 @@
     dig
     jq
     fx
+    ncdu
+
     age
     sops
     deploy-rs
     nil
     alejandra
-    ncdu
+    nixos-rebuild
   ];
 
   # Add shells to /etc/shells so that they can be selected for by users
@@ -90,10 +82,6 @@
   # Auto upgrade nix package and the daemon service.
   services.nix-daemon.enable = true;
   nix.package = pkgs.nix;
-  nix.settings = {
-    experimental-features = ["nix-command" "flakes"];
-    auto-optimise-store = true;
-  };
 
   # User configuration
   programs.fish.enable = true;

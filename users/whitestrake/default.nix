@@ -19,6 +19,7 @@
       inputs.whitestrake-gitlab-keys.outPath
     ];
   };
+  programs.git.enable = true;
   home-manager = {
     useGlobalPkgs = true;
     useUserPackages = true;

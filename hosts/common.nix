@@ -1,30 +1,4 @@
-{
-  pkgs,
-  inputs,
-  ...
-}: {
-  nix.settings = {
-    experimental-features = ["nix-command" "flakes"];
-    auto-optimise-store = true;
-    trusted-users = ["@wheel"];
-  };
-
-  nix.gc = {
-    automatic = true;
-    dates = "weekly";
-    options = "--delete-older-than 30d";
-  };
-
-  # Add unstable package set to pkgs
-  nixpkgs.overlays = [
-    (final: _prev: {
-      unstable = import inputs.nixpkgs-unstable {
-        system = final.system;
-        config.allowUnfree = true;
-      };
-    })
-  ];
-
+{pkgs, ...}: {
   # # Fix to allow non-nix executables
   programs.nix-ld.enable = true;
   # programs.nix-ld.libraries = with pkgs; [
@@ -57,12 +31,6 @@
     pciutils
     usbutils
   ];
-
-  # Enable the fish shell by default
-  programs.fish.enable = true;
-
-  # Enable git usage
-  programs.git.enable = true;
 
   # Set up basic SSH protection
   services.sshguard.enable = true;
