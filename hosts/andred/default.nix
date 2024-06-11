@@ -50,9 +50,12 @@
     age
     sops
     deploy-rs
-    nil
     alejandra
     nixos-rebuild
+
+    # https://github.com/oxalica/nil/issues/113
+    # Flake build is newer than nixpkgs-unstable
+    inputs.nil.packages.aarch64-darwin.nil
   ];
 
   # Add shells to /etc/shells so that they can be selected for by users

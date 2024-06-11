@@ -41,6 +41,9 @@
     vscode-server.url = "github:nix-community/nixos-vscode-server";
     vscode-server.inputs.nixpkgs.follows = "nixpkgs";
 
+    # Nil LSP
+    nil.url = "github:oxalica/nil";
+
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
@@ -59,6 +62,7 @@
     nixos-wsl,
     deploy-rs,
     sops-nix,
+    nil,
     ...
   } @ inputs: let
     mkSystem = function: system: name:
