@@ -65,43 +65,40 @@
     nil,
     ...
   } @ inputs: let
-    mkSystem = function: system: name:
+    mkSystem = function: name: system:
       function {
         inherit system;
         specialArgs = {inherit inputs;};
         modules = [./hosts ./hosts/${name}];
       };
+    mkDeployNixos = name: domain: {
+      hostname = "${name}.${domain}";
+      profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
+    };
   in {
     # NixOS machines
-    nixosConfigurations = nixpkgs.lib.genAttrs [
-      "brutus"
-      "charon"
-      "ishtar"
-      "omnius"
-      "pascal"
-    ] (name: mkSystem nixpkgs.lib.nixosSystem "x86_64-linux" name);
+    nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
+      brutus = "x86_64-linux";
+      charon = "x86_64-linux";
+      ishtar = "x86_64-linux";
+      omnius = "x86_64-linux";
+      pascal = "x86_64-linux";
+    };
 
     # MacOS machines
-    darwinConfigurations = nixpkgs.lib.genAttrs [
-      "andred"
-    ] (name: mkSystem nix-darwin.lib.darwinSystem "aarch64-darwin" name);
+    darwinConfigurations = builtins.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
+      andred = "aarch64-darwin";
+    };
 
     deploy = {
       user = "root";
       sshUser = "whitestrake";
-      # interactiveSudo = true;
-      # remoteBuild = true;
-
-      nodes =
-        nixpkgs.lib.genAttrs [
-          "brutus"
-          "ishtar"
-          "omnius"
-          "pascal"
-        ] (name: {
-          hostname = "${name}.fell-monitor.ts.net";
-          profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
-        });
+      nodes = builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
+        brutus = "lab.whitestrake.net";
+        ishtar = "fell-monitor.ts.net";
+        omnius = "fell-monitor.ts.net";
+        pascal = "fell-monitor.ts.net";
+      };
     };
 
     # This is highly advised, and will prevent many possible mistakes
