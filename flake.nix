@@ -41,7 +41,7 @@
     vscode-server.url = "github:nix-community/nixos-vscode-server";
     vscode-server.inputs.nixpkgs.follows = "nixpkgs";
 
-    # Nil LSP
+    # https://github.com/oxalica/nil/issues/113
     nil.url = "github:oxalica/nil";
 
     # Github SSH keys

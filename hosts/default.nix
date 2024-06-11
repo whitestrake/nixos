@@ -10,14 +10,17 @@
     options = "--delete-older-than 30d";
   };
 
-  # Add unstable package set to pkgs
   nixpkgs.overlays = [
+    # Add unstable package set to pkgs
     (final: _prev: {
       unstable = import inputs.nixpkgs-unstable {
         system = final.system;
         config.allowUnfree = true;
       };
     })
+
+    # https://github.com/oxalica/nil/issues/113
+    inputs.nil.overlays.default
   ];
 
   # Enable fish by default
