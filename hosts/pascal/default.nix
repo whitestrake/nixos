@@ -23,6 +23,15 @@
   networking.domain = "lab.whitestrake.net";
   time.timeZone = "Australia/Brisbane";
 
+  services.vscode-server.enable = true;
+  environment.systemPackages = with pkgs; [
+    sops
+    age
+    deploy-rs
+    nil
+    alejandra
+  ];
+
   # Networking
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
