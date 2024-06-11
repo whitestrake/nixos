@@ -93,6 +93,7 @@
     deploy = {
       user = "root";
       sshUser = "whitestrake";
+      sshOpts = "-A";
       nodes = builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
         brutus = "lab.whitestrake.net";
         ishtar = "fell-monitor.ts.net";
