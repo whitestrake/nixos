@@ -13,4 +13,5 @@
   services.netdata.configDir = {
     "stream.conf" = config.sops.secrets."netdata/receiver.conf".path;
   };
+  networking.firewall.allowedTCPPorts = [19999];
 }
