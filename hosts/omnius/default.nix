@@ -22,6 +22,8 @@
     "kern.ipc.maxsockbuf" = 3014656;
     "net.core.rmem_max" = 2500000;
     "vm.swappiness" = 10;
+    "net.ipv4.ip_forward" = 1;
+    "net.ipv6.conf.all.forwarding" = 1;
   };
 
   # Hostname and TZ
