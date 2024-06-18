@@ -18,6 +18,10 @@
 
   boot.loader.grub.enable = true;
   boot.loader.grub.device = "/dev/vda";
+  boot.kernel.sysctl = {
+    "net.ipv4.ip_forward" = 1;
+    "net.ipv6.conf.all.forwarding" = 1;
+  };
 
   networking.hostName = "ishtar";
   networking.networkmanager.enable = true;
