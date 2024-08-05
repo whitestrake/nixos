@@ -12,8 +12,7 @@
   # $ darwin-rebuild changelog
   system.stateVersion = 4;
 
-  fonts.fontDir.enable = true;
-  fonts.fonts = with pkgs; [
+  fonts.packages = with pkgs; [
     (nerdfonts.override {
       fonts = [
         "FiraCode"
@@ -45,7 +44,8 @@
     dig
     jq
     fx
-    ncdu
+    helix
+    unstable.ncdu
 
     age
     sops

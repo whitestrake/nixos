@@ -25,6 +25,7 @@
     yt-dlp
     eza
     bat
+    helix
   ];
 
   programs.autojump.enable = true;
