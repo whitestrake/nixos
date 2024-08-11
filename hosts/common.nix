@@ -30,6 +30,8 @@
     ethtool
     pciutils
     usbutils
+    whois
+    rdap
   ];
 
   # Set up basic SSH protection
