@@ -1,4 +1,4 @@
-{pkgs, ...}: {
+{ pkgs, ... }: {
   home.stateVersion = "23.11";
   home.sessionVariables = {
     COMPOSE_IGNORE_ORPHANS = "True";
@@ -7,10 +7,12 @@
     BAT_THEME = "TwoDark";
   };
   home.shellAliases = {
-    l = "eza -lgh --group-directories-first --git-ignore --git --time-style=relative";
-    la = "eza -lgaah --group-directories-first --git-ignore --git --time-style=long-iso";
+    l =
+      "eza -lgh --group-directories-first --git-ignore --git --time-style=relative";
+    la =
+      "eza -lgaah --group-directories-first --git-ignore --git --time-style=long-iso";
     lg = "eza -lgaah --group-directories-first --git --time-style=long-iso";
-    dps = "docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'";
+    dps = "docker ps -as --format 'table {{.Names}}	{{.Status}}	{{.Size}}'";
     dc = "docker compose";
     dcl = "dc logs -f --tail 20";
     df = "df -h -xtmpfs -xoverlay";
@@ -43,7 +45,7 @@
   programs.starship = {
     enable = true;
     enableFishIntegration = true;
-    settings.username.format = ''[$user]($style) at '';
+    settings.username.format = "[$user]($style) at ";
     settings.username.show_always = true;
     settings.container.disabled = true;
   };
@@ -62,9 +64,22 @@
     '';
   };
 
+  programs.helix = {
+    enable = true;
+    settings = {
+      theme = "everblush";
+      editor.true-color = true;
+    };
+    languages.language = [{
+      name = "nix";
+      auto-format = true;
+      formatter.command = "${pkgs.nixfmt-classic}/bin/nixfmt";
+    }];
+  };
+
   programs.vim = {
     enable = true;
-    plugins = with pkgs.vimPlugins; [vim-hexokinase vim-airline onedark-vim];
+    plugins = with pkgs.vimPlugins; [ vim-hexokinase vim-airline onedark-vim ];
     settings.ignorecase = true;
     extraConfig = ''
       let g:Hexokinase_highlighters = ['foreground']
