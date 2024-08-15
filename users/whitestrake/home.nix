@@ -62,6 +62,21 @@
     '';
   };
 
+  programs.helix = {
+    enable = true;
+    settings = {
+      theme = "everblush";
+      editor.true-color = true;
+    };
+    languages.language = [
+      {
+        name = "nix";
+        auto-format = true;
+        formatter.command = "${pkgs.nixfmt-classic}/bin/nixfmt";
+      }
+    ];
+  };
+
   programs.vim = {
     enable = true;
     plugins = with pkgs.vimPlugins; [vim-hexokinase vim-airline onedark-vim];
