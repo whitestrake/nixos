@@ -43,7 +43,7 @@
   programs.starship = {
     enable = true;
     enableFishIntegration = true;
-    settings.username.format = ''[$user]($style) at '';
+    settings.username.format = "[$user]($style) at ";
     settings.username.show_always = true;
     settings.container.disabled = true;
   };
@@ -72,7 +72,7 @@
       {
         name = "nix";
         auto-format = true;
-        formatter.command = "${pkgs.nixfmt-classic}/bin/nixfmt";
+        formatter.command = "${pkgs.alejandra}/bin/alejandra";
       }
     ];
   };

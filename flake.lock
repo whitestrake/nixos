@@ -427,7 +427,7 @@
     "whitestrake-gitlab-keys": {
       "flake": false,
       "locked": {
-        "narHash": "sha256-yAXFueUok2iLWwJD3LoXVwWIJ2cJcT7ujbu/HMDy3nY=",
+        "narHash": "sha256-OaJs8ceGXbmc7r6pWpGXLKHFyu/hrYKW+gjX7W1dVwI=",
         "type": "file",
         "url": "https://gitlab.com/Whitestrake.keys"
       },
