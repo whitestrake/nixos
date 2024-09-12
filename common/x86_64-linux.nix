@@ -1,5 +1,7 @@
 {pkgs, ...}: {
-  # # Fix to allow non-nix executables
+  imports = [./all-systems.nix];
+
+  # Allow non-nix executables
   programs.nix-ld.enable = true;
   # programs.nix-ld.libraries = with pkgs; [
   #   # Add any missing dynamic libraries for unpackaged programs
@@ -13,25 +15,12 @@
   # Allow unfree and configure base system packages
   nixpkgs.config.allowUnfree = true;
   environment.systemPackages = with pkgs; [
-    btop
+    service-wrapper
     iftop
     iotop
-    tmux
-    ncdu
-    service-wrapper
-    tree
-    ranger
-    rclone
-    wget
-    curl
-    dig
-    jq
-    fx
     ethtool
     pciutils
     usbutils
-    whois
-    rdap
   ];
 
   # Set up basic SSH protection

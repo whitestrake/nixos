@@ -7,7 +7,6 @@
     inputs.nixos-wsl.nixosModules.wsl
     inputs.vscode-server.nixosModules.default
     ../../users/whitestrake
-    ../common.nix
   ];
 
   wsl.enable = true;

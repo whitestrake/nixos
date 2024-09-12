@@ -7,7 +7,6 @@
     inputs.vscode-server.nixosModules.default
     ./hardware-configuration.nix
     ../../users/whitestrake
-    ../common.nix
 
     ../../extra/docker.nix
     ../../extra/sensu.nix

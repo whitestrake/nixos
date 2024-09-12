@@ -69,7 +69,10 @@
       function {
         inherit system;
         specialArgs = {inherit inputs;};
-        modules = [./hosts ./hosts/${name}];
+        modules = [
+          ./hosts/${name}
+          ./common/${system}.nix
+        ];
       };
     mkDeployNixos = name: domain: {
       hostname = "${name}.${domain}";

@@ -7,7 +7,6 @@
   imports = [
     (modulesPath + "/virtualisation/proxmox-lxc.nix")
     ../../users/whitestrake
-    ../common.nix
 
     ../../extra/vaapi.nix
     ../../extra/docker.nix

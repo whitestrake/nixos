@@ -1,4 +1,8 @@
-{inputs, ...}: {
+{
+  pkgs,
+  inputs,
+  ...
+}: {
   nix.settings = {
     experimental-features = ["nix-command" "flakes"];
     auto-optimise-store = true;
@@ -33,4 +37,35 @@
 
   # Enable fish by default
   programs.fish.enable = true;
+
+  # Allow unfree and configure base system packages
+  nixpkgs.config.allowUnfree = true;
+  environment.systemPackages = with pkgs; [
+    # Misc
+    btop
+    rar
+    fish
+    powershell
+    helix
+
+    # Files
+    unstable.ncdu
+    tree
+    ranger
+    rclone
+
+    # HTTP
+    wget
+    curl
+
+    # JSON
+    jq
+    fx
+
+    # Net
+    dig
+    whois
+    rdap
+    iperf
+  ];
 }
