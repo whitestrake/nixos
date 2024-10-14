@@ -5,6 +5,7 @@
     EDITOR = "vim";
     BAT_PAGING = "never";
     BAT_THEME = "TwoDark";
+    FLAKE = "github:whitestrake/nixos";
   };
   home.shellAliases = {
     l = "eza -lgh --group-directories-first --git-ignore --git --time-style=relative";
