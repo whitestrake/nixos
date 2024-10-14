@@ -24,8 +24,8 @@
   ];
 
   # Yet another nix helper
-  progams.nh.enable = true;
-  progams.nh.flake = "github:whitestrake/nixos";
+  programs.nh.enable = true;
+  programs.nh.flake = "github:whitestrake/nixos";
 
   # Set up basic SSH protection
   services.sshguard.enable = true;
