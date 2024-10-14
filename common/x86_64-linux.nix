@@ -21,11 +21,8 @@
     ethtool
     pciutils
     usbutils
+    nh
   ];
-
-  # Yet another nix helper
-  programs.nh.enable = true;
-  programs.nh.flake = "github:whitestrake/nixos";
 
   # Set up basic SSH protection
   services.sshguard.enable = true;
