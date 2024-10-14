@@ -38,6 +38,9 @@
   # Enable fish by default
   programs.fish.enable = true;
 
+  # Enable yet-another-nix-helper
+  programs.nh.enable = true;
+
   # Allow unfree and configure base system packages
   nixpkgs.config.allowUnfree = true;
   environment.systemPackages = with pkgs; [

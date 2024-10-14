@@ -44,6 +44,9 @@
     # https://github.com/oxalica/nil/issues/113
     nil.url = "github:oxalica/nil";
 
+    # https://github.com/ToyVo/nh_darwin
+    nh_darwin.url = "github:ToyVo/nh_darwin";
+
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
@@ -63,6 +66,7 @@
     deploy-rs,
     sops-nix,
     nil,
+    nh_darwin,
     ...
   } @ inputs: let
     mkSystem = function: name: system:

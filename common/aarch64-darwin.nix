@@ -1,5 +1,12 @@
-{pkgs, ...}: {
-  imports = [./all-systems.nix];
+{
+  pkgs,
+  inputs,
+  ...
+}: {
+  imports = [
+    ./all-systems.nix
+    inputs.nh_darwin.nixDarwinModules.prebuiltin
+  ];
 
   # Enable touch ID for sudo
   security.pam.enableSudoTouchIdAuth = true;
