@@ -21,6 +21,7 @@
     ethtool
     pciutils
     usbutils
+    nh
   ];
 
   # Set up basic SSH protection
