@@ -90,6 +90,7 @@
       ishtar = "x86_64-linux"; # VPS
       omnius = "x86_64-linux"; # XCP-ng
       pascal = "x86_64-linux"; # PVE
+      jaeger = "aarch64-linux"; # OCI
     };
 
     # MacOS machines
@@ -106,6 +107,7 @@
         ishtar = "fell-monitor.ts.net";
         omnius = "fell-monitor.ts.net";
         pascal = "fell-monitor.ts.net";
+        jaeger = "fell-monitor.ts.net";
       };
     };
 

@@ -4,6 +4,7 @@ keys:
   - &server_ishtar age1uqmp2gvujxr75ynerqdfeyxyhx5vgsqu6pkf7tng3dkaq2gvadhqc2fpxk
   - &server_omnius age1hnu3n9amslvxru988xsgwanws0eplksunvjhpaaqksz2uhhveueqf4296l
   - &server_pascal age10lstlywz6fuex8t4yqnauxnlrdh3yyzantew8v55s3dkuh82nv0qw7dtgj
+  - &server_jaeger age1q8vglz63674utnk06nv9mq5l97c58845y86zk6wsgcu6gqtazsts29ux69
 creation_rules:
   - path_regex: secrets/secrets\.yaml$
     key_groups:
@@ -13,3 +14,4 @@ creation_rules:
       - *server_ishtar
       - *server_omnius
       - *server_pascal
+      - *server_jaeger
