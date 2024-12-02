@@ -14,11 +14,11 @@
 
   inputs = {
     # Nix packages
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05-small";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11-small";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     # https://github.com/nix-community/home-manager
-    home-manager.url = "github:nix-community/home-manager/release-24.05";
+    home-manager.url = "github:nix-community/home-manager/release-24.11";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/LnL7/nix-darwin
@@ -44,8 +44,8 @@
     # https://github.com/oxalica/nil/issues/113
     nil.url = "github:oxalica/nil";
 
-    # https://github.com/ToyVo/nh_darwin
-    nh_darwin.url = "github:ToyVo/nh_darwin";
+    # https://github.com/ToyVo/nh_plus
+    nh_plus.url = "github:ToyVo/nh_plus";
 
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
@@ -66,7 +66,7 @@
     deploy-rs,
     sops-nix,
     nil,
-    nh_darwin,
+    nh_plus,
     ...
   } @ inputs: let
     mkSystem = function: name: system:

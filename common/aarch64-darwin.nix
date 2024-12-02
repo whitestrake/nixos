@@ -1,11 +1,6 @@
-{
-  pkgs,
-  inputs,
-  ...
-}: {
+{pkgs, ...}: {
   imports = [
     ./all-systems.nix
-    inputs.nh_darwin.nixDarwinModules.prebuiltin
   ];
 
   # Enable touch ID for sudo
@@ -48,8 +43,8 @@
       "curl"
     ];
     casks = [
+      "music-decoy"
       "visual-studio-code"
-      "notunes"
       "iina"
       "raycast"
       "warp"

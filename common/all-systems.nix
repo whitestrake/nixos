@@ -5,7 +5,6 @@
 }: {
   nix.settings = {
     experimental-features = ["nix-command" "flakes"];
-    auto-optimise-store = true;
     trusted-users = ["@wheel" "@staff"];
     substituters = [
       "https://cache.nixos.org"
@@ -16,7 +15,7 @@
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
     ];
   };
-
+  nix.optimise.automatic = true;
   nix.gc = {
     automatic = true;
     options = "--delete-older-than 30d";
@@ -33,13 +32,12 @@
 
     # https://github.com/oxalica/nil/issues/113
     inputs.nil.overlays.default
+
+    inputs.nh_plus.overlays.default
   ];
 
   # Enable fish by default
   programs.fish.enable = true;
-
-  # Enable yet-another-nix-helper
-  programs.nh.enable = true;
 
   # Allow unfree and configure base system packages
   nixpkgs.config.allowUnfree = true;
@@ -49,6 +47,7 @@
     fish
     powershell
     helix
+    nh
 
     # Files
     gdu
