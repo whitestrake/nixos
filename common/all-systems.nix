@@ -51,7 +51,8 @@
     helix
 
     # Files
-    unstable.ncdu
+    gdu
+    dust
     tree
     ranger
     rclone

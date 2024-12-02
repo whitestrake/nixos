@@ -27,6 +27,7 @@
     eza
     bat
     helix
+    tealdeer
   ];
 
   programs.autojump.enable = true;
