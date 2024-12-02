@@ -107,7 +107,7 @@
         ishtar = "fell-monitor.ts.net";
         omnius = "fell-monitor.ts.net";
         pascal = "fell-monitor.ts.net";
-        jaeger = "fell-monitor.ts.net";
+        # jaeger = "fell-monitor.ts.net";
       };
     };
 
