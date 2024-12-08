@@ -34,11 +34,6 @@
 
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
-  services.zerotierone = {
-    # ZeroTier networking
-    enable = true;
-    joinNetworks = ["058698937c08bec2"]; # Infinity net
-  };
 
   # Allow for NAS pulls of the entire /opt/docker directory
   sops.secrets.hostsEnv = {};
