@@ -80,7 +80,7 @@
       };
     mkDeployNixos = name: domain: {
       hostname = "${name}.${domain}";
-      profiles.system.path = deploy-rs.lib.x86_64-linux.activate.nixos self.nixosConfigurations."${name}";
+      profiles.system.path = deploy-rs.lib.${self.nixosConfigurations.${name}.pkgs.system}.activate.nixos self.nixosConfigurations.${name};
     };
   in {
     # NixOS machines
