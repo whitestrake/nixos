@@ -1,11 +1,11 @@
 {config, ...}: {
   imports = [../secrets];
-  sops.secrets."alloyEnv" = {};
+  sops.secrets.alloyEnv = {};
 
   services.alloy.enable = true;
   services.alloy.extraFlags = ["--stability.level=public-preview"];
   systemd.services.alloy = {
-    environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
+    environment.GCLOUD_FM_COLLECTOR_ID = config.networking.fqdnOrHostName;
     serviceConfig.EnvironmentFile = config.sops.secrets.alloyEnv.path;
   };
 
