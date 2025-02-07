@@ -24,6 +24,7 @@
   };
 
   networking.hostName = "ishtar";
+  networking.domain = "whitestrake.net";
   networking.networkmanager.enable = true;
   time.timeZone = "Australia/Brisbane";
 
