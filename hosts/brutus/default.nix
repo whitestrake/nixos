@@ -1,4 +1,5 @@
 {
+  lib,
   pkgs,
   modulesPath,
   config,
@@ -12,6 +13,7 @@
     ../../extra/docker.nix
     ../../extra/sensu.nix
     ../../extra/netdata.nix
+    ../../extra/alloy.nix
     ../../extra/beszel.nix
     ../../secrets
   ];
@@ -20,6 +22,9 @@
   networking.hostName = "brutus";
   networking.domain = "lab.whitestrake.net";
   time.timeZone = "Australia/Brisbane";
+
+  # Fix Alloy collector ID
+  systemd.services.alloy.environment.GCLOUD_FM_COLLECTOR_ID = lib.mkForce "brutus";
 
   # Tailscale networking
   services.tailscale.enable = true;
