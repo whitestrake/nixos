@@ -12,6 +12,7 @@
     ../../extra/sensu.nix
     ../../extra/netdata.nix
     ../../extra/alloy.nix
+    ../../extra/beszel.nix
     ../../secrets
   ];
   system.stateVersion = "24.11";
@@ -33,6 +34,8 @@
 
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
+
+  networking.firewall.allowedTCPPorts = [45876];
 
   # Allow for NAS pulls of the entire /opt/docker directory
   sops.secrets.hostsEnv = {};
