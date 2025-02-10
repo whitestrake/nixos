@@ -1,4 +1,8 @@
-{config, ...}: {
+{
+  config,
+  lib,
+  ...
+}: {
   imports = [../secrets];
   sops.secrets.alloyEnv = {};
 
@@ -6,7 +10,15 @@
   services.alloy.extraFlags = ["--stability.level=public-preview"];
   systemd.services.alloy = {
     environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
-    serviceConfig.EnvironmentFile = config.sops.secrets.alloyEnv.path;
+    serviceConfig =
+      {
+        EnvironmentFile = config.sops.secrets.alloyEnv.path;
+      }
+      // lib.optionalAttrs config.virtualisation.docker.enable {
+        # Root required for Alloy to run standalone cAdvisor
+        User = "root";
+        SupplementaryGroups = ["docker"];
+      };
   };
 
   environment.etc."alloy/config.alloy".text = ''
