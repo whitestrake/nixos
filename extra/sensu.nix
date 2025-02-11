@@ -7,7 +7,8 @@
   sops.secrets.sensuEnv = {};
 
   systemd.services.sensu-agent = {
-    after = ["network.target"];
+    after = ["network-online.target"];
+    wants = ["network-online.target"];
     wantedBy = ["multi-user.target"];
     description = "Sensu-Go monitoring agent.";
     path = with pkgs; [bash];
