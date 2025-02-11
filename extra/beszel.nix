@@ -22,16 +22,10 @@
       # Security/sandboxing
       KeyringMode = "private";
       LockPersonality = "yes";
-      NoNewPrivileges = "yes";
-      PrivateTmp = "yes";
       ProtectClock = "yes";
-      ProtectHome = "read-only";
       ProtectHostname = "yes";
       ProtectKernelLogs = "yes";
       ProtectKernelTunables = "yes";
-      ProtectSystem = "strict";
-      RemoveIPC = "yes";
-      RestrictSUIDSGID = "true";
       SystemCallArchitectures = "native";
       SupplementaryGroups =
         lib.optional config.virtualisation.docker.enable "docker"
