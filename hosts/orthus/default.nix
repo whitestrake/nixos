@@ -35,6 +35,7 @@
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
 
+  # Necessary for Beszel in a container to communicate with agent on the host
   networking.firewall.allowedTCPPorts = [45876];
 
   # Allow for NAS pulls of the entire /opt/docker directory
