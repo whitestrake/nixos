@@ -39,14 +39,14 @@
   # mediaserver user
   users.users.mediaserver.isSystemUser = true;
   users.users.mediaserver.group = "mediaserver";
-  users.users.mediaserver.uid = 77;
-  users.groups.mediaserver.gid = 77;
+  users.users.mediaserver.uid = 1001;
+  users.groups.mediaserver.gid = 1001;
 
-  # Filesystem mounts from Triton
-  sops.secrets."smbCredentials/brutus@triton" = {};
+  # Filesystem mounts from Tempus
+  sops.secrets."smbCredentials/brutus@tempus" = {};
   environment.systemPackages = [pkgs.cifs-utils];
   fileSystems = let
-    triton = {
+    tempus = {
       fsType = "cifs";
       noCheck = true;
       options = [
@@ -59,15 +59,21 @@
         "x-systemd.device-timeout=5"
         "file_mode=0660"
         "dir_mode=0770"
-        "credentials=${config.sops.secrets."smbCredentials/brutus@triton".path}"
+        "credentials=${config.sops.secrets."smbCredentials/brutus@tempus".path}"
       ];
     };
   in {
     "/mnt/media" =
-      triton
+      tempus
       // {
-        device = "//triton.lab.whitestrake.net/Media";
-        options = triton.options ++ ["uid=77" "gid=77"];
+        device = "//tempus.lab.whitestrake.net/Media";
+        options = tempus.options ++ ["uid=1001" "gid=1001"];
+      };
+    "/mnt/plex" =
+      tempus
+      // {
+        device = "//tempus.lab.whitestrake.net/Plex";
+        options = tempus.options ++ ["uid=1001" "gid=1001"];
       };
   };
 }
