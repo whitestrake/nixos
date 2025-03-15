@@ -30,6 +30,20 @@
   services.tailscale.enable = true;
   services.tailscale.package = pkgs.unstable.tailscale;
 
+  networking.firewall = {
+    allowedTCPPorts = [
+      # Plex
+      32400
+    ];
+    allowedUDPPorts = [
+      # Plex
+      32410
+      32412
+      32413
+      32414
+    ];
+  };
+
   # www-data user
   users.users.www-data.isSystemUser = true;
   users.users.www-data.group = "www-data";
