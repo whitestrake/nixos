@@ -34,9 +34,12 @@
     allowedTCPPorts = [
       # Plex
       32400
+      32469
     ];
     allowedUDPPorts = [
       # Plex
+      1900
+      5353
       32410
       32412
       32413
