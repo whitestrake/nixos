@@ -30,23 +30,6 @@
   services.tailscale.enable = true;
   services.tailscale.package = pkgs.unstable.tailscale;
 
-  networking.firewall = {
-    allowedTCPPorts = [
-      # Plex
-      32400
-      32469
-    ];
-    allowedUDPPorts = [
-      # Plex
-      1900
-      5353
-      32410
-      32412
-      32413
-      32414
-    ];
-  };
-
   # www-data user
   users.users.www-data.isSystemUser = true;
   users.users.www-data.group = "www-data";
@@ -92,5 +75,26 @@
         device = "//tempus.lab.whitestrake.net/Plex";
         options = tempus.options ++ ["uid=1001" "gid=1001"];
       };
+    "/mnt/jellyfin" =
+      tempus
+      // {
+        device = "//tempus.lab.whitestrake.net/Jellyfin";
+        options = tempus.options ++ ["uid=1001" "gid=1001"];
+      };
+  };
+
+  # Allow for NAS pulls of the entire /opt/docker directory
+  sops.secrets.hostsEnv = {};
+  systemd.services.rsync.serviceConfig.EnvironmentFile = config.sops.secrets.hostsEnv.path;
+  services.rsyncd.enable = true;
+  services.rsyncd.settings = {
+    global.address = "%HOST_BRUTUS%";
+    docker = {
+      path = "/opt/docker";
+      uid = "root";
+      gid = "root";
+      "hosts allow" = "%HOST_TRITON%";
+      "read only" = true;
+    };
   };
 }
