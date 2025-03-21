@@ -22,7 +22,7 @@
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/LnL7/nix-darwin
-    nix-darwin.url = "github:LnL7/nix-darwin";
+    nix-darwin.url = "github:LnL7/nix-darwin/nix-darwin-24.11";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/nix-community/NixOS-WSL

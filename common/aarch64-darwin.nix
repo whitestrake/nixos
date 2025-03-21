@@ -6,6 +6,9 @@
   # Enable touch ID for sudo
   security.pam.enableSudoTouchIdAuth = true;
 
+  # Disable downloaded file quarantine
+  system.defaults.LaunchServices.LSQuarantine = false;
+
   # Fonts for system
   fonts.packages = with pkgs; [
     (nerdfonts.override {
