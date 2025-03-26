@@ -82,6 +82,12 @@
         device = "//tempus.lab.whitestrake.net/Media";
         options = tempus.options ++ ["uid=1001" "gid=1001"];
       };
+    "/mnt/nextcloud" =
+      tempus
+      // {
+        device = "//tempus.lab.whitestrake.net/Nextcloud";
+        options = tempus.options ++ ["uid=33" "gid=33"];
+      };
     "/mnt/downloads" = {
       device = "/dev/disk/by-label/downloads";
       fsType = "ext4";
