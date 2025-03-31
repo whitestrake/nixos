@@ -13,7 +13,7 @@
     wants = ["network-online.target"];
     wantedBy = ["multi-user.target"];
     serviceConfig = {
-      DymamicUser = true;
+      DynamicUser = true;
       Restart = "always";
       EnvironmentFile = config.sops.secrets.beszelEnv.path;
       ExecStart = "${pkgs.unstable.beszel}/bin/beszel-agent";

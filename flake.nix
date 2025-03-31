@@ -89,7 +89,6 @@
       charon = "x86_64-linux"; # WSL
       ishtar = "x86_64-linux"; # VPS
       orthus = "x86_64-linux"; # VPS
-      omnius = "x86_64-linux"; # XCP-ng
       pascal = "x86_64-linux"; # PVE
       jaeger = "aarch64-linux"; # OCI
     };
@@ -104,12 +103,11 @@
       sshUser = "whitestrake";
       sshOpts = ["-A"];
       nodes = builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
-        brutus = "lab.whitestrake.net";
+        brutus = "fell-monitor.ts.net";
         ishtar = "fell-monitor.ts.net";
         orthus = "fell-monitor.ts.net";
-        omnius = "fell-monitor.ts.net";
         pascal = "fell-monitor.ts.net";
-        # jaeger = "fell-monitor.ts.net";
+        jaeger = "fell-monitor.ts.net";
       };
     };
 

@@ -12,7 +12,6 @@
     ../../extra/vaapi.nix
     ../../extra/docker.nix
     ../../extra/sensu.nix
-    ../../extra/netdata.nix
     ../../extra/alloy.nix
     ../../extra/beszel.nix
     ../../secrets
