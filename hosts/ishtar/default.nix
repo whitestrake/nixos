@@ -1,10 +1,12 @@
 {
   config,
+  inputs,
   pkgs,
   lib,
   ...
 }: {
   imports = [
+    inputs.vscode-server.nixosModules.default
     ./hardware-configuration.nix
     ../../users/whitestrake
 
@@ -34,6 +36,15 @@
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
   services.qemuGuest.enable = true;
+
+  services.vscode-server.enable = true;
+  environment.systemPackages = with pkgs; [
+    sops
+    age
+    deploy-rs
+    nil
+    alejandra
+  ];
 
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
