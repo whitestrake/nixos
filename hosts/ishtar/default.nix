@@ -12,6 +12,7 @@
     ../../extra/sensu.nix
     ../../extra/alloy.nix
     ../../extra/beszel.nix
+    ../../extra/komodo.nix
     ../../secrets
   ];
   system.stateVersion = "23.11";

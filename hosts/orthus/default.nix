@@ -12,6 +12,7 @@
     ../../extra/sensu.nix
     ../../extra/alloy.nix
     ../../extra/beszel.nix
+    ../../extra/komodo.nix
     ../../secrets
   ];
   system.stateVersion = "24.11";
@@ -34,8 +35,10 @@
   services.tailscale.enable = true; # Tailscale networking
   services.tailscale.package = pkgs.unstable.tailscale;
 
-  # Necessary for Beszel in a container to communicate with agent on the host
-  networking.firewall.allowedTCPPorts = [45876];
+  networking.firewall.interfaces = {
+    beszel0.allowedTCPPorts = [45876]; # Beszel container to agent communication
+    komodo0.allowedTCPPorts = [8120]; # Komodo container to agent communication
+  };
 
   # Allow for NAS pulls of the entire /opt/docker directory
   sops.secrets.hostsEnv = {};
