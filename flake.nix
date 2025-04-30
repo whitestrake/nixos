@@ -102,13 +102,21 @@
       user = "root";
       sshUser = "whitestrake";
       sshOpts = ["-A"];
-      nodes = builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
-        brutus = "fell-monitor.ts.net";
-        ishtar = "fell-monitor.ts.net";
-        orthus = "fell-monitor.ts.net";
-        pascal = "fell-monitor.ts.net";
-        jaeger = "fell-monitor.ts.net";
-      };
+      nodes =
+        builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
+          brutus = "fell-monitor.ts.net";
+          ishtar = "fell-monitor.ts.net";
+          orthus = "fell-monitor.ts.net";
+          pascal = "fell-monitor.ts.net";
+        }
+        // {
+          jaeger = {
+            # Split out so this host can build its own system. Cross compiling is too slow.
+            hostname = "jaeger.fell-monitor.ts.net";
+            remoteBuild = true;
+            profiles.system.path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.jaeger;
+          };
+        };
     };
 
     # This is highly advised, and will prevent many possible mistakes
