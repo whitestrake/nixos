@@ -4,16 +4,16 @@
   ...
 }: let
   komodo-next = pkgs.unstable.komodo.overrideAttrs (oldAttrs: rec {
-    version = "1.17.4";
+    version = "1.17.5";
     src = pkgs.fetchFromGitHub {
       owner = "moghtech";
       repo = "komodo";
       tag = "v${version}";
-      hash = "sha256-HV+32Mv9nuAG2jfM3tadMX17wQNt6FeZOsHyiJ7nCDs=";
+      hash = "sha256-vIK/4WH85qTdjXBX32F6P/XEHdsNw2Kd86btjfl13lE=";
     };
     cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
       inherit src;
-      hash = "sha256-IC+mPxoSv6kKKkiJw3UpcTTDlrlhnNpCNyW9XPlrMgA=";
+      hash = "sha256-YCSxMcuzN1IroDfbj18yjGT0ua1xfY4l0dJ/OZhHPZw=";
     };
   });
 in {
