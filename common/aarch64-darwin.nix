@@ -29,6 +29,8 @@
     caddy
     xcaddy
     duplicacy
+    zulu
+    samba
   ];
 
   # Add shells to /etc/shells so that they can be selected for by users
@@ -37,13 +39,13 @@
   # Use Homebrew for GUI apps; nix-darwin and home-manager suck at it
   homebrew = {
     enable = true;
-    onActivation.autoUpdate = true;
-    onActivation.upgrade = true;
+    onActivation = {
+      autoUpdate = true;
+      upgrade = true;
+      cleanup = "zap";
+    };
     brews = [
-      "samba"
       "bitwarden-cli"
-      "java"
-      "curl"
     ];
     casks = [
       "music-decoy"
@@ -52,6 +54,8 @@
       "raycast"
       "warp"
       "obsidian"
+      "soduto"
+      "kando"
     ];
   };
 
