@@ -2,10 +2,9 @@
   home.stateVersion = "23.11";
   home.sessionVariables = {
     COMPOSE_IGNORE_ORPHANS = "True";
-    EDITOR = "vim";
+    EDITOR = "helix";
     BAT_PAGING = "never";
     BAT_THEME = "TwoDark";
-    # FLAKE = "github:whitestrake/nixos";
   };
   home.shellAliases = {
     l = "eza -lgh --group-directories-first --git-ignore --git --time-style=relative";
@@ -19,7 +18,6 @@
 
   home.packages = with pkgs; [
     ffmpeg
-    vimpager
     yt-dlp
     bat
   ];
@@ -86,39 +84,6 @@
         }
       ];
     };
-  };
-
-  programs.vim = {
-    enable = true;
-    plugins = with pkgs.vimPlugins; [vim-hexokinase vim-airline onedark-vim];
-    settings.ignorecase = true;
-    extraConfig = ''
-      let g:Hexokinase_highlighters = ['foreground']
-      syntax enable
-      silent! colorscheme onedark
-      set backspace=indent,eol,start  " Remove limits on backspace
-      set tabstop=2                   " num visual spaces per TAB
-      set softtabstop=2               " num spaces per TAB when editing
-      set shiftwidth=2                " num spaces for (auto) indent
-      set laststatus=2                " always show laststatus line (for airline)
-      set expandtab                   " convert tabs to spaces
-      set number                      " show line numbers
-      set cursorline                  " highlight current line
-      set wildmenu                    " show autocomplete menu
-      set lazyredraw                  " redraw only when needed
-      set showmatch                   " highlight matching parenthesis
-      set incsearch                   " incremental search as you type
-      set ignorecase                  " ignore case in searches
-      set smartcase                   " only ignore case in searches when lower cased
-      set ttyfast                     " indicate fast terminal connection (quicker rendering)
-      set textwidth=80                " 80 character text width
-      set formatoptions-=t            " disable auto newline insertion at text width
-      set wrap                        " soft wrap text
-      set visualbell                  " blink cursor instead of beeping
-      set confirm                     " use confirmation box on unsaved files
-      set nomodeline                  " security
-      set backupcopy=yes              " edit files in place (needed for Docker)
-    '';
   };
 
   programs.home-manager.enable = true;
