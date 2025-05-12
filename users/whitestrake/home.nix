@@ -73,13 +73,19 @@
       theme = "everblush";
       editor.true-color = true;
     };
-    languages.language = [
-      {
-        name = "nix";
-        auto-format = true;
-        formatter.command = "${pkgs.alejandra}/bin/alejandra";
-      }
-    ];
+    languages = {
+      language-server = {
+        nil.command = "${pkgs.nil}/bin/nil";
+      };
+      language = [
+        {
+          name = "nix";
+          auto-format = true;
+          formatter.command = "${pkgs.alejandra}/bin/alejandra";
+          language-servers = ["nil"];
+        }
+      ];
+    };
   };
 
   programs.vim = {
