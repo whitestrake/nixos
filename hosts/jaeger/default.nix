@@ -1,8 +1,4 @@
-{
-  pkgs,
-  config,
-  ...
-}: {
+{config, ...}: {
   imports = [
     ./hardware-configuration.nix
     ../../users/whitestrake
@@ -23,9 +19,6 @@
   networking.hostName = "jaeger";
   networking.domain = "whitestrake.net";
   time.timeZone = "Australia/Brisbane";
-
-  services.tailscale.enable = true; # Tailscale networking
-  services.tailscale.package = pkgs.unstable.tailscale;
 
   # Allow for NAS pulls of the entire /opt/docker directory
   sops.secrets.hostsEnv = {};

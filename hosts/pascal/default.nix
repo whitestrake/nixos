@@ -40,10 +40,6 @@
     cifs-utils
   ];
 
-  # Networking
-  services.tailscale.enable = true; # Tailscale networking
-  services.tailscale.package = pkgs.unstable.tailscale;
-
   # www-data user
   users.users.www-data.isSystemUser = true;
   users.users.www-data.group = "www-data";

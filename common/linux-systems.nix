@@ -28,4 +28,13 @@
     PermitRootLogin = "no";
     PasswordAuthentication = false;
   };
+
+  # Tailscale networking
+  services.tailscale = {
+    enable = true;
+    package = pkgs.unstable.tailscale;
+    extraSetFlags = [
+      "--ssh"
+    ];
+  };
 }

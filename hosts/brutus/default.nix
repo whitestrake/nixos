@@ -26,10 +26,6 @@
   # Fix Alloy collector ID
   systemd.services.alloy.environment.GCLOUD_FM_COLLECTOR_ID = lib.mkForce "brutus";
 
-  # Tailscale networking
-  services.tailscale.enable = true;
-  services.tailscale.package = pkgs.unstable.tailscale;
-
   # www-data user
   users.users.www-data.isSystemUser = true;
   users.users.www-data.group = "www-data";

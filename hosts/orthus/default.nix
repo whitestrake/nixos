@@ -1,6 +1,5 @@
 {
   config,
-  pkgs,
   lib,
   ...
 }: {
@@ -31,9 +30,6 @@
   # https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-1502421373
   systemd.services.NetworkManager-wait-online.enable = lib.mkForce false;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
-
-  services.tailscale.enable = true; # Tailscale networking
-  services.tailscale.package = pkgs.unstable.tailscale;
 
   networking.firewall.interfaces = {
     beszel0.allowedTCPPorts = [45876]; # Beszel container to agent communication

@@ -46,9 +46,6 @@
     alejandra
   ];
 
-  services.tailscale.enable = true; # Tailscale networking
-  services.tailscale.package = pkgs.unstable.tailscale;
-
   # Allow for NAS pulls of the entire /opt/docker directory
   sops.secrets.hostsEnv = {};
   systemd.services.rsync.serviceConfig.EnvironmentFile = config.sops.secrets.hostsEnv.path;
