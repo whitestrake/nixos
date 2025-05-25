@@ -17,4 +17,7 @@
       };
     };
   };
+  # Wait until tailscaled is up before starting rsyncd
+  systemd.services.rsyncd.wants = ["tailscaled.service"];
+  systemd.services.rsyncd.after = ["tailscaled.service"];
 }
