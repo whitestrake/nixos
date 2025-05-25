@@ -46,21 +46,6 @@
     alejandra
   ];
 
-  # Allow for NAS pulls of the entire /opt/docker directory
-  sops.secrets.hostsEnv = {};
-  systemd.services.rsync.serviceConfig.EnvironmentFile = config.sops.secrets.hostsEnv.path;
-  services.rsyncd.enable = true;
-  services.rsyncd.settings = {
-    global.address = "%HOST_ISHTAR%";
-    docker = {
-      path = "/opt/docker";
-      uid = "root";
-      gid = "root";
-      "hosts allow" = "%HOST_TRITON%";
-      "read only" = true;
-    };
-  };
-
   sops.secrets."backupTeamspeak/filePath" = {};
   sops.secrets."backupTeamspeak/pingUrl" = {};
   systemd.services.backup-teamspeak.path = with pkgs; [util-linux duplicacy curl];

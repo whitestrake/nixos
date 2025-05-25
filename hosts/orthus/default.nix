@@ -1,8 +1,4 @@
-{
-  config,
-  lib,
-  ...
-}: {
+{lib, ...}: {
   imports = [
     ./hardware-configuration.nix
     ../../users/whitestrake
@@ -34,20 +30,5 @@
   networking.firewall.interfaces = {
     beszel0.allowedTCPPorts = [45876]; # Beszel container to agent communication
     komodo0.allowedTCPPorts = [8120]; # Komodo container to agent communication
-  };
-
-  # Allow for NAS pulls of the entire /opt/docker directory
-  sops.secrets.hostsEnv = {};
-  systemd.services.rsync.serviceConfig.EnvironmentFile = config.sops.secrets.hostsEnv.path;
-  services.rsyncd.enable = true;
-  services.rsyncd.settings = {
-    global.address = "%HOST_ORTHUS%";
-    docker = {
-      path = "/opt/docker";
-      uid = "root";
-      gid = "root";
-      "hosts allow" = "%HOST_TRITON%";
-      "read only" = true;
-    };
   };
 }
