@@ -7,9 +7,8 @@
     BAT_THEME = "TwoDark";
   };
   home.shellAliases = {
-    l = "eza -lgh --group-directories-first --git-ignore --git --time-style=relative";
-    la = "eza -lgaah --group-directories-first --git-ignore --git --time-style=long-iso";
-    lg = "eza -lgaah --group-directories-first --git --time-style=long-iso";
+    l = "eza --long --git-ignore";
+    la = "eza --long --all --all --time-style=long-iso";
     dps = "docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'";
     dc = "docker compose";
     dcl = "dc logs -f --tail 20";
@@ -22,18 +21,33 @@
     bat
   ];
 
-  programs.autojump.enable = true;
-  programs.autojump.enableFishIntegration = true;
+  # Autojump
+  programs.zoxide.enable = true;
+  programs.zoxide.enableFishIntegration = true;
+  programs.zoxide.options = ["--cmd cd"];
+
+  # Command-line fuzzy finder
   programs.fzf.enable = true;
   programs.fzf.enableFishIntegration = true;
 
+  # ls replacement
   programs.eza.enable = true;
   programs.eza.enableFishIntegration = true;
+  programs.eza.extraOptions = [
+    "--git"
+    "--group"
+    "--header"
+    "--time-style=relative"
+    "--group-directories-first"
+  ];
+
+  # List files - terminal file manager
   programs.lf.enable = true;
 
   programs.tealdeer.enable = true;
   # programs.tealdeer.enableAutoUpdates = true; # newer than home-manager 24.11
 
+  # Fix whatever went wrong with the last command
   programs.thefuck.enable = true;
   programs.thefuck.enableFishIntegration = true;
 

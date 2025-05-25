@@ -47,6 +47,10 @@
     # https://github.com/ToyVo/nh_plus
     nh_plus.url = "github:ToyVo/nh_plus";
 
+    # https://github.com/nix-community/disko
+    disko.url = "github:nix-community/disko/latest";
+    disko.inputs.nixpkgs.follows = "nixpkgs";
+
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
