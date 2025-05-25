@@ -31,7 +31,7 @@
     })
 
     # https://github.com/oxalica/nil/issues/113
-    inputs.nil.overlays.default
+    # inputs.nil.overlays.default
 
     inputs.nh_plus.overlays.default
   ];

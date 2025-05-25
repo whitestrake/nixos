@@ -95,13 +95,17 @@
   systemd.services.rsync.serviceConfig.EnvironmentFile = config.sops.secrets.hostsEnv.path;
   services.rsyncd.enable = true;
   services.rsyncd.settings = {
-    global.address = "%HOST_PASCAL%";
-    docker = {
-      path = "/opt/docker";
-      uid = "root";
-      gid = "root";
-      "hosts allow" = "%HOST_TRITON%";
-      "read only" = true;
+    globalSection = {
+      address = "%HOST_PASCAL%";
+    };
+    sections = {
+      docker = {
+        path = "/opt/docker";
+        uid = "root";
+        gid = "root";
+        "hosts allow" = "%HOST_TRITON%";
+        "read only" = true;
+      };
     };
   };
 }

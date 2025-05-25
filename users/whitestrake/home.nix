@@ -45,7 +45,7 @@
   programs.lf.enable = true;
 
   programs.tealdeer.enable = true;
-  # programs.tealdeer.enableAutoUpdates = true; # newer than home-manager 24.11
+  programs.tealdeer.enableAutoUpdates = true;
 
   # Fix whatever went wrong with the last command
   programs.thefuck.enable = true;
