@@ -4,21 +4,17 @@
   ];
 
   # Enable touch ID for sudo
-  security.pam.enableSudoTouchIdAuth = true;
+  security.pam.services.sudo_local.touchIdAuth = true;
 
   # Disable downloaded file quarantine
   system.defaults.LaunchServices.LSQuarantine = false;
 
   # Fonts for system
   fonts.packages = with pkgs; [
-    (nerdfonts.override {
-      fonts = [
-        "FiraCode"
-        "DroidSansMono"
-        "Meslo"
-        "Inconsolata"
-      ];
-    })
+    nerd-fonts.meslo-lg
+    nerd-fonts.fira-code
+    nerd-fonts.inconsolata
+    nerd-fonts.droid-sans-mono
   ];
 
   # Allow unfree and configure base system packages
@@ -60,6 +56,6 @@
   };
 
   # Auto upgrade nix package and the daemon service.
-  services.nix-daemon.enable = true;
+  nix.enable = true;
   nix.package = pkgs.nix;
 }
