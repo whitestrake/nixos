@@ -41,12 +41,6 @@
     vscode-server.url = "github:nix-community/nixos-vscode-server";
     vscode-server.inputs.nixpkgs.follows = "nixpkgs";
 
-    # https://github.com/oxalica/nil/issues/113
-    nil.url = "github:oxalica/nil";
-
-    # https://github.com/ToyVo/nh_plus
-    nh_plus.url = "github:ToyVo/nh_plus";
-
     # https://github.com/nix-community/disko
     disko.url = "github:nix-community/disko/latest";
     disko.inputs.nixpkgs.follows = "nixpkgs";
@@ -69,8 +63,6 @@
     nixos-wsl,
     deploy-rs,
     sops-nix,
-    nil,
-    nh_plus,
     ...
   } @ inputs: let
     mkSystem = function: name: system:
