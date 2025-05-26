@@ -3,18 +3,19 @@
   pkgs,
   lib,
   ...
-}: let
-  beszel-next = pkgs.unstable.beszel.overrideAttrs (oldAttrs: rec {
-    version = "0.11.1";
-    src = pkgs.fetchFromGitHub {
-      owner = "henrygd";
-      repo = "beszel";
-      tag = "v${version}";
-      hash = "sha256-tAi48PAHDGIZn/HMsnCq0mLpvFSqUOMocq47hooiFT8=";
-    };
-    vendorHash = "sha256-B6mOqOgcrRn0jV9wnDgRmBvfw7I/Qy5MNYvTiaCgjBE=";
-  });
-in {
+}: {
+  # }: let
+  #   beszel-next = pkgs.unstable.beszel.overrideAttrs (oldAttrs: rec {
+  #     version = "0.11.1";
+  #     src = pkgs.fetchFromGitHub {
+  #       owner = "henrygd";
+  #       repo = "beszel";
+  #       tag = "v${version}";
+  #       hash = "sha256-tAi48PAHDGIZn/HMsnCq0mLpvFSqUOMocq47hooiFT8=";
+  #     };
+  #     vendorHash = "sha256-B6mOqOgcrRn0jV9wnDgRmBvfw7I/Qy5MNYvTiaCgjBE=";
+  #   });
+  # in {
   imports = [../secrets];
   sops.secrets.beszelEnv = {};
 
@@ -27,7 +28,7 @@ in {
       DynamicUser = true;
       Restart = "always";
       EnvironmentFile = config.sops.secrets.beszelEnv.path;
-      ExecStart = "${beszel-next}/bin/beszel-agent";
+      ExecStart = "${pkgs.unstable.beszel}/bin/beszel-agent";
       StateDirectory = "beszel-agent";
 
       # Security/sandboxing
