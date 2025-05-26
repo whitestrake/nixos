@@ -30,10 +30,5 @@
     home.sessionVariables.EDITOR = lib.mkForce "code"; # VS Code
     home.sessionVariables.CLICOLOR = lib.mkForce "1"; # Enable colours in terminal outputs
     home.shellAliases.tailscale = lib.mkForce "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-    programs.fish.interactiveShellInit = lib.mkForce ''
-      set fish_greeting
-      thefuck --alias | source
-      fish_add_path $GOPATH/bin/
-    '';
   };
 }
