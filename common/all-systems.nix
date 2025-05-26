@@ -50,15 +50,14 @@
     nh
 
     # Files
-    gdu
-    dust
+    dua
     tree
-    ranger
     rclone
 
     # HTTP
     wget
     curl
+    xh
 
     # JSON
     jq
