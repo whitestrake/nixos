@@ -23,8 +23,9 @@
   networking.domain = "lab.whitestrake.net";
   time.timeZone = "Australia/Brisbane";
 
-  # Fix Alloy collector ID
+  # Fix issues with NixOS LXC not being able to figure out its own hostName?
   systemd.services.alloy.environment.GCLOUD_FM_COLLECTOR_ID = lib.mkForce "brutus";
+  services.rsyncd.settings.globalSection.address = lib.mkForce "brutus.fell-monitor.ts.net";
 
   # www-data user
   users.users.www-data.isSystemUser = true;
