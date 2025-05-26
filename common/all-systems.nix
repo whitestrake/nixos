@@ -33,7 +33,7 @@
     # https://github.com/oxalica/nil/issues/113
     # inputs.nil.overlays.default
 
-    inputs.nh_plus.overlays.default
+    # inputs.nh_plus.overlays.default
   ];
 
   # Enable fish by default
