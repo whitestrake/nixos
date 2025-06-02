@@ -9,9 +9,6 @@
   home.shellAliases = {
     l = "eza --long --git-ignore";
     la = "eza --long --all --all --time-style=long-iso";
-    dps = "docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'";
-    dc = "docker compose";
-    dcl = "dc logs -f --tail 20";
     df = "df -h -xtmpfs -xoverlay";
   };
 

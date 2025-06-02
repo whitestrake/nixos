@@ -3,6 +3,13 @@
   virtualisation.docker.autoPrune.enable = true;
   systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
 
+  environment.shellAliases = {
+    # Docker specific aliases
+    dps = "docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'";
+    dc = "docker compose";
+    dcl = "dc logs -f --tail 20";
+  };
+
   # Allow for NAS pulls of the entire /opt/docker directory
   services.rsyncd.enable = true;
   services.rsyncd.settings = {
