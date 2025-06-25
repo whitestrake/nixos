@@ -2,7 +2,6 @@
   pkgs,
   config,
   ...
-  # }: {
 }: let
   version = "1.18.4";
   arch =
