@@ -2,22 +2,36 @@
   pkgs,
   config,
   ...
-}: {
-  # }: let
-  #   komodo-next = pkgs.unstable.komodo.overrideAttrs (oldAttrs: rec {
-  #     version = "1.17.5";
-  #     src = pkgs.fetchFromGitHub {
-  #       owner = "moghtech";
-  #       repo = "komodo";
-  #       tag = "v${version}";
-  #       hash = "sha256-vIK/4WH85qTdjXBX32F6P/XEHdsNw2Kd86btjfl13lE=";
-  #     };
-  #     cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-  #       inherit src;
-  #       hash = "sha256-YCSxMcuzN1IroDfbj18yjGT0ua1xfY4l0dJ/OZhHPZw=";
-  #     };
-  #   });
-  # in {
+  # }: {
+}: let
+  version = "1.18.4";
+  arch =
+    if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
+    then "aarch64"
+    else "x86_64";
+
+  komodo-next = pkgs.stdenv.mkDerivation rec {
+    pname = "komodo-periphery";
+    inherit version;
+
+    # Fetch the pre-built binary directly from GitHub releases
+    src = pkgs.fetchurl {
+      url = "https://github.com/moghtech/komodo/releases/download/v${version}/periphery-${arch}";
+      hash =
+        if arch == "aarch64"
+        then "sha256-JG25YNR0p24iR7PsFBNT4GGr/4d41KmDjE0Bdnwl9Yg="
+        else "sha256-kF6iurDAI8fOHNIwTJ2Oypn4dIBEdoxYl8m1RGmJ5IY=";
+    };
+
+    # Only need install phase for binary placement
+    phases = ["installPhase"];
+    installPhase = ''
+      mkdir -p $out/bin
+      cp $src $out/bin/periphery
+      chmod +x $out/bin/periphery
+    '';
+  };
+in {
   imports = [../secrets];
   sops.secrets.komodoEnv = {};
 
@@ -29,7 +43,7 @@
     path = with pkgs; [bash docker];
     serviceConfig = {
       EnvironmentFile = config.sops.secrets.komodoEnv.path;
-      ExecStart = "${pkgs.unstable.komodo}/bin/periphery";
+      ExecStart = "${komodo-next}/bin/periphery";
       Restart = "always";
     };
   };
