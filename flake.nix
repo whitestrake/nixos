@@ -83,7 +83,6 @@
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
       brutus = "x86_64-linux"; # LXC
       charon = "x86_64-linux"; # WSL
-      ishtar = "x86_64-linux"; # VPS
       orthus = "x86_64-linux"; # VPS
       pascal = "x86_64-linux"; # PVE
       jaeger = "aarch64-linux"; # OCI
@@ -101,7 +100,6 @@
       nodes =
         builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
           brutus = "fell-monitor.ts.net";
-          ishtar = "fell-monitor.ts.net";
           orthus = "fell-monitor.ts.net";
           pascal = "fell-monitor.ts.net";
         }
