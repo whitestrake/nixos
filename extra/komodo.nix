@@ -18,6 +18,7 @@
     src = pkgs.fetchurl {
       url = "https://github.com/moghtech/komodo/releases/download/v${version}/periphery-${arch}";
       hash =
+        # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
         if arch == "aarch64"
         then "sha256-JG25YNR0p24iR7PsFBNT4GGr/4d41KmDjE0Bdnwl9Yg="
         else "sha256-kF6iurDAI8fOHNIwTJ2Oypn4dIBEdoxYl8m1RGmJ5IY=";
