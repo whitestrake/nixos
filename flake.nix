@@ -108,6 +108,7 @@
             # Split out so this host can build its own system. Cross compiling is too slow.
             hostname = "jaeger.fell-monitor.ts.net";
             remoteBuild = true;
+            interactiveSudo = true;
             profiles.system.path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.jaeger;
           };
         };

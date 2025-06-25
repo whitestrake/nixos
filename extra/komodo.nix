@@ -9,27 +9,24 @@
     if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
     then "aarch64"
     else "x86_64";
+  hash =
+    # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
+    if arch == "aarch64"
+    then "sha256-JG25YNR0p24iR7PsFBNT4GGr/4d41KmDjE0Bdnwl9Yg="
+    else "sha256-kF6iurDAI8fOHNIwTJ2Oypn4dIBEdoxYl8m1RGmJ5IY=";
 
   komodo-next = pkgs.stdenv.mkDerivation rec {
     pname = "komodo-periphery";
     inherit version;
 
-    # Fetch the pre-built binary directly from GitHub releases
     src = pkgs.fetchurl {
       url = "https://github.com/moghtech/komodo/releases/download/v${version}/periphery-${arch}";
-      hash =
-        # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
-        if arch == "aarch64"
-        then "sha256-JG25YNR0p24iR7PsFBNT4GGr/4d41KmDjE0Bdnwl9Yg="
-        else "sha256-kF6iurDAI8fOHNIwTJ2Oypn4dIBEdoxYl8m1RGmJ5IY=";
+      inherit hash;
     };
 
-    # Only need install phase for binary placement
     phases = ["installPhase"];
     installPhase = ''
-      mkdir -p $out/bin
-      cp $src $out/bin/periphery
-      chmod +x $out/bin/periphery
+      install -Dm755 $src $out/bin/periphery
     '';
   };
 in {
@@ -46,6 +43,7 @@ in {
       EnvironmentFile = config.sops.secrets.komodoEnv.path;
       ExecStart = "${komodo-next}/bin/periphery";
       Restart = "always";
+      RestartSec = "5s";
     };
   };
 }
