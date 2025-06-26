@@ -21,7 +21,7 @@
   # Autojump
   programs.zoxide.enable = true;
   programs.zoxide.enableFishIntegration = true;
-  programs.zoxide.options = ["--cmd cd"];
+  programs.zoxide.options = ["--cmd j"];
 
   # Command-line fuzzy finder
   programs.fzf.enable = true;
