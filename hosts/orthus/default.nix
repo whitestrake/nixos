@@ -27,8 +27,8 @@
   systemd.services.NetworkManager-wait-online.enable = lib.mkForce false;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
-  networking.firewall.interfaces = {
-    beszel0.allowedTCPPorts = [45876]; # Beszel container to agent communication
-    komodo0.allowedTCPPorts = [8120]; # Komodo container to agent communication
-  };
+  networking.firewall.trustedInterfaces = [
+    "beszel0" # Beszel container to agent communication
+    "komodo0" # Komodo container to agent communication
+  ];
 }
