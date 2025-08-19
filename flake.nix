@@ -52,6 +52,9 @@
     # GitLab SSH keys
     whitestrake-gitlab-keys.url = "https://gitlab.com/Whitestrake.keys";
     whitestrake-gitlab-keys.flake = false;
+
+    # Add check_mk https://github.com/NixOS/nixpkgs/pull/399463
+    check_mk-pr.url = "github:NixOS/nixpkgs?ref=pull/399463/head";
   };
 
   outputs = {

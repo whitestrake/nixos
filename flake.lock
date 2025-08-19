@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "check_mk-pr": {
+      "locked": {
+        "lastModified": 1752501454,
+        "narHash": "sha256-QjCwK+PdZG/asimpEeTwaboxkRlxz1Sbq840BwZ+EMA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "cf63e29d947e3a33be7dca870e81f4e8e7832eba",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "pull/399463/head",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "deploy-rs": {
       "inputs": {
         "flake-compat": "flake-compat",
@@ -191,6 +207,7 @@
     },
     "root": {
       "inputs": {
+        "check_mk-pr": "check_mk-pr",
         "deploy-rs": "deploy-rs",
         "disko": "disko",
         "home-manager": "home-manager",
