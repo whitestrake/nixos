@@ -89,6 +89,7 @@
       orthus = "x86_64-linux"; # VPS
       pascal = "x86_64-linux"; # PVE
       jaeger = "aarch64-linux"; # OCI
+      rapier = "x86_64-linux"; # GCE
     };
 
     # MacOS machines
