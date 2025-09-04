@@ -18,6 +18,7 @@
 
   # Hostname and TZ
   networking.hostName = "rapier";
-  networking.domain = "lab.whitestrake.net";
+  networking.domain = "whitestrake.net";
+  networking.hostId = "3ae03bc7";
   time.timeZone = "Australia/Brisbane";
 }
