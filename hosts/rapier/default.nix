@@ -10,7 +10,7 @@
     ../../extra/komodo.nix
     ../../secrets
   ];
-  system.stateVersion = "24.11";
+  system.stateVersion = "25.05";
 
   # Use the systemd-boot EFI boot loader.
   boot.loader.systemd-boot.enable = true;
@@ -19,7 +19,7 @@
 
   # Hostname and TZ
   networking.hostName = "rapier";
-  networking.domain = "whitestrake.net";
+  networking.domain = "lab.whitestrake.net";
   networking.hostId = "3ae03bc7";
   time.timeZone = "Australia/Brisbane";
 }
