@@ -15,6 +15,7 @@
   # Use the systemd-boot EFI boot loader.
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
+  boot.zfs.devNodes = "/dev/disk/by-uuid";
 
   # Hostname and TZ
   networking.hostName = "rapier";
