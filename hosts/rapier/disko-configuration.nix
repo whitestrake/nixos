@@ -1,13 +1,13 @@
 {
-  # disks ? ["/dev/sda"],
-  # zpoolName ? "rpool",
+  disks ? ["/dev/sda"],
+  zpoolName ? "rpool",
   ...
 }: {
   disko.devices = {
     disk = {
       first = {
         type = "disk";
-        device = "/dev/vda";
+        device = builtins.elemAt disks 0;
         content = {
           type = "gpt";
           partitions = {
@@ -27,7 +27,7 @@
               size = "100%";
               content = {
                 type = "zfs";
-                pool = "rpool";
+                pool = zpoolName;
               };
             };
           };
@@ -35,7 +35,7 @@
       };
     };
     zpool = {
-      "rpool" = {
+      "${zpoolName}" = {
         type = "zpool";
         options = {
           ashift = "12";

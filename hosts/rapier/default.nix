@@ -1,7 +1,14 @@
-{inputs, ...}: {
+{
+  inputs,
+  config,
+  ...
+}: {
   imports = [
     inputs.disko.nixosModules.disko
-    ./disko-configuration.nix
+    (import ./disko-configuration.nix {
+      disks = ["/dev/vda"];
+      zpoolName = config.networking.hostName;
+    })
     ./hardware-configuration.nix
     ../../users/whitestrake
 
@@ -15,7 +22,7 @@
   # Use the systemd-boot EFI boot loader.
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
-  boot.zfs.devNodes = "/dev/disk/by-uuid";
+  boot.zfs.devNodes = "/dev/disk/by-partuuid";
 
   # Hostname and TZ
   networking.hostName = "rapier";
