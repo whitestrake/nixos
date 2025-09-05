@@ -37,7 +37,7 @@ in {
     wants = ["network-online.target"];
     wantedBy = ["multi-user.target"];
     description = "Agent to connect with Komodo Core";
-    path = with pkgs; [bash docker];
+    path = with pkgs; [bash docker openssl];
     serviceConfig = {
       EnvironmentFile = config.sops.secrets.komodoEnv.path;
       ExecStart = "${komodo-next}/bin/periphery";

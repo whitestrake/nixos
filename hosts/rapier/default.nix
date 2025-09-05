@@ -1,6 +1,7 @@
 {
   inputs,
   config,
+  pkgs,
   ...
 }: {
   imports = [
@@ -18,6 +19,17 @@
     ../../secrets
   ];
   system.stateVersion = "25.05";
+
+  # QEMU guest agent
+  services.qemuGuest.enable = true;
+
+  environment.systemPackages = with pkgs; [
+    sops
+    age
+    deploy-rs
+    nil
+    alejandra
+  ];
 
   # Use the systemd-boot EFI boot loader.
   boot.loader.systemd-boot.enable = true;
