@@ -88,8 +88,8 @@
       charon = "x86_64-linux"; # WSL
       orthus = "x86_64-linux"; # VPS
       pascal = "x86_64-linux"; # PVE
-      jaeger = "aarch64-linux"; # OCI
       rapier = "x86_64-linux"; # GCE
+      jaeger = "aarch64-linux"; # OCI
     };
 
     # MacOS machines
@@ -106,6 +106,7 @@
           brutus = "fell-monitor.ts.net";
           orthus = "fell-monitor.ts.net";
           pascal = "fell-monitor.ts.net";
+          rapier = "fell-monitor.ts.net";
         }
         // {
           jaeger = {
