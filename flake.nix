@@ -85,7 +85,6 @@
     # NixOS machines
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
       brutus = "x86_64-linux"; # LXC
-      charon = "x86_64-linux"; # WSL
       orthus = "x86_64-linux"; # VPS
       pascal = "x86_64-linux"; # PVE
       rapier = "x86_64-linux"; # GCE
