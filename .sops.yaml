@@ -1,21 +1,19 @@
 keys:
   - &whitestrake age1uqa0zltnvvruec96wd2c6l8eptyhhtpgp66u7ytzqzsacjfdyfaq2l3vzk
   - &server_brutus age1mx86k8s50xnrqta0r6nl4al9jz0932qh440hem0ay9z573st4ygqyvxjrw
-  - &server_ishtar age1uqmp2gvujxr75ynerqdfeyxyhx5vgsqu6pkf7tng3dkaq2gvadhqc2fpxk
-  - &server_omnius age1hnu3n9amslvxru988xsgwanws0eplksunvjhpaaqksz2uhhveueqf4296l
   - &server_pascal age10lstlywz6fuex8t4yqnauxnlrdh3yyzantew8v55s3dkuh82nv0qw7dtgj
   - &server_jaeger age1q8vglz63674utnk06nv9mq5l97c58845y86zk6wsgcu6gqtazsts29ux69
   - &server_orthus age1unj658ptv0rccvkycxylfegpylar26fv9kzcjr3jj5gg8gu74a9qnl8x2n
   - &server_rapier age1uv66eqlh2mw8ktep3x3am6audelr2g0ed9fh7nf2z5euzd4dsvuqk4znyj
+  - &server_oculus age15rdkcgeh67fqlqwkdk5r4ed6rr8kuun984wv2ypv6s8w06y2yqvsj3rsrk
 creation_rules:
   - path_regex: secrets/secrets\.yaml$
     key_groups:
     - age:
       - *whitestrake
       - *server_brutus
-      - *server_ishtar
-      - *server_omnius
       - *server_pascal
       - *server_jaeger
       - *server_orthus
       - *server_rapier
+      - *server_oculus
