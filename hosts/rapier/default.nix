@@ -15,7 +15,6 @@
 
     ../../extra/docker.nix
     ../../extra/beszel.nix
-    ../../extra/komodo.nix
     ../../secrets
   ];
   system.stateVersion = "25.05";
