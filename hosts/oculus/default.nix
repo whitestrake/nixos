@@ -13,4 +13,7 @@
   networking.hostName = "oculus";
   networking.domain = "whitestrake.net";
   time.timeZone = "Australia/Brisbane";
+
+  # GCE nameserver from DHCP seems flaky? Their problem or ours? Temp workaround
+  networking.nameservers = ["1.1.1.1" "8.8.8.8"];
 }
