@@ -18,4 +18,6 @@
   # Workaround strange issues with metadata.google.internal routing
   networking.nameservers = ["1.1.1.1" "8.8.8.8"];
   networking.timeServers = ["pool.ntp.org"];
+
+  swapDevices = [{device = "/swapfile";}];
 }
