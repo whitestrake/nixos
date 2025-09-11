@@ -15,6 +15,7 @@
 
     ../../extra/docker.nix
     ../../extra/beszel.nix
+    ../../extra/check_mk.nix
     ../../secrets
   ];
   system.stateVersion = "25.05";

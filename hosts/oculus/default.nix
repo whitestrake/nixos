@@ -5,6 +5,7 @@
 
     ../../extra/docker.nix
     ../../extra/beszel.nix
+    ../../extra/check_mk.nix
     ../../secrets
   ];
   system.stateVersion = "25.05";
@@ -14,6 +15,7 @@
   networking.domain = "whitestrake.net";
   time.timeZone = "Australia/Brisbane";
 
-  # GCE nameserver from DHCP seems flaky? Their problem or ours? Temp workaround
+  # Workaround strange issues with metadata.google.internal routing
   networking.nameservers = ["1.1.1.1" "8.8.8.8"];
+  networking.timeServers = ["pool.ntp.org"];
 }
