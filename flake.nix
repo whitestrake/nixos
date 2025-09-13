@@ -45,6 +45,10 @@
     disko.url = "github:nix-community/disko/latest";
     disko.inputs.nixpkgs.follows = "nixpkgs";
 
+    # https://github.com/strongtz/i915-sriov-dkms
+    i915-sriov.url = "github:strongtz/i915-sriov-dkms";
+    i915-sriov.inputs.nixpkgs.follows = "nixpkgs-unstable";
+
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
