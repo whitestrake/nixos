@@ -111,7 +111,7 @@
           orthus = "fell-monitor.ts.net";
           pascal = "fell-monitor.ts.net";
           rapier = "fell-monitor.ts.net";
-          oculus = "fell-monitor.ts.net";
+          # oculus = "fell-monitor.ts.net";
         }
         // {
           jaeger = {
