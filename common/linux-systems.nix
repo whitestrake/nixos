@@ -27,6 +27,7 @@
 
   # Set up basic SSH protection
   services.sshguard.enable = true;
+  systemd.services.sshguard.serviceConfig.TimeoutStopSec = "10s";
   services.openssh.enable = true;
   services.openssh.settings = {
     PermitRootLogin = "no";
