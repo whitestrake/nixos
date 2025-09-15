@@ -78,6 +78,10 @@
       device = "//tempus.lab.whitestrake.net/Media";
       uid = config.users.users.mediaserver.uid;
     };
+    "/mnt/plex" = mkCifs {
+      device = "//tempus.lab.whitestrake.net/Plex";
+      uid = config.users.users.mediaserver.uid;
+    };
     "/mnt/jellyfin" = mkCifs {
       device = "//tempus.lab.whitestrake.net/Jellyfin";
       uid = config.users.users.mediaserver.uid;
