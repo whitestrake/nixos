@@ -3,11 +3,13 @@
   pkgs,
   ...
 }: {
-  # Default system monitoring
   imports = [
+    # Default system monitoring
     ../extra/beszel.nix
     ../extra/check_mk.nix
     ../extra/alloy.nix
+
+    # I've been here the whole time
     ../users/whitestrake
   ];
 
