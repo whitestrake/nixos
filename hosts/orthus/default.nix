@@ -25,5 +25,6 @@
   networking.firewall.trustedInterfaces = [
     "beszel0" # Beszel container to agent communication
     "komodo0" # Komodo container to agent communication
+    "checkmk0" # Checkmk container to agent communication
   ];
 }
