@@ -55,6 +55,7 @@
           "system/root" = {
             type = "zfs_fs";
             mountpoint = "/";
+            options.mountpoint = "legacy";
           };
           "local" = {
             type = "zfs_fs";
@@ -68,10 +69,12 @@
           "local/nix" = {
             type = "zfs_fs";
             mountpoint = "/nix";
+            options.mountpoint = "legacy";
           };
           "local/tmp" = {
             type = "zfs_fs";
             mountpoint = "/tmp";
+            options.mountpoint = "legacy";
           };
           "user" = {
             type = "zfs_fs";
@@ -80,10 +83,12 @@
           "user/home" = {
             type = "zfs_fs";
             mountpoint = "/home";
+            options.mountpoint = "legacy";
           };
           "user/docker" = {
             type = "zfs_fs";
             mountpoint = "/opt/docker";
+            options.mountpoint = "legacy";
           };
         };
       };
