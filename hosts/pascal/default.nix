@@ -35,12 +35,6 @@
     cifs-utils
   ];
 
-  # www-data user
-  users.users.www-data.isSystemUser = true;
-  users.users.www-data.group = "www-data";
-  users.users.www-data.uid = 33;
-  users.groups.www-data.gid = 33;
-
   # mediaserver user
   users.users.mediaserver.isSystemUser = true;
   users.users.mediaserver.group = "mediaserver";

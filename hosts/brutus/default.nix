@@ -23,12 +23,6 @@
   systemd.services.alloy.environment.GCLOUD_FM_COLLECTOR_ID = lib.mkForce "brutus";
   services.rsyncd.settings.globalSection.address = lib.mkForce "brutus.fell-monitor.ts.net";
 
-  # www-data user
-  users.users.www-data.isSystemUser = true;
-  users.users.www-data.group = "www-data";
-  users.users.www-data.uid = 33;
-  users.groups.www-data.gid = 33;
-
   # mediaserver user
   users.users.mediaserver.isSystemUser = true;
   users.users.mediaserver.group = "mediaserver";

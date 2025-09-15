@@ -53,4 +53,10 @@
   systemd.services.tailscaled.serviceConfig.ExecStartPost = ''
     ${pkgs.coreutils}/bin/timeout 60s ${pkgs.bash}/bin/bash -c 'until ${config.services.tailscale.package}/bin/tailscale status --peers=false; do sleep 1; done'
   '';
+
+  # www-data user
+  users.users.www-data.isSystemUser = true;
+  users.users.www-data.group = "www-data";
+  users.users.www-data.uid = 33;
+  users.groups.www-data.gid = 33;
 }
