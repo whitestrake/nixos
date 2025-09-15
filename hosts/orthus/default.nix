@@ -1,12 +1,8 @@
 {lib, ...}: {
   imports = [
     ./hardware-configuration.nix
-    ../../users/whitestrake
-
     ../../extra/docker.nix
     ../../extra/sensu.nix
-    ../../extra/alloy.nix
-    ../../extra/beszel.nix
     ../../secrets
   ];
   system.stateVersion = "24.11";

@@ -10,14 +10,11 @@
       disks = ["/dev/vda"];
       zpoolName = config.networking.hostName;
     })
-    ./hardware-configuration.nix
-    ../../users/whitestrake
 
+    ./hardware-configuration.nix
     ../../extra/i915-sriov.nix
 
     ../../extra/docker.nix
-    ../../extra/beszel.nix
-    ../../extra/check_mk.nix
     ../../secrets
   ];
   system.stateVersion = "25.05";

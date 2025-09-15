@@ -3,6 +3,14 @@
   pkgs,
   ...
 }: {
+  # Default system monitoring
+  imports = [
+    ../extra/beszel.nix
+    ../extra/check_mk.nix
+    ../extra/alloy.nix
+    ../users/whitestrake
+  ];
+
   # Allow non-nix executables
   programs.nix-ld.enable = true;
   # programs.nix-ld.libraries = with pkgs; [
