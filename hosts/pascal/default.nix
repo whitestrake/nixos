@@ -7,6 +7,8 @@
   imports = [
     inputs.vscode-server.nixosModules.default
     ./hardware-configuration.nix
+    ../../extra/i915-sriov.nix
+
     ../../extra/docker.nix
     ../../extra/sensu.nix
     ../../secrets
