@@ -3,7 +3,7 @@
   config,
   ...
 }: let
-  version = "1.19.4";
+  version = "1.19.5";
   arch =
     if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
     then "aarch64"
@@ -11,8 +11,8 @@
   hash =
     # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
     if arch == "aarch64"
-    then "sha256-dbkJdoM63bdfXJVjUnSlIk6YVwGRRxQB0HhWPVj4l98="
-    else "sha256-zBQGHWDhBiVRbMEHQZutkkd7CnARP0GO/N8eaP8qMN8=";
+    then "sha256-aCsoDaLwm1tsDch9HLURo1yTBnDgCICEU/hppokv4RE=" #aarch64
+    else "sha256-1uics2Avffe2TEPTWJLGQVeBGcJFGWuu0oV9fQeFlHA="; #x86_64
 
   komodo-next = pkgs.stdenv.mkDerivation {
     pname = "komodo-periphery";
