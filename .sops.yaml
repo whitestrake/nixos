@@ -6,6 +6,7 @@ keys:
   - &server_orthus age1unj658ptv0rccvkycxylfegpylar26fv9kzcjr3jj5gg8gu74a9qnl8x2n
   - &server_rapier age1uv66eqlh2mw8ktep3x3am6audelr2g0ed9fh7nf2z5euzd4dsvuqk4znyj
   - &server_oculus age15rdkcgeh67fqlqwkdk5r4ed6rr8kuun984wv2ypv6s8w06y2yqvsj3rsrk
+  - &server_sortie age1u332q0gcrflpayta45zcrm6wnqz9zg2l3psx97d4yp0j4pzgssxqvheqht
 creation_rules:
   - path_regex: secrets/secrets\.yaml$
     key_groups:
@@ -17,3 +18,4 @@ creation_rules:
       - *server_orthus
       - *server_rapier
       - *server_oculus
+      - *server_sortie

@@ -92,6 +92,7 @@
       orthus = "x86_64-linux"; # VPS
       pascal = "x86_64-linux"; # PVE
       rapier = "x86_64-linux"; # PVE
+      sortie = "x86_64-linux"; # PVE
       oculus = "x86_64-linux"; # GCE
       jaeger = "aarch64-linux"; # OCI
     };

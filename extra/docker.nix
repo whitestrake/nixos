@@ -2,6 +2,7 @@
   imports = [./komodo.nix];
   virtualisation.docker.enable = true;
   virtualisation.docker.autoPrune.enable = true;
+  virtualisation.docker.liveRestore = false;
   systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
 
   environment.shellAliases = {
