@@ -2,7 +2,6 @@
   inputs,
   config,
   pkgs,
-  lib,
   ...
 }: {
   imports = [inputs.i915-sriov.nixosModules.default];
