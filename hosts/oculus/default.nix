@@ -1,19 +1,34 @@
-{inputs, ...}: {
+{
+  inputs,
+  config,
+  ...
+}: {
   imports = [
-    "${inputs.nixpkgs}/nixos/modules/virtualisation/google-compute-image.nix"
+    inputs.disko.nixosModules.disko
+    (import ./disko-configuration.nix {
+      disks = ["/dev/vda"];
+      zpoolName = config.networking.hostName;
+    })
+
+    ./hardware-configuration.nix
     ../../extra/docker.nix
     ../../secrets
   ];
-  system.stateVersion = "25.05";
+  system.stateVersion = "25.11";
+
+  # Use grub boot loader
+  boot.loader.grub = {
+    enable = true;
+    copyKernels = true;
+    zfsSupport = true;
+  };
+  boot.initrd.supportedFilesystems = ["zfs"];
+  boot.zfs.devNodes = "/dev/disk/by-partuuid";
+  services.zfs.autoScrub.enable = true;
 
   # Hostname and TZ
   networking.hostName = "oculus";
   networking.domain = "whitestrake.net";
+  networking.hostId = "464b2c8a";
   time.timeZone = "Australia/Brisbane";
-
-  # Workaround strange issues with metadata.google.internal routing
-  networking.nameservers = ["1.1.1.1" "8.8.8.8"];
-  networking.timeServers = ["pool.ntp.org"];
-
-  swapDevices = [{device = "/swapfile";}];
 }

@@ -93,7 +93,7 @@
       pascal = "x86_64-linux"; # PVE
       rapier = "x86_64-linux"; # PVE
       sortie = "x86_64-linux"; # PVE
-      oculus = "x86_64-linux"; # GCE
+      oculus = "x86_64-linux"; # VPS
       jaeger = "aarch64-linux"; # OCI
     };
 
@@ -112,7 +112,7 @@
           orthus = "fell-monitor.ts.net";
           pascal = "fell-monitor.ts.net";
           rapier = "fell-monitor.ts.net";
-          # oculus = "fell-monitor.ts.net";
+          oculus = "fell-monitor.ts.net";
         }
         // {
           jaeger = {
