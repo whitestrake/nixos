@@ -94,6 +94,7 @@
       rapier = "x86_64-linux"; # PVE
       sortie = "x86_64-linux"; # PVE
       oculus = "x86_64-linux"; # VPS
+      omnius = "x86_64-linux"; # VPS
       jaeger = "aarch64-linux"; # OCI
     };
 
@@ -113,6 +114,7 @@
           pascal = "fell-monitor.ts.net";
           rapier = "fell-monitor.ts.net";
           oculus = "fell-monitor.ts.net";
+          omnius = "fell-monitor.ts.net";
         }
         // {
           jaeger = {
