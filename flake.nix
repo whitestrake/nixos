@@ -109,7 +109,7 @@
       sshOpts = ["-A"];
       nodes =
         builtins.mapAttrs (name: domain: mkDeployNixos name domain) {
-          brutus = "fell-monitor.ts.net";
+          # brutus = "fell-monitor.ts.net";
           orthus = "fell-monitor.ts.net";
           pascal = "fell-monitor.ts.net";
           rapier = "fell-monitor.ts.net";
