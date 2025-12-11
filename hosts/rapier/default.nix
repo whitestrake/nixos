@@ -35,6 +35,10 @@
   boot.loader.efi.canTouchEfiVariables = true;
   boot.zfs.devNodes = "/dev/disk/by-partuuid";
 
+  boot.kernel.sysctl = {
+    "fs.inotify.max_user_watches" = 2097152;
+  };
+
   # Hostname and TZ
   networking.hostName = "rapier";
   networking.domain = "lab.whitestrake.net";
