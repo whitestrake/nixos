@@ -10,7 +10,8 @@
   boot.kernelParams = ["intel_iommu=on" "i915-sriov.enable_guc=3" "module_blacklist=xe"];
   boot.initrd.kernelModules = ["i915-sriov"];
 
-  # Override the installPhase step to rename the output package to a different package so we can early load the kernel module
+  # Override the installPhase step to rename the output package to
+  # a different package so we can early load the kernel module
   # This has more reliable module loading
   boot.extraModulePackages = [
     (pkgs.i915-sriov.overrideAttrs (super: {
@@ -28,7 +29,12 @@
     enable = true;
     extraPackages = with pkgs; [
       intel-media-driver # LIBVA_DRIVER_NAME=iHD
-      intel-vaapi-driver # LIBVA_DRIVER_NAME=i965
+      intel-compute-runtime # OpenCL/Tone Mapping
+      vpl-gpu-rt # QSV VPL runtime
     ];
+  };
+
+  environment.sessionVariables = {
+    LIBVA_DRIVER_NAME = "iHD";
   };
 }
