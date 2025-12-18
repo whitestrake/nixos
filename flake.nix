@@ -18,15 +18,15 @@
 
   inputs = {
     # Nix packages
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
     # https://github.com/nix-community/home-manager
-    home-manager.url = "github:nix-community/home-manager/release-25.05";
+    home-manager.url = "github:nix-community/home-manager/release-25.11";
     home-manager.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/LnL7/nix-darwin
-    nix-darwin.url = "github:LnL7/nix-darwin/nix-darwin-25.05";
+    nix-darwin.url = "github:LnL7/nix-darwin/nix-darwin-25.11";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/nix-community/NixOS-WSL
@@ -88,7 +88,7 @@
       };
     mkNode = name: domain: {
       hostname = "${name}.${domain}";
-      profiles.system.path = deploy-rs.lib.${self.nixosConfigurations.${name}.pkgs.system}.activate.nixos self.nixosConfigurations.${name};
+      profiles.system.path = deploy-rs.lib.${self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system}.activate.nixos self.nixosConfigurations.${name};
     };
     mkDeploy = nodes: {
       user = "root";
@@ -123,7 +123,7 @@
     nodesBySystem = builtins.foldl' (
       acc: nodeName: let
         node = deployableNodes.${nodeName};
-        system = self.nixosConfigurations.${nodeName}.pkgs.system;
+        system = self.nixosConfigurations.${nodeName}.pkgs.stdenv.hostPlatform.system;
       in
         acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
     ) {} (builtins.attrNames deployableNodes);
@@ -137,7 +137,7 @@
     deploy = mkDeploy deployableNodes;
   in {
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
-      brutus = "x86_64-linux"; # LXC
+      # brutus = "x86_64-linux"; # LXC
       pascal = "x86_64-linux"; # PVE
       rapier = "x86_64-linux"; # PVE
       sortie = "x86_64-linux"; # PVE

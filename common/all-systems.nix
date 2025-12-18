@@ -4,6 +4,7 @@
   ...
 }: {
   nix.settings = {
+    download-buffer-size = 524288000; # 500 MiB
     experimental-features = ["nix-command" "flakes"];
     trusted-users = ["@wheel" "@staff"];
     substituters = [
@@ -29,7 +30,7 @@
     # Add unstable package set to pkgs
     (final: _prev: {
       unstable = import inputs.nixpkgs-unstable {
-        system = final.system;
+        system = final.pkgs.stdenv.hostPlatform.system;
         config.allowUnfree = true;
       };
     })

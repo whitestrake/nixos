@@ -45,14 +45,13 @@
   programs.tealdeer.enableAutoUpdates = true;
 
   # Fix whatever went wrong with the last command
-  programs.thefuck.enable = true;
-  programs.thefuck.enableFishIntegration = true;
+  programs.pay-respects.enable = true;
 
-  programs.git = {
-    enable = true;
-    userName = "whitestrake";
-    userEmail = "git@whitestrake.net";
-    extraConfig.core.fileMode = false;
+  programs.git.enable = true;
+  programs.git.settings = {
+    user.name = "whitestrake";
+    user.email = "git@whitestrake.net";
+    core.fileMode = false;
   };
 
   programs.starship = {
