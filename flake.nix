@@ -101,9 +101,11 @@
     deployableNodes =
       builtins.mapAttrs (name: domain: mkNode name domain) {
         # brutus = "fell-monitor.ts.net";
-        orthus = "fell-monitor.ts.net";
         pascal = "fell-monitor.ts.net";
         rapier = "fell-monitor.ts.net";
+        sortie = "fell-monitor.ts.net";
+
+        orthus = "fell-monitor.ts.net";
         oculus = "fell-monitor.ts.net";
         omnius = "fell-monitor.ts.net";
       }
