@@ -1,47 +1,24 @@
 {
   config,
   pkgs,
-  lib,
   ...
 }: {
-  # }: let
-  #   beszel-next = pkgs.unstable.beszel.overrideAttrs (oldAttrs: rec {
-  #     version = "0.11.1";
-  #     src = pkgs.fetchFromGitHub {
-  #       owner = "henrygd";
-  #       repo = "beszel";
-  #       tag = "v${version}";
-  #       hash = "sha256-tAi48PAHDGIZn/HMsnCq0mLpvFSqUOMocq47hooiFT8=";
-  #     };
-  #     vendorHash = "sha256-B6mOqOgcrRn0jV9wnDgRmBvfw7I/Qy5MNYvTiaCgjBE=";
-  #   });
-  # in {
   imports = [../secrets];
   sops.secrets.beszelEnv = {};
 
-  systemd.services.beszel-agent = {
-    description = "Beszel monitoring agent";
-    after = ["network-online.target"];
-    wants = ["network-online.target"];
-    wantedBy = ["multi-user.target"];
-    serviceConfig = {
-      DynamicUser = true;
-      Restart = "always";
-      EnvironmentFile = config.sops.secrets.beszelEnv.path;
-      ExecStart = "${pkgs.unstable.beszel}/bin/beszel-agent";
-      StateDirectory = "beszel-agent";
-
-      # Security/sandboxing
-      KeyringMode = "private";
-      LockPersonality = "yes";
-      ProtectClock = "yes";
-      ProtectHostname = "yes";
-      ProtectKernelLogs = "yes";
-      ProtectKernelTunables = "yes";
-      SystemCallArchitectures = "native";
-      SupplementaryGroups =
-        lib.optional config.virtualisation.docker.enable "docker"
-        ++ lib.optional config.virtualisation.podman.enable "podman";
-    };
+  services.beszel.agent = {
+    enable = true;
+    environmentFile = config.sops.secrets.beszelEnv.path;
+    package = pkgs.unstable.beszel;
+    # package = pkgs.unstable.beszel.overrideAttrs (oldAttrs: rec {
+    #   version = "0.17.0";
+    #   src = pkgs.fetchFromGitHub {
+    #     owner = "henrygd";
+    #     repo = "beszel";
+    #     tag = "v${version}";
+    #     hash = "sha256-MY/rsWdIiYsqcw6gqDkfA8A/Ied3OSHfJI3KUBxoRKc=";
+    #   };
+    #   vendorHash = "sha256-gfQU3jGwTGmMJIy9KTjk/Ncwpk886vMo4CJvm5Y5xpA=";
+    # });
   };
 }
