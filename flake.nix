@@ -4,15 +4,11 @@
   nixConfig = {
     extra-substituters = [
       "https://cache.garnix.io"
-      "https://cache.nixos.org"
       "https://nix-community.cachix.org"
-      "https://whitestrake.cachix.org"
     ];
     extra-trusted-public-keys = [
       "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-      "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8="
     ];
   };
 
@@ -97,6 +93,16 @@
       inherit nodes;
     };
 
+    # Groups deployable nodes by their system architecture
+    nodesBySystem = deployableNodes:
+      builtins.foldl' (
+        acc: nodeName: let
+          node = deployableNodes.${nodeName};
+          system = self.nixosConfigurations.${nodeName}.pkgs.stdenv.hostPlatform.system;
+        in
+          acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
+      ) {} (builtins.attrNames deployableNodes);
+
     # List of nodes we want to deploy to
     deployableNodes =
       builtins.mapAttrs (name: domain: mkNode name domain) {
@@ -118,23 +124,6 @@
           profiles.system.path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.jaeger;
         };
       };
-
-    # Separates the deployable nodes out by their system
-    nodesBySystem = builtins.foldl' (
-      acc: nodeName: let
-        node = deployableNodes.${nodeName};
-        system = self.nixosConfigurations.${nodeName}.pkgs.stdenv.hostPlatform.system;
-      in
-        acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
-    ) {} (builtins.attrNames deployableNodes);
-
-    # For each distinct system, create the deploy checks only for that system's nodes;
-    # this ensures that deploy-rs does not cross-contaminate checks between different
-    # architectures, letting the deployer do relevant checks instead of skipping or failing
-    checks = builtins.mapAttrs (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes)) nodesBySystem;
-
-    # Add the combined deploy object without separation for CLI use
-    deploy = mkDeploy deployableNodes;
   in {
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
       # brutus = "x86_64-linux"; # LXC
@@ -153,6 +142,12 @@
       andred = "aarch64-darwin"; # MBP
     };
 
-    inherit deploy checks;
+    # For each distinct system, create the deploy checks only for that system's nodes;
+    # this ensures that deploy-rs does not cross-contaminate checks between different
+    # architectures, letting the deployer do relevant checks instead of skipping or failing
+    checks = builtins.mapAttrs (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes)) nodesBySystem;
+
+    # Add the combined deploy object without system separation for CLI use
+    deploy = mkDeploy deployableNodes;
   };
 }
