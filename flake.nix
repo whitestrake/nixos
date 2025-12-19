@@ -82,6 +82,7 @@
           ./common/${system}.nix
         ];
       };
+
     mkNode = name: overrides: let
       domain = "fell-monitor.ts.net";
       system = self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
@@ -91,6 +92,7 @@
       };
     in
       default // overrides;
+
     mkDeploy = nodes: {
       user = "root";
       sshUser = "whitestrake";
@@ -108,29 +110,31 @@
           acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
       ) {} (builtins.attrNames nodeList);
 
-    nodeNames = [
-      # "brutus" # LXC
-      "pascal" # PVE
-      "rapier" # PVE
-      "sortie" # PVE
+    deployableNodes = let
+      nodeNames = [
+        # "brutus" # LXC
+        "pascal" # PVE
+        "rapier" # PVE
+        "sortie" # PVE
 
-      "orthus" # HH
-      "oculus" # HH
-      "omnius" # HH
+        "orthus" # HH
+        "oculus" # HH
+        "omnius" # HH
 
-      "jaeger" # OCI
-    ];
-    nodeOverrides = {
-      jaeger = {
-        remoteBuild = true;
-        interactiveSudo = true;
+        "jaeger" # OCI
+      ];
+      nodeOverrides = {
+        jaeger = {
+          remoteBuild = true;
+          interactiveSudo = true;
+        };
       };
-    };
-    deployableNodes = builtins.listToAttrs (map (name: {
-        name = name;
-        value = mkNode name (nodeOverrides.${name} or {});
-      })
-      nodeNames);
+    in
+      builtins.listToAttrs (map (name: {
+          name = name;
+          value = mkNode name (nodeOverrides.${name} or {});
+        })
+        nodeNames);
   in {
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
       # brutus = "x86_64-linux"; # LXC
@@ -152,7 +156,10 @@
     # For each distinct system, create the deploy checks only for that system's nodes;
     # this ensures that deploy-rs does not cross-contaminate checks between different
     # architectures, letting the deployer do relevant checks instead of skipping or failing
-    checks = builtins.mapAttrs (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes)) (nodesBySystem deployableNodes);
+    checks =
+      builtins.mapAttrs
+      (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes))
+      (nodesBySystem deployableNodes);
 
     # Add the combined deploy object without system separation for CLI use
     deploy = mkDeploy deployableNodes;
