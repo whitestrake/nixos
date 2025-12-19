@@ -82,10 +82,15 @@
           ./common/${system}.nix
         ];
       };
-    mkNode = name: domain: {
-      hostname = "${name}.${domain}";
-      profiles.system.path = deploy-rs.lib.${self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system}.activate.nixos self.nixosConfigurations.${name};
-    };
+    mkNode = name: overrides: let
+      domain = "fell-monitor.ts.net";
+      system = self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
+      default = {
+        hostname = "${name}.${domain}";
+        profiles.system.path = deploy-rs.lib.${system}.activate.nixos self.nixosConfigurations.${name};
+      };
+    in
+      default // overrides;
     mkDeploy = nodes: {
       user = "root";
       sshUser = "whitestrake";
@@ -94,36 +99,38 @@
     };
 
     # Groups deployable nodes by their system architecture
-    nodesBySystem = deployableNodes:
+    nodesBySystem = nodeList:
       builtins.foldl' (
         acc: nodeName: let
-          node = deployableNodes.${nodeName};
+          node = nodeList.${nodeName};
           system = self.nixosConfigurations.${nodeName}.pkgs.stdenv.hostPlatform.system;
         in
           acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
-      ) {} (builtins.attrNames deployableNodes);
+      ) {} (builtins.attrNames nodeList);
 
-    # List of nodes we want to deploy to
-    deployableNodes =
-      builtins.mapAttrs (name: domain: mkNode name domain) {
-        # brutus = "fell-monitor.ts.net";
-        pascal = "fell-monitor.ts.net";
-        rapier = "fell-monitor.ts.net";
-        sortie = "fell-monitor.ts.net";
+    nodeNames = [
+      # "brutus" # LXC
+      "pascal" # PVE
+      "rapier" # PVE
+      "sortie" # PVE
 
-        orthus = "fell-monitor.ts.net";
-        oculus = "fell-monitor.ts.net";
-        omnius = "fell-monitor.ts.net";
-      }
-      // {
-        jaeger = {
-          # Split out so this host can build its own system. Cross compiling is too slow.
-          hostname = "jaeger.fell-monitor.ts.net";
-          remoteBuild = true;
-          interactiveSudo = true;
-          profiles.system.path = deploy-rs.lib.aarch64-linux.activate.nixos self.nixosConfigurations.jaeger;
-        };
+      "orthus" # HH
+      "oculus" # HH
+      "omnius" # HH
+
+      "jaeger" # OCI
+    ];
+    nodeOverrides = {
+      jaeger = {
+        remoteBuild = true;
+        interactiveSudo = true;
       };
+    };
+    deployableNodes = builtins.listToAttrs (map (name: {
+        name = name;
+        value = mkNode name (nodeOverrides.${name} or {});
+      })
+      nodeNames);
   in {
     nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
       # brutus = "x86_64-linux"; # LXC
