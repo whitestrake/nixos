@@ -152,7 +152,7 @@
     # For each distinct system, create the deploy checks only for that system's nodes;
     # this ensures that deploy-rs does not cross-contaminate checks between different
     # architectures, letting the deployer do relevant checks instead of skipping or failing
-    checks = builtins.mapAttrs (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes)) nodesBySystem;
+    checks = builtins.mapAttrs (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes)) (nodesBySystem deployableNodes);
 
     # Add the combined deploy object without system separation for CLI use
     deploy = mkDeploy deployableNodes;
