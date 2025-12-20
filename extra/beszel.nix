@@ -1,6 +1,7 @@
 {
   config,
   pkgs,
+  lib,
   ...
 }: {
   imports = [../secrets];
@@ -20,5 +21,15 @@
       };
       vendorHash = "sha256-gfQU3jGwTGmMJIy9KTjk/Ncwpk886vMo4CJvm5Y5xpA=";
     });
+  };
+  users.users.beszel-agent.isSystemUser = true;
+  users.users.beszel-agent.group = "beszel-agent";
+  users.groups.beszel-agent = {};
+  systemd.services.beszel-agent.serviceConfig = {
+    DynamicUser = lib.mkForce false;
+    Group = "beszel-agent";
+    SupplementaryGroups =
+      ["messagebus"]
+      ++ lib.optionals config.virtualisation.docker.enable ["docker"];
   };
 }
