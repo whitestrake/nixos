@@ -238,8 +238,7 @@
         "nixpkgs-unstable": "nixpkgs-unstable",
         "sops-nix": "sops-nix",
         "vscode-server": "vscode-server",
-        "whitestrake-github-keys": "whitestrake-github-keys",
-        "whitestrake-gitlab-keys": "whitestrake-gitlab-keys"
+        "whitestrake-github-keys": "whitestrake-github-keys"
       }
     },
     "sops-nix": {
@@ -341,18 +340,6 @@
       "original": {
         "type": "file",
         "url": "https://github.com/whitestrake.keys"
-      }
-    },
-    "whitestrake-gitlab-keys": {
-      "flake": false,
-      "locked": {
-        "narHash": "sha256-yAXFueUok2iLWwJD3LoXVwWIJ2cJcT7ujbu/HMDy3nY=",
-        "type": "file",
-        "url": "https://gitlab.com/Whitestrake.keys"
-      },
-      "original": {
-        "type": "file",
-        "url": "https://gitlab.com/Whitestrake.keys"
       }
     }
   },

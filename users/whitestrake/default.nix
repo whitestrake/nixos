@@ -14,10 +14,7 @@
     hashedPasswordFile = config.sops.secrets.whitestrakePassword.path;
     extraGroups = ["wheel" "docker" "www-data" "mediaserver"];
     shell = pkgs.fish;
-    openssh.authorizedKeys.keyFiles = [
-      inputs.whitestrake-github-keys.outPath
-      inputs.whitestrake-gitlab-keys.outPath
-    ];
+    openssh.authorizedKeys.keyFiles = [inputs.whitestrake-github-keys.outPath];
   };
   programs.git.enable = true;
   home-manager = {

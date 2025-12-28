@@ -53,10 +53,6 @@
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
 
-    # GitLab SSH keys
-    whitestrake-gitlab-keys.url = "https://gitlab.com/Whitestrake.keys";
-    whitestrake-gitlab-keys.flake = false;
-
     # Add check_mk https://github.com/NixOS/nixpkgs/pull/399463
     check_mk-pr.url = "github:NixOS/nixpkgs?ref=pull/399463/head";
   };
@@ -72,7 +68,7 @@
     sops-nix,
     ...
   } @ inputs: let
-    # Helpers
+    inherit (nixpkgs) lib;
     mkSystem = function: name: system:
       function {
         inherit system;
@@ -82,86 +78,60 @@
           ./common/${system}.nix
         ];
       };
-
-    mkNode = name: overrides: let
-      domain = "fell-monitor.ts.net";
-      system = self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
-      default = {
-        hostname = "${name}.${domain}";
-        profiles.system.path = deploy-rs.lib.${system}.activate.nixos self.nixosConfigurations.${name};
-      };
-    in
-      default // overrides;
-
+    mkNode = name: meta:
+      {
+        hostname = "${name}.fell-monitor.ts.net";
+        profiles.system.path = deploy-rs.lib.${meta.system}.activate.nixos self.nixosConfigurations.${name};
+      }
+      // (meta.deploy or {});
     mkDeploy = nodes: {
       user = "root";
       sshUser = "whitestrake";
       sshOpts = ["-A"];
       inherit nodes;
     };
+    myNodes = {
+      # PVE
+      pascal = {system = "x86_64-linux";};
+      rapier = {system = "x86_64-linux";};
+      sortie = {system = "x86_64-linux";};
 
-    # Groups deployable nodes by their system architecture
-    nodesBySystem = nodeList:
-      builtins.foldl' (
-        acc: nodeName: let
-          node = nodeList.${nodeName};
-          system = self.nixosConfigurations.${nodeName}.pkgs.stdenv.hostPlatform.system;
-        in
-          acc // {${system} = (acc.${system} or {}) // {${nodeName} = node;};}
-      ) {} (builtins.attrNames nodeList);
+      # HH
+      orthus = {system = "x86_64-linux";};
+      oculus = {system = "x86_64-linux";};
+      omnius = {system = "x86_64-linux";};
 
-    deployableNodes = let
-      nodeNames = [
-        # "brutus" # LXC
-        "pascal" # PVE
-        "rapier" # PVE
-        "sortie" # PVE
-
-        "orthus" # HH
-        "oculus" # HH
-        "omnius" # HH
-
-        "jaeger" # OCI
-      ];
-      nodeOverrides = {
-        jaeger = {
+      # OCI
+      jaeger = {
+        system = "aarch64-linux";
+        deploy = {
           remoteBuild = true;
           interactiveSudo = true;
         };
       };
-    in
-      builtins.listToAttrs (map (name: {
-          name = name;
-          value = mkNode name (nodeOverrides.${name} or {});
-        })
-        nodeNames);
-  in {
-    nixosConfigurations = builtins.mapAttrs (name: system: mkSystem nixpkgs.lib.nixosSystem name system) {
-      # brutus = "x86_64-linux"; # LXC
-      pascal = "x86_64-linux"; # PVE
-      rapier = "x86_64-linux"; # PVE
-      sortie = "x86_64-linux"; # PVE
-
-      orthus = "x86_64-linux"; # HH
-      oculus = "x86_64-linux"; # HH
-      omnius = "x86_64-linux"; # HH
-
-      jaeger = "aarch64-linux"; # OCI
     };
+    deployableNodes = lib.filterAttrs (_: n: (n.deploy or true) != false) myNodes;
+  in {
+    nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta.system) myNodes;
 
-    darwinConfigurations = builtins.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
+    darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
       andred = "aarch64-darwin"; # MBP
     };
 
-    # For each distinct system, create the deploy checks only for that system's nodes;
-    # this ensures that deploy-rs does not cross-contaminate checks between different
-    # architectures, letting the deployer do relevant checks instead of skipping or failing
-    checks =
-      builtins.mapAttrs
-      (system: nodes: deploy-rs.lib.${system}.deployChecks (mkDeploy nodes))
-      (nodesBySystem deployableNodes);
+    # Combined deploy object for CLI
+    deploy = mkDeploy (lib.mapAttrs mkNode deployableNodes);
 
-    # Add the combined deploy object without system separation for CLI use
-    deploy = mkDeploy deployableNodes;
+    # Per-system checks
+    checks = let
+      systems = lib.unique (lib.mapAttrsToList (_: n: n.system) deployableNodes);
+      nodesBySystem = lib.genAttrs systems (
+        system: lib.filterAttrs (_: meta: meta.system == system) deployableNodes
+      );
+    in
+      lib.mapAttrs (
+        system: systemNodes:
+          deploy-rs.lib.${system}.deployChecks (mkDeploy (lib.mapAttrs mkNode systemNodes))
+      )
+      nodesBySystem;
   };
 }
