@@ -1,6 +1,7 @@
 {
   inputs,
   config,
+  pkgs,
   ...
 }: {
   imports = [
@@ -50,5 +51,13 @@
         }
       ];
     }
+  ];
+  environment.systemPackages = with pkgs; [
+    # provide pigz, plzip, lz4c commands for zettarepl
+    pigz
+    plzip
+    (writeShellScriptBin "lz4c" ''
+      exec ${lz4.out}/bin/lz4 "$@"
+    '')
   ];
 }
