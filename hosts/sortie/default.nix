@@ -2,6 +2,7 @@
   inputs,
   config,
   pkgs,
+  myLib,
   ...
 }: {
   imports = [
@@ -15,6 +16,7 @@
 
     ../../extra/docker.nix
     ../../secrets
+    ../../users/mediaserver.nix
   ];
 
   system.stateVersion = "25.05";
@@ -40,50 +42,22 @@
   networking.hostId = "bffd5e86";
   time.timeZone = "Australia/Brisbane";
 
-  # mediaserver user
-  users.users.mediaserver.isSystemUser = true;
-  users.users.mediaserver.group = "mediaserver";
-  users.users.mediaserver.uid = 1001;
-  users.groups.mediaserver.gid = 1001;
-
   sops.secrets."smbCredentials/sortie@tempus" = {};
   fileSystems = let
-    mkCifs = {
-      device,
-      uid,
-      gid ? uid,
-      credentials ? config.sops.secrets."smbCredentials/sortie@tempus".path,
-    }: {
-      device = device;
-      fsType = "cifs";
-      noCheck = true;
-      options = [
-        "soft"
-        "nofail"
-        "_netdev"
-        "x-systemd.automount"
-        "x-systemd.idle-timeout=60"
-        "x-systemd.mount-timeout=5"
-        "x-systemd.device-timeout=5"
-        "file_mode=0660"
-        "dir_mode=0770"
-        "credentials=${credentials}"
-        "uid=${toString uid}"
-        "gid=${toString gid}"
-      ];
-    };
+    credentials = config.sops.secrets."smbCredentials/sortie@tempus".path;
+    uid = config.users.users.mediaserver.uid;
   in {
-    "/mnt/media" = mkCifs {
+    "/mnt/media" = myLib.mkCifs {
       device = "//tempus.lab.whitestrake.net/Media";
-      uid = config.users.users.mediaserver.uid;
+      inherit uid credentials;
     };
-    # "/mnt/plex" = mkCifs {
+    # "/mnt/plex" = myLib.mkCifs {
     #   device = "//tempus.lab.whitestrake.net/Plex";
-    #   uid = config.users.users.mediaserver.uid;
+    #   inherit uid credentials;
     # };
-    # "/mnt/jellyfin" = mkCifs {
+    # "/mnt/jellyfin" = myLib.mkCifs {
     #   device = "//tempus.lab.whitestrake.net/Jellyfin";
-    #   uid = config.users.users.mediaserver.uid;
+    #   inherit uid credentials;
     # };
   };
 }

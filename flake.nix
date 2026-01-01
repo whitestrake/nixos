@@ -69,10 +69,11 @@
     ...
   } @ inputs: let
     inherit (nixpkgs) lib;
+    myLib = import ./lib;
     mkSystem = function: name: system:
       function {
         inherit system;
-        specialArgs = {inherit inputs;};
+        specialArgs = {inherit inputs myLib;};
         modules = [
           ./hosts/${name}
           ./common/${system}.nix

@@ -2,6 +2,7 @@
   config,
   inputs,
   pkgs,
+  myLib,
   ...
 }: {
   imports = [
@@ -12,6 +13,7 @@
     ../../extra/docker.nix
     ../../extra/sensu.nix
     ../../secrets
+    ../../users/mediaserver.nix
   ];
   system.stateVersion = "24.05";
 
@@ -37,44 +39,21 @@
     cifs-utils
   ];
 
-  # mediaserver user
-  users.users.mediaserver.isSystemUser = true;
-  users.users.mediaserver.group = "mediaserver";
-  users.users.mediaserver.uid = 1001;
-  users.groups.mediaserver.gid = 1001;
-
   # Filesystem mounts from Tempus
   sops.secrets."smbCredentials/pascal@tempus" = {};
   fileSystems = let
-    tempus = {
-      fsType = "cifs";
-      noCheck = true;
-      options = [
-        "soft"
-        "nofail"
-        "_netdev"
-        "x-systemd.automount"
-        "x-systemd.idle-timeout=60"
-        "x-systemd.mount-timeout=5"
-        "x-systemd.device-timeout=5"
-        "file_mode=0660"
-        "dir_mode=0770"
-        "credentials=${config.sops.secrets."smbCredentials/pascal@tempus".path}"
-      ];
-    };
+    credentials = config.sops.secrets."smbCredentials/pascal@tempus".path;
   in {
-    "/mnt/media" =
-      tempus
-      // {
-        device = "//tempus.lab.whitestrake.net/Media";
-        options = tempus.options ++ ["uid=1001" "gid=1001"];
-      };
-    "/mnt/nextcloud" =
-      tempus
-      // {
-        device = "//tempus.lab.whitestrake.net/Nextcloud";
-        options = tempus.options ++ ["uid=33" "gid=33"];
-      };
+    "/mnt/media" = myLib.mkCifs {
+      device = "//tempus.lab.whitestrake.net/Media";
+      uid = config.users.users.mediaserver.uid;
+      inherit credentials;
+    };
+    "/mnt/nextcloud" = myLib.mkCifs {
+      device = "//tempus.lab.whitestrake.net/Nextcloud";
+      uid = 33;
+      inherit credentials;
+    };
     "/mnt/downloads" = {
       device = "/dev/disk/by-label/downloads";
       fsType = "ext4";
