@@ -65,12 +65,9 @@
 
   programs.fish = {
     enable = true;
-    # binds.ctrl-c.command = "cancel-commandline"; # not available just yet
+    binds.ctrl-c.command = "cancel-commandline";
     interactiveShellInit = ''
       set fish_greeting
-      for mode in (bind --list-modes)
-        bind -M $mode ctrl-c cancel-commandline
-      end
     '';
     loginShellInit = ''
       if test -d /opt/docker
