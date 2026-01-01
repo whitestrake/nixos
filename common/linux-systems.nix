@@ -24,8 +24,6 @@
   security.pam.sshAgentAuth.enable = true;
   security.pam.services.sudo.sshAgentAuth = true;
 
-  # Allow unfree and configure base system packages
-  nixpkgs.config.allowUnfree = true;
   environment.systemPackages = with pkgs; [
     service-wrapper
     iftop

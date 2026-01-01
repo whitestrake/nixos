@@ -17,8 +17,6 @@
     nerd-fonts.droid-sans-mono
   ];
 
-  # Allow unfree and configure base system packages
-  nixpkgs.config.allowUnfree = true;
   environment.systemPackages = with pkgs; [
     watch
     go
