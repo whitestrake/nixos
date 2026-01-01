@@ -70,6 +70,11 @@
   } @ inputs: let
     inherit (nixpkgs) lib;
     myLib = import ./lib;
+
+    # Build a NixOS or Darwin system configuration
+    # function: nixpkgs.lib.nixosSystem or nix-darwin.lib.darwinSystem
+    # name: hostname, used to find ./hosts/${name} and as the config key
+    # system: architecture string (e.g. "x86_64-linux")
     mkSystem = function: name: system:
       function {
         inherit system;
@@ -79,18 +84,24 @@
           ./common/${system}.nix
         ];
       };
+
+    # Build a deploy-rs node definition from a myNodes entry
+    # Merges any host-specific deploy overrides (remoteBuild, interactiveSudo, etc.)
     mkNode = name: meta:
       {
         hostname = "${name}.fell-monitor.ts.net";
         profiles.system.path = deploy-rs.lib.${meta.system}.activate.nixos self.nixosConfigurations.${name};
       }
       // (meta.deploy or {});
+
+    # Wrap nodes in deploy-rs top-level config with shared SSH settings
     mkDeploy = nodes: {
       user = "root";
       sshUser = "whitestrake";
       sshOpts = ["-A"];
       inherit nodes;
     };
+
     myNodes = {
       # PVE
       pascal = {system = "x86_64-linux";};
@@ -111,6 +122,8 @@
         };
       };
     };
+
+    # Filter out nodes with deploy = false
     deployableNodes = lib.filterAttrs (_: n: (n.deploy or true) != false) myNodes;
   in {
     nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta.system) myNodes;
@@ -119,10 +132,21 @@
       andred = "aarch64-darwin"; # MBP
     };
 
-    # Combined deploy object for CLI
+    # Combined deploy object for CLI: `deploy`
     deploy = mkDeploy (lib.mapAttrs mkNode deployableNodes);
 
-    # Per-system checks
+    # Per-system deploy checks for `nix flake check`
+    #
+    # The default recommended deploy-rs checks put ALL nodes under all systems,
+    # regardless of their actual architecture. This causes `nix flake check` to
+    # fail when it tries to evaluate aarch64 derivations on x86_64 (or vice
+    # versa) without cross-compilation.
+    #
+    # To fix this, we group nodes by their system architecture and generate
+    # separate deployChecks for each group:
+    # 1. Extract unique systems from deployable nodes
+    # 2. Group nodes by their system
+    # 3. Generate deployChecks for each system's nodes only
     checks = let
       systems = lib.unique (lib.mapAttrsToList (_: n: n.system) deployableNodes);
       nodesBySystem = lib.genAttrs systems (
