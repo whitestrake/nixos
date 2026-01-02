@@ -4,17 +4,17 @@
   ...
 }: let
   version = "1.19.5";
-  arch =
-    if pkgs.stdenv.hostPlatform.system == "aarch64-linux"
-    then "aarch64"
-    else "x86_64";
+  arch = pkgs.stdenv.hostPlatform.linuxArch;
   hash =
-    # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
-    if arch == "aarch64"
-    then "sha256-aCsoDaLwm1tsDch9HLURo1yTBnDgCICEU/hppokv4RE=" #aarch64
-    else "sha256-1uics2Avffe2TEPTWJLGQVeBGcJFGWuu0oV9fQeFlHA="; #x86_64
+    {
+      # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
+      aarch64 = "sha256-aCsoDaLwm1tsDch9HLURo1yTBnDgCICEU/hppokv4RE=";
+      x86_64 = "sha256-1uics2Avffe2TEPTWJLGQVeBGcJFGWuu0oV9fQeFlHA=";
+    }.${
+      arch
+    };
 
-  komodo-next = pkgs.stdenv.mkDerivation {
+  komodo-periphery = pkgs.stdenv.mkDerivation {
     pname = "komodo-periphery";
     inherit version;
 
@@ -40,7 +40,7 @@ in {
     path = with pkgs; [bash docker openssl];
     serviceConfig = {
       EnvironmentFile = config.sops.secrets.komodoEnv.path;
-      ExecStart = "${komodo-next}/bin/periphery";
+      ExecStart = "${komodo-periphery}/bin/periphery";
       Restart = "always";
       RestartSec = "5s";
     };
