@@ -20,8 +20,12 @@
   # Enable non-nh based gc
   nix.gc = {
     automatic = true;
-    dates = "weekly";
     options = "--delete-older-than 7d";
+    interval = {
+      Hour = 3;
+      Minute = 15;
+      Weekday = 7;
+    };
   };
 
   environment.systemPackages = with pkgs; [
