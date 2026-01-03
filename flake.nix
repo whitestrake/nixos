@@ -30,8 +30,11 @@
     nixos-wsl.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/serokell/deploy-rs
-    deploy-rs.url = "github:serokell/deploy-rs/refs/pull/271/merge";
-    # deploy-rs.inputs.nixpkgs.follows = "nixpkgs";
+    deploy-rs.url = "github:serokell/deploy-rs";
+    deploy-rs.inputs.nixpkgs.follows = "nixpkgs";
+
+    deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
+    deploy-rs-async.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/Mic92/sops-nix
     sops-nix.url = "github:Mic92/sops-nix";
@@ -65,6 +68,7 @@
     nix-darwin,
     nixos-wsl,
     deploy-rs,
+    deploy-rs-async,
     sops-nix,
     ...
   } @ inputs: let

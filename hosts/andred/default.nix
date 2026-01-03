@@ -14,7 +14,11 @@
   environment.systemPackages = with pkgs; [
     age
     sops
-    inputs.deploy-rs.packages.${stdenv.hostPlatform.system}.deploy-rs
+    deploy-rs
+    (pkgs.runCommand "deploy-rs-async" {} ''
+      mkdir -p $out/bin
+      ln -s ${inputs.deploy-rs-async.packages.${stdenv.hostPlatform.system}.deploy-rs}/bin/deploy $out/bin/deploy-rs-async
+    '')
     alejandra
     nixos-rebuild
     nil
