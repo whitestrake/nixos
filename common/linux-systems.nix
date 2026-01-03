@@ -13,7 +13,8 @@
     ../users/whitestrake
   ];
 
-  # Enable nh based gc
+  # Enable automatic nix optimisation and nh-based gc
+  nix.settings.auto-optimise-store = true;
   programs.nh = {
     enable = true;
     flake = "github:whitestrake/nixos";

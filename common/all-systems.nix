@@ -17,9 +17,6 @@
     ];
   };
 
-  # Enable automatic nix optimisation
-  nix.settings.auto-optimise-store = true;
-
   nixpkgs.overlays = [
     # Add unstable package set to pkgs
     (final: _prev: {

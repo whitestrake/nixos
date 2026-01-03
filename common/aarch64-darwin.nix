@@ -17,16 +17,10 @@
     nerd-fonts.droid-sans-mono
   ];
 
-  # Enable non-nh based gc
-  nix.gc = {
-    automatic = true;
-    options = "--delete-older-than 7d";
-    interval = {
-      Hour = 3;
-      Minute = 15;
-      Weekday = 7;
-    };
-  };
+  # Enable non-nh based gc and optimisation
+  nix.optimise.automatic = true;
+  nix.gc.automatic = true;
+  nix.gc.options = "--delete-older-than 7d";
 
   environment.systemPackages = with pkgs; [
     watch
