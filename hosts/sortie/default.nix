@@ -23,7 +23,6 @@
   environment.systemPackages = with pkgs; [
     sops
     age
-    deploy-rs
     nil
     alejandra
   ];

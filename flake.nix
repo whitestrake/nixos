@@ -30,7 +30,7 @@
     nixos-wsl.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/serokell/deploy-rs
-    deploy-rs.url = "github:serokell/deploy-rs";
+    deploy-rs.url = "github:serokell/deploy-rs/refs/pull/271/merge";
     deploy-rs.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/Mic92/sops-nix
@@ -116,10 +116,7 @@
       # OCI
       jaeger = {
         system = "aarch64-linux";
-        deploy = {
-          remoteBuild = true;
-          interactiveSudo = true;
-        };
+        deploy = {interactiveSudo = true;};
       };
     };
 

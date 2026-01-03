@@ -34,7 +34,7 @@
   environment.systemPackages = with pkgs; [
     sops
     age
-    deploy-rs
+    inputs.deploy-rs.packages.${stdenv.hostPlatform.system}.deploy-rs
     nil
     alejandra
     cifs-utils

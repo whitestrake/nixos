@@ -14,7 +14,7 @@
   environment.systemPackages = with pkgs; [
     age
     sops
-    deploy-rs
+    inputs.deploy-rs.packages.${stdenv.hostPlatform.system}.deploy-rs
     alejandra
     nixos-rebuild
     nil

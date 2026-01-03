@@ -17,6 +17,9 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
+  # Fixes sshAgentAuth for aarch64 systems
+  security.sudo-rs.enable = true;
+
   # Set up xinetd for checkmk
   services.xinetd.enable = true;
   services.xinetd.services = [
