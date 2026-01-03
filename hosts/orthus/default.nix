@@ -1,6 +1,7 @@
 {lib, ...}: {
   imports = [
     ./hardware-configuration.nix
+    ../../users/builder.nix
     ../../extra/docker.nix
     ../../extra/sensu.nix
     ../../secrets

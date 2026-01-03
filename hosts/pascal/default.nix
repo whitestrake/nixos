@@ -14,6 +14,7 @@
     ../../extra/sensu.nix
     ../../secrets
     ../../users/mediaserver.nix
+    ../../users/builder.nix
   ];
   system.stateVersion = "24.05";
 

@@ -16,10 +16,17 @@
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
     ];
   };
-  nix.optimise.automatic = true;
-  nix.gc = {
-    automatic = true;
-    options = "--delete-older-than 30d";
+
+  # Enable automatic nix optimisation and GC
+  nix.settings.auto-optimise-store = true;
+  programs.nh = {
+    enable = true;
+    flake = "github:whitestrake/nixos";
+    clean = {
+      enable = true;
+      dates = "daily";
+      extraArgs = "--keep-since 7d --keep 5";
+    };
   };
 
   nixpkgs.overlays = [

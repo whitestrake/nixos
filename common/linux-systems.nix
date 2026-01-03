@@ -13,6 +13,43 @@
     ../users/whitestrake
   ];
 
+  sops.secrets.nixBuilderKey = {};
+
+  nix.distributedBuilds = true;
+  nix.buildMachines = let
+    protocol = "ssh-ng";
+    sshUser = "builder";
+    sshKey = config.sops.secrets.nixBuilderKey.path;
+    supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
+  in [
+    {
+      inherit protocol sshUser sshKey supportedFeatures;
+      hostName = "jaeger.fell-monitor.ts.net";
+      system = "aarch64-linux";
+      maxJobs = 4;
+      speedFactor = 1;
+      publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
+    }
+    {
+      inherit protocol sshUser sshKey supportedFeatures;
+      hostName = "pascal.fell-monitor.ts.net";
+      system = "x86_64-linux";
+      maxJobs = 8;
+      speedFactor = 2;
+      publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUtnQVdRNElXb1NXQml2aUx4RlMrU0lvenVMMXgyRGQwZHZ6TUJKUS9YQkcgcm9vdEBwYXNjYWw=";
+    }
+    {
+      inherit protocol sshUser sshKey supportedFeatures;
+      hostName = "orthus.fell-monitor.ts.net";
+      system = "x86_64-linux";
+      maxJobs = 4;
+      speedFactor = 1;
+      publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhoYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
+    }
+  ];
+  nix.settings.builders-use-substitutes = true;
+  nix.settings.connect-timeout = 5;
+
   # Allow non-nix executables
   programs.nix-ld.enable = true;
   # programs.nix-ld.libraries = with pkgs; [
