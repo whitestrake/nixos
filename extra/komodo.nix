@@ -4,7 +4,7 @@
   ...
 }: let
   version = "1.19.5";
-  arch = pkgs.stdenv.hostPlatform.linuxArch;
+  arch = pkgs.stdenv.hostPlatform.uname.processor;
   hash =
     {
       # nix hash convert --hash-algo sha256 (nix-prefetch-url $url)
