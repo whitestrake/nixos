@@ -33,8 +33,8 @@
     deploy-rs.url = "github:serokell/deploy-rs";
     deploy-rs.inputs.nixpkgs.follows = "nixpkgs";
 
+    # PR to add support for async build and deploy
     deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
-    deploy-rs-async.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/Mic92/sops-nix
     sops-nix.url = "github:Mic92/sops-nix";
