@@ -17,17 +17,8 @@
     ];
   };
 
-  # Enable automatic nix optimisation and GC
+  # Enable automatic nix optimisation
   nix.settings.auto-optimise-store = true;
-  programs.nh = {
-    enable = true;
-    flake = "github:whitestrake/nixos";
-    clean = {
-      enable = true;
-      dates = "daily";
-      extraArgs = "--keep-since 7d --keep 5";
-    };
-  };
 
   nixpkgs.overlays = [
     # Add unstable package set to pkgs

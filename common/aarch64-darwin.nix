@@ -17,6 +17,13 @@
     nerd-fonts.droid-sans-mono
   ];
 
+  # Enable non-nh based gc
+  nix.gc = {
+    automatic = true;
+    dates = "weekly";
+    options = "--delete-older-than 7d";
+  };
+
   environment.systemPackages = with pkgs; [
     watch
     go

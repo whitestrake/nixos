@@ -13,6 +13,17 @@
     ../users/whitestrake
   ];
 
+  # Enable nh based gc
+  programs.nh = {
+    enable = true;
+    flake = "github:whitestrake/nixos";
+    clean = {
+      enable = true;
+      dates = "daily";
+      extraArgs = "--keep-since 7d --keep 5";
+    };
+  };
+
   sops.secrets.nixBuilderKey = {};
 
   nix.distributedBuilds = true;
