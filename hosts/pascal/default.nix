@@ -35,9 +35,8 @@
     sops
     age
     deploy-rs
-    (pkgs.runCommand "deploy-rs-async" {} ''
-      mkdir -p $out/bin
-      ln -s ${inputs.deploy-rs-async.packages.${stdenv.hostPlatform.system}.deploy-rs}/bin/deploy $out/bin/deploy-rs-async
+    (writeShellScriptBin "deploy-rs-async" ''
+      ${inputs.deploy-rs-async.packages.${stdenv.hostPlatform.system}.deploy-rs}/bin/deploy --remote-build
     '')
     nil
     alejandra
