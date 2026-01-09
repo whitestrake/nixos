@@ -94,7 +94,7 @@
 
   # Tailscale networking
   services.tailscale = {
-    enable = true;
+    enable = lib.mkDefault true;
     package = pkgs.unstable.tailscale;
   };
   # Make tailscaled wait until it has an IP before telling systemd it's ready

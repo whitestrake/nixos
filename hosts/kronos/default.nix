@@ -18,9 +18,10 @@
   # Fix for running Windows binaries (Exec format error)
   environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
 
-  # Turn off the default system monitoring for linux servers
+  # Turn off some server-specific monitoring/networking that aren't needed in WSL
   services.alloy.enable = false;
   services.beszel.agent.enable = false;
+  services.tailscale.enable = false;
 
   services.vscode-server.enable = true;
   environment.systemPackages = with pkgs; [
