@@ -1,8 +1,12 @@
-{pkgs, ...}: {
+{
+  pkgs,
+  lib,
+  ...
+}: {
   home.stateVersion = "23.11";
   home.sessionVariables = {
     COMPOSE_IGNORE_ORPHANS = "True";
-    EDITOR = "helix";
+    EDITOR = lib.mkDefault "helix";
     BAT_PAGING = "never";
     BAT_THEME = "TwoDark";
   };
