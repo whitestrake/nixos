@@ -122,6 +122,12 @@
         system = "aarch64-linux";
         # deploy = {interactiveSudo = true;};
       };
+
+      # WSL
+      kronos = {
+        system = "x86_64-linux";
+        deploy = false;
+      };
     };
 
     # Filter out nodes with deploy = false

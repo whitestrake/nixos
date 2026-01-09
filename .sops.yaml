@@ -1,6 +1,5 @@
 keys:
   - &whitestrake age1uqa0zltnvvruec96wd2c6l8eptyhhtpgp66u7ytzqzsacjfdyfaq2l3vzk
-  - &server_brutus age1mx86k8s50xnrqta0r6nl4al9jz0932qh440hem0ay9z573st4ygqyvxjrw
   - &server_pascal age10lstlywz6fuex8t4yqnauxnlrdh3yyzantew8v55s3dkuh82nv0qw7dtgj
   - &server_jaeger age1q8vglz63674utnk06nv9mq5l97c58845y86zk6wsgcu6gqtazsts29ux69
   - &server_orthus age1unj658ptv0rccvkycxylfegpylar26fv9kzcjr3jj5gg8gu74a9qnl8x2n
@@ -8,12 +7,12 @@ keys:
   - &server_oculus age16yhu223nsa54lt39fhh2caqv7qtpstfrj3vart8jl3tnjz7dceastctmzz
   - &server_sortie age1u332q0gcrflpayta45zcrm6wnqz9zg2l3psx97d4yp0j4pzgssxqvheqht
   - &server_omnius age1jljlxfv5467pwlvwhcgtm8wmjzpvzgyqmz3ud6gzux5aylmsnyrqew63ar
+  - &server_kronos age1gxjw8eat4z38t5yenm5jtdfg22kkgktvsjwrqfjsq4n66e80vqksk37xr2
 creation_rules:
   - path_regex: secrets/secrets\.yaml$
     key_groups:
     - age:
       - *whitestrake
-      - *server_brutus
       - *server_pascal
       - *server_jaeger
       - *server_orthus
@@ -21,3 +20,4 @@ creation_rules:
       - *server_oculus
       - *server_sortie
       - *server_omnius
+      - *server_kronos
