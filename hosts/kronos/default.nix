@@ -11,26 +11,29 @@
   wsl.enable = true;
   wsl.defaultUser = "whitestrake";
 
+  # Explicit ssh-agent enablement in WSL
+  users.users.whitestrake.linger = true;
+  programs.ssh.startAgent = true;
+
   # Fix for running Windows binaries (Exec format error)
   environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
-
-  services.vscode-server.enable = true;
 
   # Turn off the default system monitoring for linux servers
   services.alloy.enable = false;
   services.beszel.agent.enable = false;
 
-  nixpkgs.config.allowUnfree = true;
+  services.vscode-server.enable = true;
   environment.systemPackages = with pkgs; [
     age
     sops
     deploy-rs
-    (writeShellScriptBin "deploy-rs-async" ''
-      ${inputs.deploy-rs-async.packages.${stdenv.hostPlatform.system}.deploy-rs}/bin/deploy --remote-build
-    '')
     alejandra
     nil
   ];
+  environment.shellAliases.deploy-rs-async = let
+    system = pkgs.stdenv.hostPlatform.system;
+    deploy-rs-async = inputs.deploy-rs-async.packages.${system}.deploy-rs;
+  in "${deploy-rs-async}/bin/deploy --remote-build";
 
   networking.hostName = "kronos";
   networking.domain = "whitestrake.net";
