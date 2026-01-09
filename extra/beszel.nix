@@ -8,7 +8,7 @@
   sops.secrets.beszelEnv = {};
 
   services.beszel.agent = {
-    enable = true;
+    enable = lib.mkDefault true;
     environmentFile = config.sops.secrets.beszelEnv.path;
     # package = pkgs.unstable.beszel;
     package = pkgs.beszel.overrideAttrs (oldAttrs: rec {

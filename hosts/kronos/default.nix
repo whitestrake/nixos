@@ -16,6 +16,10 @@
 
   services.vscode-server.enable = true;
 
+  # Turn off the default system monitoring for linux servers
+  services.alloy.enable = false;
+  services.beszel.agent.enable = false;
+
   nixpkgs.config.allowUnfree = true;
   environment.systemPackages = with pkgs; [
     age
