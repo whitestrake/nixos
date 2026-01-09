@@ -4,7 +4,6 @@
     ../../users/builder.nix
 
     ../../extra/docker.nix
-    ../../extra/sensu.nix
     ../../secrets
   ];
   system.stateVersion = "24.05";
