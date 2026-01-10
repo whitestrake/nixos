@@ -6,7 +6,7 @@
   home.stateVersion = "23.11";
   home.sessionVariables = {
     COMPOSE_IGNORE_ORPHANS = "True";
-    EDITOR = lib.mkDefault "helix";
+    EDITOR = lib.mkDefault "hx";
     BAT_PAGING = "never";
     BAT_THEME = "TwoDark";
   };
