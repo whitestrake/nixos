@@ -8,10 +8,9 @@ on:
 jobs:
   nix-flake-update:
     permissions:
+      issues: write
       contents: write
       pull-requests: write
-      id-token: write # needed by determinate-nix-action
-      issues: write # optional, for PR comments/labels
     runs-on: ubuntu-latest
 
     steps:
