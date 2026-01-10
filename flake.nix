@@ -133,6 +133,13 @@
     # Filter out nodes with deploy = false
     deployableNodes = lib.filterAttrs (_: n: (n.deploy or true) != false) myNodes;
   in {
+    # Custom packages for nix-update support
+    packages = let
+      systems = ["x86_64-linux" "aarch64-linux"];
+      pkgsFor = system: import nixpkgs {inherit system;};
+    in
+      lib.genAttrs systems (system: import ./pkgs {pkgs = pkgsFor system;});
+
     nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta.system) myNodes;
 
     darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
