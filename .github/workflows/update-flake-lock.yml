@@ -28,3 +28,6 @@ jobs:
           pr-labels: |
             dependencies
             automated
+          nix-options: |
+            --option commit-lockfile-summary
+            "chore: bump flake.lock"
