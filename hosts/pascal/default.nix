@@ -34,6 +34,7 @@
     sops
     age
     deploy-rs
+    nix-update
     nil
     alejandra
     cifs-utils

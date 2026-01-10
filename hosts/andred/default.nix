@@ -17,6 +17,7 @@
     deploy-rs
     alejandra
     nixos-rebuild
+    nix-update
     nil
   ];
   environment.shellAliases.deploy-rs-async = let

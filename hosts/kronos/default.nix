@@ -30,6 +30,7 @@
     deploy-rs
     alejandra
     nil
+    nix-update
   ];
   environment.shellAliases.deploy-rs-async = let
     system = pkgs.stdenv.hostPlatform.system;

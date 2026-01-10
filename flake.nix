@@ -55,9 +55,6 @@
     # Github SSH keys
     whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
     whitestrake-github-keys.flake = false;
-
-    # Add check_mk https://github.com/NixOS/nixpkgs/pull/399463
-    check_mk-pr.url = "github:NixOS/nixpkgs?ref=pull/399463/head";
   };
 
   outputs = {
@@ -118,10 +115,7 @@
       omnius = {system = "x86_64-linux";};
 
       # OCI
-      jaeger = {
-        system = "aarch64-linux";
-        # deploy = {interactiveSudo = true;};
-      };
+      jaeger = {system = "aarch64-linux";};
 
       # WSL
       kronos = {
