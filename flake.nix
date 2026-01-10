@@ -132,10 +132,12 @@
 
     # Filter out nodes with deploy = false
     deployableNodes = lib.filterAttrs (_: n: (n.deploy or true) != false) myNodes;
+
+    # Extract unique systems from nodes for package/check generation
+    systems = lib.unique (lib.mapAttrsToList (_: n: n.system) myNodes);
   in {
     # Custom packages for nix-update support
     packages = let
-      systems = ["x86_64-linux" "aarch64-linux"];
       pkgsFor = system: import nixpkgs {inherit system;};
     in
       lib.genAttrs systems (system: import ./pkgs {pkgs = pkgsFor system;});
@@ -162,7 +164,6 @@
     # 2. Group nodes by their system
     # 3. Generate deployChecks for each system's nodes only
     checks = let
-      systems = lib.unique (lib.mapAttrsToList (_: n: n.system) deployableNodes);
       nodesBySystem = lib.genAttrs systems (
         system: lib.filterAttrs (_: meta: meta.system == system) deployableNodes
       );

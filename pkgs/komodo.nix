@@ -9,6 +9,7 @@ pkgs.komodo.overrideAttrs (oldAttrs: rec {
   };
   cargoDeps = oldAttrs.cargoDeps.overrideAttrs {
     inherit src;
-    outputHash = "sha256-jf/Jp28g3inGn5jQp3cACdhl//tbXTMc1vP1K3g/CyQ=";
+    outputHash = "sha256-e2nw9DL4dpHOFEYiBoQOCVWKryQp6ZOcwI8w0wJ/HFM=";
+    outputHashMode = "recursive";
   };
 })
