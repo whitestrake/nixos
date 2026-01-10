@@ -1,17 +1,17 @@
 name: "Flake.lock: update Nix dependencies"
 
 on:
-  workflow_dispatch:        # allow manual runs
+  workflow_dispatch: # allow manual runs
   schedule:
-    - cron: "0 12 * * 6"    # every Saturday 12:00 UTC
+    - cron: "0 12 * * 6" # every Saturday 12:00 UTC
 
 jobs:
   nix-flake-update:
     permissions:
       contents: write
       pull-requests: write
-      id-token: write        # needed by determinate-nix-action
-      issues: write          # optional, for PR comments/labels
+      id-token: write # needed by determinate-nix-action
+      issues: write # optional, for PR comments/labels
     runs-on: ubuntu-latest
 
     steps:
@@ -24,10 +24,8 @@ jobs:
       - name: Update flake.lock
         uses: DeterminateSystems/update-flake-lock@main
         with:
+          commit-msg: "chore: bump flake.lock"
           pr-title: "chore: bump flake.lock"
           pr-labels: |
             dependencies
             automated
-          nix-options: |
-            --option commit-lockfile-summary
-            "chore: bump flake.lock"
