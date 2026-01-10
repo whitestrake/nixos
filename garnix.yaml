@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://garnix.io/api/garnix-config-schema.json
+
+builds:
+  exclude: []
+  include:
+    - "*.x86_64-linux.*"
+    - "*.aarch64-linux.*"
+    - homeConfigurations.*
+    - darwinConfigurations.*
+    - nixosConfigurations.*
