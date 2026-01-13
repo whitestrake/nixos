@@ -39,10 +39,6 @@
     alejandra
     cifs-utils
   ];
-  environment.shellAliases.deploy-rs-async = let
-    system = pkgs.stdenv.hostPlatform.system;
-    deploy-rs-async = inputs.deploy-rs-async.packages.${system}.deploy-rs;
-  in "${deploy-rs-async}/bin/deploy --remote-build";
 
   # Filesystem mounts from Tempus
   sops.secrets."smbCredentials/pascal@tempus" = {};

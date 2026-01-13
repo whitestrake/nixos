@@ -20,10 +20,6 @@
     nix-update
     nil
   ];
-  environment.shellAliases.deploy-rs-async = let
-    system = pkgs.stdenv.hostPlatform.system;
-    deploy-rs-async = inputs.deploy-rs-async.packages.${system}.deploy-rs;
-  in "${deploy-rs-async}/bin/deploy --remote-build";
 
   # User configuration
   programs.fish.enable = true;
