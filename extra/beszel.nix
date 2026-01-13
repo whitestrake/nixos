@@ -2,7 +2,6 @@
   config,
   pkgs,
   lib,
-  inputs,
   ...
 }: {
   imports = [../secrets];
@@ -11,7 +10,7 @@
   services.beszel.agent = {
     enable = lib.mkDefault true;
     environmentFile = config.sops.secrets.beszelEnv.path;
-    package = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.beszel;
+    package = pkgs.myPkgs.beszel;
   };
   users.users.beszel-agent.isSystemUser = true;
   users.users.beszel-agent.group = "beszel-agent";

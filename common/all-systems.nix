@@ -18,12 +18,14 @@
   };
 
   nixpkgs.overlays = [
-    # Add unstable package set to pkgs
     (final: _prev: {
+      # Overlay nixpkgs-unstable
       unstable = import inputs.nixpkgs-unstable {
         system = final.pkgs.stdenv.hostPlatform.system;
         config.allowUnfree = true;
       };
+      # Overlay local pkgs
+      myPkgs = import ../pkgs {pkgs = final;};
     })
   ];
 
