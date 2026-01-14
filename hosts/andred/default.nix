@@ -18,6 +18,7 @@
     alejandra
     nixos-rebuild
     nix-update
+    nix-inspect
     nil
   ];
 

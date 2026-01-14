@@ -1,7 +1,6 @@
 {
   inputs,
   config,
-  pkgs,
   myLib,
   ...
 }: {
@@ -20,12 +19,6 @@
   ];
 
   system.stateVersion = "25.05";
-  environment.systemPackages = with pkgs; [
-    sops
-    age
-    nil
-    alejandra
-  ];
 
   # QEMU guest agent
   services.qemuGuest.enable = true;

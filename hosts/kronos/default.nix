@@ -31,6 +31,7 @@
     alejandra
     nil
     nix-update
+    nix-inspect
   ];
 
   networking.hostName = "kronos";

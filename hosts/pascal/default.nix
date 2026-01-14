@@ -35,6 +35,7 @@
     age
     deploy-rs
     nix-update
+    nix-inspect
     nil
     alejandra
     cifs-utils
