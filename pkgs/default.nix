@@ -1,4 +1,4 @@
 {pkgs}: {
-  komodo = import ./komodo.nix {inherit pkgs;};
-  beszel = import ./beszel.nix {inherit pkgs;};
+  komodo = pkgs.callPackage ./komodo.nix {};
+  beszel = pkgs.callPackage ./beszel.nix {};
 }
