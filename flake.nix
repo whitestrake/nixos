@@ -75,14 +75,14 @@
     # Build a NixOS or Darwin system configuration
     # function: nixpkgs.lib.nixosSystem or nix-darwin.lib.darwinSystem
     # name: hostname, used to find ./hosts/${name} and as the config key
-    # system: architecture string (e.g. "x86_64-linux")
-    mkSystem = function: name: system:
+    # meta: node metadata (system, isServer, etc.)
+    mkSystem = function: name: meta:
       function {
-        inherit system;
-        specialArgs = {inherit inputs myLib;};
+        inherit (meta) system;
+        specialArgs = {inherit inputs myLib meta;};
         modules = [
           ./hosts/${name}
-          ./common/${system}.nix
+          ./common/${meta.system}.nix
         ];
       };
 
@@ -120,12 +120,12 @@
       # WSL
       kronos = {
         system = "x86_64-linux";
-        deploy = false;
+        isServer = false;
       };
     };
 
-    # Filter out nodes with deploy = false
-    deployableNodes = lib.filterAttrs (_: n: (n.deploy or true) != false) myNodes;
+    # Filter out nodes with deploy or isServer = false
+    deployableNodes = lib.filterAttrs (_: n: n.deploy or (n.isServer or true)) myNodes;
 
     # Extract unique systems from nodes for package/check generation
     systems = lib.unique (lib.mapAttrsToList (_: n: n.system) myNodes);
@@ -136,7 +136,7 @@
     in
       lib.genAttrs systems (system: import ./pkgs {pkgs = pkgsFor system;});
 
-    nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta.system) myNodes;
+    nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta) myNodes;
 
     darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
       andred = "aarch64-darwin"; # MBP

@@ -2,17 +2,15 @@
   config,
   lib,
   pkgs,
+  meta,
   ...
 }: {
-  imports = [
-    # Default system monitoring
-    ../extra/beszel.nix
-    ../extra/alloy.nix
-    # ../extra/check_mk.nix
-
-    # I've been here the whole time
-    ../users/whitestrake
-  ];
+  imports =
+    [
+      # I've been here the whole time
+      ../users/whitestrake
+    ]
+    ++ lib.optional (meta.isServer or true) ./linux-servers.nix;
 
   # Enable automatic nix optimisation and nh-based gc
   nix.settings.auto-optimise-store = true;
