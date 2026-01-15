@@ -93,6 +93,8 @@
   services.tailscale = {
     enable = lib.mkDefault true;
     package = pkgs.unstable.tailscale;
+    useRoutingFeatures = lib.mkDefault "client";
+    openFirewall = true;
   };
 
   # www-data user

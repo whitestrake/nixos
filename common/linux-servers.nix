@@ -11,7 +11,10 @@
 
   # Allow server hosts to auto register themselves with server tag
   sops.secrets.tailscaleOauthKey = {};
-  services.tailscale.authKeyFile = config.sops.secrets.tailscaleOauthKey.path;
+  services.tailscale = {
+    authKeyFile = config.sops.secrets.tailscaleOauthKey.path;
+    useRoutingFeatures = "both";
+  };
 
   # Make tailscaled wait until it has an IP before telling systemd it's ready
   # Allows services like rsyncd to wait until after tailscaled.service
