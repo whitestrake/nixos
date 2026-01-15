@@ -5,6 +5,6 @@ builds:
   include:
     - "*.x86_64-linux.*"
     - "*.aarch64-linux.*"
-    - homeConfigurations.*
-    - darwinConfigurations.*
+    - "*.aarch64-darwin.*"
     - nixosConfigurations.*
+    - darwinConfigurations.*

@@ -103,7 +103,7 @@
       inherit nodes;
     };
 
-    myNodes = {
+    nixosNodes = {
       # PVE
       pascal = {system = "x86_64-linux";};
       rapier = {system = "x86_64-linux";};
@@ -124,48 +124,33 @@
       };
     };
 
-    # Filter out nodes with deploy or isServer = false
-    deployableNodes = lib.filterAttrs (_: n: n.deploy or (n.isServer or true)) myNodes;
-
-    # Extract unique systems from nodes for package/check generation
-    systems = lib.unique (lib.mapAttrsToList (_: n: n.system) myNodes);
-  in {
-    # Custom packages for nix-update support
-    packages = let
-      pkgsFor = system: import nixpkgs {inherit system;};
-    in
-      lib.genAttrs systems (system: import ./pkgs {pkgs = pkgsFor system;});
-
-    nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta) myNodes;
-
-    darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name {inherit system;}) {
-      andred = "aarch64-darwin"; # MBP
+    darwinNodes = {
+      andred = {system = "aarch64-darwin";}; # MBP
     };
 
-    # Combined deploy object for CLI: `deploy`
+    # Filter out nodes with deploy or isServer = false
+    deployableNodes = lib.filterAttrs (_: n: n.deploy or (n.isServer or true)) nixosNodes;
+
+    # Extract unique systems from nodes for package/check generation
+    systems = lib.unique (lib.mapAttrsToList (_: n: n.system) (nixosNodes // darwinNodes));
+  in {
+    # NixOS Linux hosts
+    nixosConfigurations = lib.mapAttrs (mkSystem nixpkgs.lib.nixosSystem) nixosNodes;
+
+    # Darwin MacOS hosts
+    darwinConfigurations = lib.mapAttrs (mkSystem nix-darwin.lib.darwinSystem) darwinNodes;
+
+    # Output for deploy-rs cli
     deploy = mkDeploy (lib.mapAttrs mkNode deployableNodes);
 
+    # Expose our custom packages for nix-update ease of use
+    packages = lib.genAttrs systems (system: import ./pkgs {pkgs = nixpkgs.legacyPackages.${system};});
+
     # Per-system deploy checks for `nix flake check`
-    #
-    # The default recommended deploy-rs checks put ALL nodes under all systems,
-    # regardless of their actual architecture. This causes `nix flake check` to
-    # fail when it tries to evaluate aarch64 derivations on x86_64 (or vice
-    # versa) without cross-compilation.
-    #
-    # To fix this, we group nodes by their system architecture and generate
-    # separate deployChecks for each group:
-    # 1. Extract unique systems from deployable nodes
-    # 2. Group nodes by their system
-    # 3. Generate deployChecks for each system's nodes only
-    checks = let
-      nodesBySystem = lib.genAttrs systems (
-        system: lib.filterAttrs (_: meta: meta.system == system) deployableNodes
-      );
-    in
-      lib.mapAttrs (
-        system: systemNodes:
-          deploy-rs.lib.${system}.deployChecks (mkDeploy (lib.mapAttrs mkNode systemNodes))
-      )
-      nodesBySystem;
+    # Group nodes by system architecture to avoid cross-compilation failures
+    checks = lib.genAttrs systems (system:
+      deploy-rs.lib.${system}.deployChecks (mkDeploy (
+        lib.mapAttrs mkNode (lib.filterAttrs (_: n: n.system == system) deployableNodes)
+      )));
   };
 }
