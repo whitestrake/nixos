@@ -1,6 +1,8 @@
 {pkgs}:
-pkgs.beszel.overrideAttrs (oldAttrs: rec {
+pkgs.beszel.overrideAttrs (oldAttrs: let
   version = "0.18.2";
+in {
+  inherit version;
   src = pkgs.fetchFromGitHub {
     owner = "henrygd";
     repo = "beszel";
