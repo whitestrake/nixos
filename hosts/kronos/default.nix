@@ -19,8 +19,7 @@
   environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
 
   # Turn off some server-specific monitoring/networking that aren't needed in WSL
-  services.alloy.enable = false;
-  services.beszel.agent.enable = false;
+  host.isServer = false;
   services.tailscale.enable = false;
 
   services.vscode-server.enable = true;

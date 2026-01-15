@@ -8,7 +8,7 @@
   sops.secrets.beszelEnv = {};
 
   services.beszel.agent = {
-    enable = lib.mkDefault true;
+    enable = lib.mkDefault config.host.isServer;
     environmentFile = config.sops.secrets.beszelEnv.path;
     package = pkgs.myPkgs.beszel;
   };

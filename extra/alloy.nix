@@ -6,7 +6,7 @@
   imports = [../secrets];
   sops.secrets.alloyEnv = {};
 
-  services.alloy.enable = lib.mkDefault true;
+  services.alloy.enable = lib.mkDefault config.host.isServer;
   services.alloy.extraFlags = ["--stability.level=public-preview"];
   systemd.services.alloy = {
     environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
