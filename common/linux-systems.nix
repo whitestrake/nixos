@@ -25,8 +25,9 @@
   };
 
   sops.secrets.nixBuilderKey = {};
-
   nix.distributedBuilds = true;
+  nix.settings.connect-timeout = 5;
+  nix.settings.builders-use-substitutes = true;
   nix.buildMachines = let
     protocol = "ssh-ng";
     sshUser = "builder";
@@ -58,8 +59,6 @@
   in
     # Don't include the current host in its own buildMachines list
     lib.filter (x: x.hostName != "${config.networking.hostName}.fell-monitor.ts.net") systems;
-  nix.settings.builders-use-substitutes = true;
-  nix.settings.connect-timeout = 5;
 
   # Allow non-nix executables
   programs.nix-ld.enable = true;
@@ -95,12 +94,6 @@
     enable = lib.mkDefault true;
     package = pkgs.unstable.tailscale;
   };
-  # Make tailscaled wait until it has an IP before telling systemd it's ready
-  # Allows services like rsyncd to wait until after tailscaled.service
-  # https://github.com/tailscale/tailscale/issues/11504
-  systemd.services.tailscaled.serviceConfig.ExecStartPost = ''
-    ${pkgs.coreutils}/bin/timeout 60s ${pkgs.bash}/bin/bash -c 'until ${config.services.tailscale.package}/bin/tailscale status --peers=false; do sleep 1; done'
-  '';
 
   # www-data user
   users.users.www-data.isSystemUser = true;
