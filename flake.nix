@@ -138,7 +138,7 @@
 
     nixosConfigurations = lib.mapAttrs (name: meta: mkSystem nixpkgs.lib.nixosSystem name meta) myNodes;
 
-    darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name system) {
+    darwinConfigurations = lib.mapAttrs (name: system: mkSystem nix-darwin.lib.darwinSystem name {inherit system;}) {
       andred = "aarch64-darwin"; # MBP
     };
 
