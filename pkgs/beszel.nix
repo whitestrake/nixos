@@ -2,6 +2,7 @@
   pkgs,
   lib,
   stdenv,
+  ...
 }:
 pkgs.beszel.overrideAttrs (oldAttrs: let
   version = "0.18.2";

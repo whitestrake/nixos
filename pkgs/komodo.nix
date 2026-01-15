@@ -1,4 +1,4 @@
-{pkgs}:
+{pkgs, ...}:
 pkgs.komodo.overrideAttrs (oldAttrs: let
   version = "1.19.5";
   src = pkgs.fetchFromGitHub {
