@@ -14,6 +14,8 @@
   services.tailscale = {
     authKeyFile = config.sops.secrets.tailscaleOauthKey.path;
     useRoutingFeatures = "both";
+    authKeyParameters.ephemeral = false;
+    extraUpFlags = ["--advertise-tags=tag:server"];
   };
 
   # Make tailscaled wait until it has an IP before telling systemd it's ready
