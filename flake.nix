@@ -70,7 +70,6 @@
     ...
   } @ inputs: let
     inherit (nixpkgs) lib;
-    myLib = import ./lib;
 
     # Build a NixOS or Darwin system configuration
     # function: nixpkgs.lib.nixosSystem or nix-darwin.lib.darwinSystem
@@ -79,7 +78,10 @@
     mkSystem = function: name: meta:
       function {
         inherit (meta) system;
-        specialArgs = {inherit inputs myLib meta;};
+        specialArgs = {
+          inherit inputs meta;
+          lib = lib.extend (final: prev: import ./lib);
+        };
         modules = [
           ./hosts/${name}
           ./common/${meta.system}.nix

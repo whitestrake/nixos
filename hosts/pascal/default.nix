@@ -2,7 +2,7 @@
   config,
   inputs,
   pkgs,
-  myLib,
+  lib,
   ...
 }: {
   imports = [
@@ -46,12 +46,12 @@
   fileSystems = let
     credentials = config.sops.secrets."smbCredentials/pascal@tempus".path;
   in {
-    "/mnt/media" = myLib.mkCifs {
+    "/mnt/media" = lib.mkCifs {
       device = "//tempus.lab.whitestrake.net/Media";
       uid = config.users.users.mediaserver.uid;
       inherit credentials;
     };
-    "/mnt/nextcloud" = myLib.mkCifs {
+    "/mnt/nextcloud" = lib.mkCifs {
       device = "//tempus.lab.whitestrake.net/Nextcloud";
       uid = 33;
       inherit credentials;

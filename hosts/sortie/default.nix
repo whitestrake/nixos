@@ -1,7 +1,7 @@
 {
   inputs,
   config,
-  myLib,
+  lib,
   ...
 }: {
   imports = [
@@ -39,15 +39,15 @@
     credentials = config.sops.secrets."smbCredentials/sortie@tempus".path;
     uid = config.users.users.mediaserver.uid;
   in {
-    "/mnt/media" = myLib.mkCifs {
+    "/mnt/media" = lib.mkCifs {
       device = "//tempus.lab.whitestrake.net/Media";
       inherit uid credentials;
     };
-    # "/mnt/plex" = myLib.mkCifs {
+    # "/mnt/plex" = lib.mkCifs {
     #   device = "//tempus.lab.whitestrake.net/Plex";
     #   inherit uid credentials;
     # };
-    # "/mnt/jellyfin" = myLib.mkCifs {
+    # "/mnt/jellyfin" = lib.mkCifs {
     #   device = "//tempus.lab.whitestrake.net/Jellyfin";
     #   inherit uid credentials;
     # };
