@@ -10,6 +10,10 @@
   ];
   sops.secrets.atticEnv = {};
 
+  environment.systemPackages = [
+    inputs.attic.packages.${pkgs.system}.attic-client
+  ];
+
   # Atticd server configuration
   services.atticd = {
     enable = true;

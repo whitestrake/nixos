@@ -5,12 +5,12 @@
     extra-substituters = [
       "https://cache.garnix.io"
       "https://nix-community.cachix.org"
-      # "https://attic.whitestrake.net/main"
+      "https://omnius.fell-monitor.ts.net/main"
     ];
     extra-trusted-public-keys = [
       "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      # "main:<PUBLIC_KEY_PLACEHOLDER>"
+      "main:42/nvNP0yFzXsXoIvbI8WmaofHgNYN3LAYNtzfE+Yw8="
     ];
   };
 
@@ -48,7 +48,6 @@
 
     # https://github.com/zhaofengli/attic
     attic.url = "github:zhaofengli/attic";
-    attic.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/nix-community/disko
     disko.url = "github:nix-community/disko/latest";
