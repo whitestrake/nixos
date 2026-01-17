@@ -46,7 +46,7 @@
 
   # Set directory ownership before service starts
   systemd.tmpfiles.rules = [
-    "Z /storage/atticd 0750 atticd atticd -"
+    "dZ /storage/atticd 0750 atticd atticd -"
   ];
 
   # Reverse proxy configuration
