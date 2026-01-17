@@ -2,6 +2,7 @@
   inputs,
   config,
   pkgs,
+  lib,
   ...
 }: {
   imports = [
@@ -34,6 +35,19 @@
       };
     };
   };
+
+  # Static user/group for atticd to write to storage
+  users.users.atticd.isSystemUser = true;
+  users.users.atticd.group = "atticd";
+  users.groups.atticd = {};
+  systemd.services.atticd.serviceConfig = {
+    DynamicUser = lib.mkForce false;
+  };
+
+  # Set directory ownership before service starts
+  systemd.tmpfiles.rules = [
+    "Z /storage/atticd 0750 atticd atticd -"
+  ];
 
   # Reverse proxy configuration
   services.caddy.virtualHosts."attic.whitestrake.net".extraConfig = ''
