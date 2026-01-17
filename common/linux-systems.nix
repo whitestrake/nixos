@@ -53,7 +53,7 @@
         inherit protocol sshUser sshKey supportedFeatures maxJobs;
         hostName = "orthus.fell-monitor.ts.net";
         system = "x86_64-linux";
-        publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhoYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
+        publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
       }
     ];
   in
