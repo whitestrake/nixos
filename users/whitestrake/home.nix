@@ -57,6 +57,7 @@
     user.name = "whitestrake";
     user.email = "git@whitestrake.net";
     core.fileMode = false;
+    pull.rebase = true;
   };
 
   programs.starship = {
