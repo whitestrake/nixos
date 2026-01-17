@@ -35,4 +35,7 @@
       };
     };
   };
+
+  # Allow atticd to write to the database directory (not just storage.path)
+  systemd.services.atticd.serviceConfig.ReadWritePaths = ["/storage/atticd"];
 }
