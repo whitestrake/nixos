@@ -22,9 +22,16 @@ jobs:
 
       - name: Update flake.lock
         uses: DeterminateSystems/update-flake-lock@main
+        id: update
         with:
           commit-msg: "chore: bump flake.lock"
           pr-title: "chore: bump flake.lock"
           pr-labels: |
             dependencies
             automated
+
+      - name: Enable auto-merge
+        if: steps.update.outputs.pull-request-number != ''
+        run: gh pr merge "${{ steps.update.outputs.pull-request-number }}" --auto --rebase
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
