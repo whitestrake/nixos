@@ -20,13 +20,12 @@
     enable = true;
     environmentFile = config.sops.secrets.atticEnv.path;
 
-    storage = {
-      type = "local";
-      path = "/storage/atticd";
-    };
-
     settings = {
       listen = "[::1]:8080";
+      storage = {
+        type = "local";
+        path = "/storage/atticd";
+      };
       chunking = {
         nar-size-threshold = 64 * 1024; # 64 KiB
         min-size = 16 * 1024; # 16 KiB
