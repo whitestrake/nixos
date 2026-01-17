@@ -5,10 +5,12 @@
     extra-substituters = [
       "https://cache.garnix.io"
       "https://nix-community.cachix.org"
+      # "https://attic.whitestrake.net/main"
     ];
     extra-trusted-public-keys = [
       "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      # "main:<PUBLIC_KEY_PLACEHOLDER>"
     ];
   };
 
@@ -43,6 +45,10 @@
     # https://github.com/nix-community/nixos-vscode-server
     vscode-server.url = "github:nix-community/nixos-vscode-server";
     vscode-server.inputs.nixpkgs.follows = "nixpkgs";
+
+    # https://github.com/zhaofengli/attic
+    attic.url = "github:zhaofengli/attic";
+    attic.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/nix-community/disko
     disko.url = "github:nix-community/disko/latest";
