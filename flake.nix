@@ -159,5 +159,8 @@
       deploy-rs.lib.${system}.deployChecks (mkDeploy (
         lib.mapAttrs mkNode (lib.filterAttrs (_: n: n.system == system) deployableNodes)
       )));
+
+    # CI target for nix-fast-build
+    ci = lib.mapAttrs (name: conf: conf.config.system.build.toplevel) self.nixosConfigurations // self.packages.x86_64-linux // self.checks.x86_64-linux;
   };
 }
