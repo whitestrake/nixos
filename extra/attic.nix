@@ -8,13 +8,13 @@
     inputs.attic.nixosModules.atticd
     ../secrets
   ];
+  sops.secrets.atticEnv = {};
 
   # Atticd server configuration
   services.atticd = {
     enable = true;
 
     # Credentials file with ATTIC_SERVER_TOKEN_RS256_SECRET_BASE64
-    sops.secrets.atticEnv = {};
     environmentFile = config.sops.secrets.atticEnv.path;
 
     settings = {
