@@ -26,35 +26,35 @@
 
   sops.secrets.nixBuilderKey = {};
   nix.distributedBuilds = true;
-  nix.settings.connect-timeout = 5;
   nix.settings.builders-use-substitutes = true;
   nix.buildMachines = let
-    protocol = "ssh-ng";
-    sshUser = "builder";
-    maxJobs = 4;
-    sshKey = config.sops.secrets.nixBuilderKey.path;
-    supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
-    systems = [
+    mkMachine = attrs:
       {
-        inherit protocol sshUser sshKey supportedFeatures maxJobs;
+        protocol = "ssh-ng";
+        sshUser = "builder";
+        sshKey = config.sops.secrets.nixBuilderKey.path;
+        maxJobs = 4;
+        supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
+      }
+      // attrs;
+    systems = [
+      (mkMachine {
         hostName = "jaeger.fell-monitor.ts.net";
         system = "aarch64-linux";
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
-      }
-      {
-        inherit protocol sshUser sshKey supportedFeatures;
+      })
+      (mkMachine {
         hostName = "pascal.fell-monitor.ts.net";
         system = "x86_64-linux";
-        maxJobs = 8;
-        speedFactor = 2;
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUtnQVdRNElXb1NXQml2aUx4RlMrU0lvenVMMXgyRGQwZHZ6TUJKUS9YQkcgcm9vdEBwYXNjYWw=";
-      }
-      {
-        inherit protocol sshUser sshKey supportedFeatures maxJobs;
+        speedFactor = 2;
+        maxJobs = 8;
+      })
+      (mkMachine {
         hostName = "orthus.fell-monitor.ts.net";
         system = "x86_64-linux";
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
-      }
+      })
     ];
   in
     # Don't include the current host in its own buildMachines list

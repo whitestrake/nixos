@@ -26,6 +26,12 @@ in
 
     passthru = caddyWithPlugins.passthru or {};
 
+    meta =
+      (caddyWithPlugins.meta or {})
+      // {
+        mainProgram = "caddy";
+      };
+
     buildCommand = ''
       cp -a ${caddyWithPlugins} $out
       chmod -R u+w $out
