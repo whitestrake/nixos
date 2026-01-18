@@ -22,7 +22,7 @@
     environmentFile = config.sops.secrets.atticEnv.path;
 
     settings = {
-      listen = "[::1]:8080";
+      listen = "127.0.0.1:8080";
       storage = {
         type = "local";
         path = "/storage/atticd";
@@ -51,6 +51,6 @@
 
   # Reverse proxy configuration
   services.caddy.virtualHosts."attic.whitestrake.net".extraConfig = ''
-    reverse_proxy localhost:8080
+    reverse_proxy 127.0.0.1:8080
   '';
 }
