@@ -23,6 +23,14 @@
       NETRONOME__AGENT_DISK_EXCLUDES = lib.mkDefault "";
     };
 
+    path = with pkgs; [
+      iperf3
+      librespeed-cli
+      traceroute
+      mtr
+      vnstat
+    ];
+
     serviceConfig = {
       Type = "simple";
       ExecStart = "${pkgs.myPkgs.netronome}/bin/netronome agent";
