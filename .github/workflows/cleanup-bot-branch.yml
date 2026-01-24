@@ -1,0 +1,26 @@
+name: "Delete merged bot branches"
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    permissions:
+      contents: write
+    # Only run if:
+    # 1. PR was actually merged (not just closed)
+    # 2. Head branch is in the same repo (not a fork)
+    # 3. Branch name matches your bot's pattern
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'update_flake_lock_action'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X DELETE \
+            repos/${{ github.repository }}/git/refs/heads/${{ github.event.pull_request.head.ref }}
