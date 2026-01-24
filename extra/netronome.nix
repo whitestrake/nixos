@@ -18,7 +18,6 @@
       NETRONOME__AGENT_HOST = lib.mkDefault "0.0.0.0";
       NETRONOME__AGENT_PORT = lib.mkDefault "8200";
       NETRONOME__AGENT_INTERFACE = lib.mkDefault "";
-      NETRONOME__AGENT_API_KEY = lib.mkDefault "";
       NETRONOME__AGENT_DISK_INCLUDES = lib.mkDefault "";
       NETRONOME__AGENT_DISK_EXCLUDES = lib.mkDefault "";
     };
