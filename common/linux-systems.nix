@@ -37,24 +37,26 @@
         supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
       }
       // attrs;
-    systems = [
-      (mkMachine {
+    systems = map mkMachine [
+      {
         hostName = "jaeger.fell-monitor.ts.net";
         system = "aarch64-linux";
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
-      })
-      (mkMachine {
-        hostName = "pascal.fell-monitor.ts.net";
-        system = "x86_64-linux";
-        publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUtnQVdRNElXb1NXQml2aUx4RlMrU0lvenVMMXgyRGQwZHZ6TUJKUS9YQkcgcm9vdEBwYXNjYWw=";
-        speedFactor = 2;
-        maxJobs = 8;
-      })
-      (mkMachine {
+      }
+      # Disabled per https://github.com/NixOS/nix/issues/10740
+      # Only leaving one builder per arch at this time
+      # {
+      #   hostName = "pascal.fell-monitor.ts.net";
+      #   system = "x86_64-linux";
+      #   publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUtnQVdRNElXb1NXQml2aUx4RlMrU0lvenVMMXgyRGQwZHZ6TUJKUS9YQkcgcm9vdEBwYXNjYWw=";
+      #   speedFactor = 2;
+      #   maxJobs = 8;
+      # }
+      {
         hostName = "orthus.fell-monitor.ts.net";
         system = "x86_64-linux";
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
-      })
+      }
     ];
   in
     # Don't include the current host in its own buildMachines list
