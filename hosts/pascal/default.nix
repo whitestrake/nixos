@@ -61,4 +61,8 @@
       fsType = "ext4";
     };
   };
+
+  networking.firewall.trustedInterfaces = [
+    "netronome0" # Netronome container to agent communication
+  ];
 }
