@@ -18,6 +18,7 @@
 
   home.packages = with pkgs; [
     nix-search-cli
+    nixos-rebuild
     ffmpeg
     yt-dlp
     bat
@@ -80,6 +81,22 @@
         cd /opt/docker
       end
     '';
+    functions = {
+      nrr = {
+        description = "Remote nixos-rebuild with SSH agent forwarding";
+        body = ''
+          if test (count $argv) -lt 1
+            echo "Usage: nrr HOST [COMMAND]" >&2
+            return 1
+          end
+          set -l CMD switch
+          if test (count $argv) -gt 1
+            set CMD $argv[2]
+          end
+          NIX_SSHOPTS="-A" nixos-rebuild --flake .#$argv[1] --target-host $argv[1] --build-host $argv[1] --sudo $CMD
+        '';
+      };
+    };
   };
 
   programs.helix = {
