@@ -23,8 +23,9 @@
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
   networking.firewall.trustedInterfaces = [
-    "beszel0" # Beszel container to agent communication
-    "komodo0" # Komodo container to agent communication
-    "checkmk0" # Checkmk container to agent communication
+    # Docker container to agent communication
+    "beszel0"
+    "komodo0"
+    "dockhand0"
   ];
 }
