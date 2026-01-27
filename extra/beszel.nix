@@ -12,16 +12,20 @@
     environmentFile = config.sops.secrets.beszelEnv.path;
     package = pkgs.myPkgs.beszel;
   };
+
   users.users.beszel-agent.isSystemUser = true;
   users.users.beszel-agent.group = "beszel-agent";
   users.groups.beszel-agent = {};
-  systemd.services.beszel-agent.environment.SYSTEM_NAME =
-    lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
-  systemd.services.beszel-agent.serviceConfig = {
-    DynamicUser = lib.mkForce false;
-    Group = "beszel-agent";
-    SupplementaryGroups =
-      ["messagebus"]
-      ++ lib.optionals config.virtualisation.docker.enable ["docker"];
+
+  systemd.services.beszel-agent = {
+    environment.SYSTEM_NAME =
+      lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
+    serviceConfig = {
+      DynamicUser = lib.mkForce false;
+      Group = "beszel-agent";
+      SupplementaryGroups =
+        ["messagebus"]
+        ++ lib.optionals config.virtualisation.docker.enable ["docker"];
+    };
   };
 }
