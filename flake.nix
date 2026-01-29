@@ -36,6 +36,10 @@
     # PR to add support for async build and deploy
     deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
 
+    # https://github.com/cachix/cachix-deploy-flake
+    cachix-deploy.url = "github:cachix/cachix-deploy-flake";
+    cachix-deploy.inputs.nixpkgs.follows = "nixpkgs";
+
     # https://github.com/Mic92/sops-nix
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
@@ -69,6 +73,7 @@
     nixos-wsl,
     deploy-rs,
     deploy-rs-async,
+    cachix-deploy,
     sops-nix,
     ...
   } @ inputs: let

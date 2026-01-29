@@ -7,8 +7,8 @@
 }: {
   imports =
     [
-      # I've been here the whole time
       ../users/whitestrake
+      ../extra/cachix-deploy.nix
     ]
     ++ lib.optional (meta.isServer or true) ./linux-servers.nix;
 
