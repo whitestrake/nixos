@@ -57,4 +57,21 @@
       inherit uid credentials;
     };
   };
+
+  nixpkgs.overlays = [
+    (final: prev: {
+      # Update dhcpcd to 10.3.0
+      # https://github.com/NetworkConfiguration/dhcpcd/issues/508
+      # https://github.com/NixOS/nixpkgs/pull/465812
+      dhcpcd = prev.dhcpcd.overrideAttrs (oldAttrs: rec {
+        version = "10.3.0";
+        src = final.fetchFromGitHub {
+          owner = "NetworkConfiguration";
+          repo = "dhcpcd";
+          rev = "v${version}";
+          sha256 = "sha256-XbXZkws1eHvN7OEq7clq2kziwwdk04lNrWbJ9RdHExU=";
+        };
+      });
+    })
+  ];
 }
