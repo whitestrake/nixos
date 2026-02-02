@@ -30,6 +30,7 @@
     duplicacy
     zulu
     samba
+    cacert
   ];
 
   # Add shells to /etc/shells so that they can be selected for by users
@@ -48,6 +49,7 @@
     ];
     casks = [
       "music-decoy"
+      "finetune"
       "visual-studio-code"
       "iina"
       "raycast"
@@ -56,6 +58,12 @@
       "soduto"
       "kando"
     ];
+  };
+
+  environment.variables = {
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    CURL_CA_BUNDLE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+    NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
 
   # Auto upgrade nix package and the daemon service.

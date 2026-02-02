@@ -29,8 +29,13 @@
   users.users.whitestrake.home = "/Users/whitestrake";
   home-manager.users.whitestrake = {lib, ...}: {
     imports = [../../users/whitestrake/home.nix];
-    home.sessionVariables.EDITOR = "code"; # VS Code
-    home.sessionVariables.CLICOLOR = "1"; # Enable colours in terminal outputs
-    home.shellAliases.tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+    home.sessionVariables = {
+      EDITOR = "antigravity"; # Antigravity
+      CLICOLOR = "1"; # Enable colours in terminal outputs
+    };
+    home.shellAliases = {
+      tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+      agy = "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity";
+    };
   };
 }
