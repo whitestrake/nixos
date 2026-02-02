@@ -22,7 +22,6 @@
       lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
     serviceConfig = {
       DynamicUser = lib.mkForce false;
-      Group = "beszel-agent";
       SupplementaryGroups =
         ["messagebus"]
         ++ lib.optionals config.virtualisation.docker.enable ["docker"];

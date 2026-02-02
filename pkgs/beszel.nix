@@ -5,16 +5,16 @@
   ...
 }:
 pkgs.beszel.overrideAttrs (oldAttrs: let
-  version = "0.18.2";
+  version = "0.18.3";
 in {
   inherit version;
   src = pkgs.fetchFromGitHub {
     owner = "henrygd";
     repo = "beszel";
     tag = "v${version}";
-    hash = "sha256-7jXhlstGuQc3EP4fm5k9FD22nge0ecXVZAk8mXdyKc0=";
+    hash = "sha256-/rFVH3kWf9OB3/iJNOARG85y1WH03hW8LvsIRzq1vnU=";
   };
-  vendorHash = "sha256-OnCX/0DGtkcACuWxGfIreS6SSx9dKq+feWKSymtkABs=";
+  vendorHash = "sha256-O5gFpQ90AQFSAidPTWPrODZ4LWuwrOMpzEH/8HrjBig=";
 
   # Add checkFlags specifically for Darwin to bypass sandbox network restrictions
   checkFlags =
