@@ -11,21 +11,13 @@
     enable = lib.mkDefault true;
     package = pkgs.myPkgs.beszel;
     environmentFile = config.sops.secrets.beszelEnv.path;
+    environment.SYSTEM_NAME = lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
   };
 
   # Set static user to allow receiving dbus rule
   users.users.beszel-agent.isSystemUser = true;
   users.users.beszel-agent.group = "beszel-agent";
   users.groups.beszel-agent = {};
-
-  systemd.services.beszel-agent = {
-    environment = {
-      SYSTEM_NAME = lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
-    };
-    serviceConfig = {
-      SupplementaryGroups = lib.optionals config.virtualisation.docker.enable ["docker"];
-    };
-  };
 
   # dbus rule to allow ListUnits
   services.dbus.packages = [
