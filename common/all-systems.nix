@@ -3,6 +3,7 @@
   inputs,
   config,
   lib,
+  unstable,
   ...
 }: {
   nix.settings = {
@@ -22,10 +23,7 @@
   nixpkgs.overlays = [
     (final: prev: {
       # Overlay nixpkgs-unstable
-      unstable = import inputs.nixpkgs-unstable {
-        system = final.pkgs.stdenv.hostPlatform.system;
-        config.allowUnfree = true;
-      };
+      inherit unstable;
 
       # Overlay local pkgs
       myPkgs = import ../pkgs {pkgs = final;};
