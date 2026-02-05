@@ -4,4 +4,5 @@
   beszel = pkgs.callPackage ./beszel.nix {};
   hawser = pkgs.callPackage ./hawser.nix {};
   netronome = pkgs.callPackage ./netronome.nix {};
+  lz4 = pkgs.callPackage ./lz4.nix {};
 }

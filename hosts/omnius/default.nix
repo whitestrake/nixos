@@ -58,12 +58,6 @@
     # provide pigz, plzip, lz4c commands for zettarepl
     pigz
     plzip
-    (lz4.overrideAttrs (old: {
-      postInstall =
-        (old.postInstall or "")
-        + ''
-          ln -s lz4 $out/bin/lz4c
-        '';
-    }))
+    myPkgs.lz4
   ];
 }
