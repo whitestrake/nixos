@@ -83,6 +83,7 @@
         inherit (meta) system;
         specialArgs = {
           inherit inputs meta;
+          unstable = unstablePkgs.${meta.system};
           lib = lib.extend (final: prev: import ./lib);
         };
         modules = [
@@ -138,6 +139,13 @@
 
     # Extract unique systems from nodes for package/check generation
     systems = lib.unique (lib.mapAttrsToList (_: n: n.system) (nixosNodes // darwinNodes));
+
+    # Instantiate unstable nixpkgs for each system once, to be passed to modules
+    unstablePkgs = lib.genAttrs systems (system:
+      import nixpkgs-unstable {
+        inherit system;
+        config.allowUnfree = true;
+      });
   in {
     # NixOS Linux hosts
     nixosConfigurations = lib.mapAttrs (mkSystem nixpkgs.lib.nixosSystem) nixosNodes;
