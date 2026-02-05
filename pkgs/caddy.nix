@@ -33,7 +33,7 @@ in
       };
 
     buildCommand = ''
-      cp -a ${caddyWithPlugins} $out
-      chmod -R u+w $out
+      mkdir -p $out
+      ln -s ${caddyWithPlugins}/* $out/
     '';
   }
