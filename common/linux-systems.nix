@@ -24,6 +24,13 @@
     };
   };
 
+  nixpkgs.overlays = [
+    (final: prev: {
+      # Bump the dhcpcd version
+      dhcpcd = final.unstable.dhcpcd;
+    })
+  ];
+
   sops.secrets.nixBuilderKey = {};
   nix.distributedBuilds = true;
   nix.settings.builders-use-substitutes = true;
