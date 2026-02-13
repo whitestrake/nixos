@@ -3,7 +3,6 @@
   config,
   ...
 }: {
-  imports = [../secrets];
   sops.secrets.komodoEnv = {};
 
   systemd.services.komodo-periphery = {

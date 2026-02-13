@@ -15,7 +15,6 @@
     ../../extra/docker.nix
     ../../extra/attic.nix
     ../../extra/hawser.nix
-    ../../secrets
   ];
   system.stateVersion = "25.11";
 

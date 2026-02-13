@@ -7,7 +7,6 @@
 }: {
   imports = [
     inputs.attic.nixosModules.atticd
-    ../secrets
     ./caddy.nix
   ];
 

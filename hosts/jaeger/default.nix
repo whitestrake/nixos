@@ -2,9 +2,7 @@
   imports = [
     ./hardware-configuration.nix
     ../../users/builder.nix
-
     ../../extra/docker.nix
-    ../../secrets
   ];
   system.stateVersion = "24.05";
 

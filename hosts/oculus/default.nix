@@ -12,7 +12,6 @@
 
     ./hardware-configuration.nix
     ../../extra/docker.nix
-    ../../secrets
   ];
   system.stateVersion = "25.11";
 

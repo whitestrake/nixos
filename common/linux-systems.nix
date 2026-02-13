@@ -7,7 +7,7 @@
 }: {
   imports =
     [
-      # I've been here the whole time
+      ../secrets
       ../users/whitestrake
     ]
     ++ lib.optional (meta.isServer or true) ./linux-servers.nix;

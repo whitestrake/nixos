@@ -7,7 +7,6 @@
     ../extra/beszel.nix
     ../extra/alloy.nix
     ../extra/netronome.nix
-    ../secrets
   ];
 
   # Allow server hosts to auto register themselves with server tag

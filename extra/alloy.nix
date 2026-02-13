@@ -3,7 +3,6 @@
   lib,
   ...
 }: {
-  imports = [../secrets];
   sops.secrets.alloyEnv = {};
 
   services.alloy.enable = lib.mkDefault true;

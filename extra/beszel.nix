@@ -6,7 +6,6 @@
   ...
 }: {
   imports = [
-    ../secrets
     # Use beszel-agent module from PR #461327 (systemd monitoring support)
     "${inputs.nixpkgs-beszel-pr}/nixos/modules/services/monitoring/beszel-agent.nix"
   ];

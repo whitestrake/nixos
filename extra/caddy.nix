@@ -3,7 +3,6 @@
   pkgs,
   ...
 }: {
-  imports = [../secrets];
   sops.secrets.caddyEnv = {};
 
   services.caddy = {

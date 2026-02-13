@@ -14,7 +14,6 @@
     ../../extra/i915-sriov.nix
 
     ../../extra/docker.nix
-    ../../secrets
     ../../users/mediaserver.nix
   ];
 

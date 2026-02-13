@@ -4,7 +4,6 @@
   config,
   ...
 }: {
-  imports = [../secrets];
   sops.secrets."hawser/server_url" = {};
   sops.secrets."hawser/token_${config.networking.hostName}" = {};
   sops.templates."hawserEnv" = {
