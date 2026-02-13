@@ -34,7 +34,8 @@
             send_destination="org.freedesktop.systemd1"
             send_type="method_call"
             send_path="/org/freedesktop/systemd1"
-            send_member="org.freedesktop.systemd1.Manager.ListUnits"
+            send_interface="org.freedesktop.systemd1.Manager"
+            send_member="ListUnits"
           />
         </policy>
       </busconfig>
