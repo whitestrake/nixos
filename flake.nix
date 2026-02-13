@@ -36,6 +36,11 @@
     # PR to add support for async build and deploy
     deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
 
+    # PR: nixos/beszel-agent: Enable systemd monitoring
+    # https://github.com/NixOS/nixpkgs/pull/461327
+    nixpkgs-beszel-pr.url = "github:NixOS/nixpkgs/refs/pull/461327/merge";
+    nixpkgs-beszel-pr.flake = false;
+
     # https://github.com/Mic92/sops-nix
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
