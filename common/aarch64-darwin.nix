@@ -17,11 +17,6 @@
     nerd-fonts.droid-sans-mono
   ];
 
-  # Enable non-nh based gc and optimisation
-  nix.optimise.automatic = true;
-  nix.gc.automatic = true;
-  nix.gc.options = "--delete-older-than 7d";
-
   environment.systemPackages = with pkgs; [
     watch
     go
@@ -66,7 +61,12 @@
     NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
   };
 
-  # Auto upgrade nix package and the daemon service.
-  nix.enable = true;
-  nix.package = pkgs.nix;
+  # Disable nix in favour of determinate nix
+  nix.enable = false;
+  # nix.package = pkgs.nix;
+
+  # Enable non-nh based gc and optimisation
+  # nix.optimise.automatic = true;
+  # nix.gc.automatic = true;
+  # nix.gc.options = "--delete-older-than 7d";
 }
