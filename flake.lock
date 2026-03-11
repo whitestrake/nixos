@@ -326,23 +326,6 @@
         "type": "github"
       }
     },
-    "nixpkgs-beszel-pr": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1772186779,
-        "narHash": "sha256-yNiwYKUAyqSRMULr/M6cS5gBiVHjeWtIHTfwnCmj2G8=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "6d26d558e49e6d97cdf5d3a925e846ac064f3ed5",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "refs/pull/461327/merge",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "nixpkgs-stable": {
       "locked": {
         "lastModified": 1751741127,
@@ -361,11 +344,11 @@
     },
     "nixpkgs-unstable": {
       "locked": {
-        "lastModified": 1771848320,
-        "narHash": "sha256-0MAd+0mun3K/Ns8JATeHT1sX28faLII5hVLq0L3BdZU=",
+        "lastModified": 1772963539,
+        "narHash": "sha256-9jVDGZnvCckTGdYT53d/EfznygLskyLQXYwJLKMPsZs=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "2fc6539b481e1d2569f25f8799236694180c0993",
+        "rev": "9dcb002ca1690658be4a04645215baea8b95f31d",
         "type": "github"
       },
       "original": {
@@ -418,7 +401,6 @@
         "nix-darwin": "nix-darwin",
         "nixos-wsl": "nixos-wsl",
         "nixpkgs": "nixpkgs_3",
-        "nixpkgs-beszel-pr": "nixpkgs-beszel-pr",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "sops-nix": "sops-nix",
         "vscode-server": "vscode-server",

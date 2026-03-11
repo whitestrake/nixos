@@ -6,8 +6,8 @@
   ...
 }: {
   imports = [
-    # Use beszel-agent module from PR #461327 (systemd monitoring support)
-    "${inputs.nixpkgs-beszel-pr}/nixos/modules/services/monitoring/beszel-agent.nix"
+    # Use beszel-agent module from unstable (systemd monitoring support)
+    "${inputs.nixpkgs-unstable}/nixos/modules/services/monitoring/beszel-agent.nix"
   ];
 
   # Disable the base nixpkgs beszel-agent module to avoid conflicts
