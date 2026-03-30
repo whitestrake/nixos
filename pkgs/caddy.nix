@@ -1,11 +1,11 @@
 {pkgs, ...}: let
-  version = "2.10.2";
+  version = "2.11.2";
 
   src = pkgs.fetchFromGitHub {
     owner = "caddyserver";
     repo = "caddy";
     tag = "v${version}";
-    hash = "sha256-KvikafRYPFZ0xCXqDdji1rxlkThEDEOHycK8GP5e8vk=";
+    hash = "sha256-QoGq8+lhaSQuC1VwIYE8h8N/ZC1ozfmIwmsIPk29Jos=";
   };
 
   caddyWithPlugins =
