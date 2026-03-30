@@ -26,7 +26,7 @@
       inherit unstable;
 
       # Overlay local pkgs
-      myPkgs = import ../pkgs {pkgs = final;};
+      myPkgs = import ../pkgs {pkgs = final; unstablePkgs = unstable;};
     })
   ];
 

@@ -14,7 +14,7 @@
       vendorHash = "sha256-wjcmWKVmLBAybILUi8tKEDnFbhtybf042ODH7jEq6r8=";
     })).withPlugins {
       plugins = ["github.com/caddy-dns/cloudflare@v0.2.2"];
-      hash = "sha256-dnhEjopeA0UiI+XVYHYpsjcEI6Y1Hacbi28hVKYQURg=";
+      hash = "sha256-Gb1nC5fZfj7IodQmKmEPGygIHNYhKWV1L0JJiqnVtbs=";
     };
 in
   # Wrap in a transparent derivation so 'position' points to this file for nix-update
