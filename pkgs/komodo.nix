@@ -11,7 +11,7 @@ in
     inherit version src;
     cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
       inherit src;
-      name = "komodo-${version}-vendor";
+      name = "komodo-${version}";
       hash = "sha256-jcfTAAVTcZ4IcjrzVn3dyWgSzkqtSs4vUHM/u2PfXLU=";
     };
     nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config];
