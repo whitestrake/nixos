@@ -59,6 +59,7 @@
     user.email = "git@whitestrake.net";
     core.fileMode = false;
     pull.rebase = true;
+    push.autoSetupRemote = true;
   };
 
   programs.starship = {
