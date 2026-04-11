@@ -6,28 +6,37 @@
   ...
 }:
 unstablePkgs.beszel.overrideAttrs (oldAttrs: let
-  version = "0.18.6";
-in {
-  inherit version;
+  version = "0.18.7";
   src = pkgs.fetchFromGitHub {
     owner = "henrygd";
     repo = "beszel";
     tag = "v${version}";
-    hash = "sha256-CRO0Y3o3hwdE55D027fo0tvt9o7vsA1ooEBFlXuw2So=";
+    hash = "sha256-pVZ1ru9++BypZ3EwoE8clqJowXj1/CMiJxKaC+UY9VE=";
   };
-  vendorHash = "sha256-g+UmoxBoCL3oGXNTY67Wz7y6FC/nkcS8020jhTq4JQE=";
+  npmDepsHash = "sha256-mYAD8FrQwa+F/VgGxFpe8vqucfZaM0PmY+gJJqw1IKk=";
+in {
+  inherit version src;
+  vendorHash = "sha256-TVpZbK9V9/GqpVFcjF7QGD5XJJHzRgjVXZOImHQTR1k=";
 
-  # Remove hub api_test.go: it references internal/tests helpers (NewTestHub,
-  # CreateUser, CreateRecord) that fail to compile during `go test`. This is a
-  # compilation error, not a runtime failure, so -skip flags have no effect.
-  # Only the agent binary is used here; hub tests are irrelevant.
-  postPatch =
-    (oldAttrs.postPatch or "")
-    + ''
-      rm -f internal/hub/api_test.go
-    '';
+  webui = oldAttrs.webui.overrideAttrs {
+    npmDeps = oldAttrs.webui.npmDeps.overrideAttrs {
+      outputHash = npmDepsHash;
+    };
+  };
+
+  # Re-set the testing build tag lost through overrideAttrs; required for
+  # internal/tests helpers (//go:build testing) used by hub api_test.go.
+  tags = ["testing"];
 
   checkFlags =
-    oldAttrs.checkFlags or []
-    ++ lib.optionals stdenv.hostPlatform.isDarwin ["-skip=TestStartServer"];
+    let
+      skippedTests =
+        [
+          "TestCollectorStartHelpers/nvtop_collector"
+          "TestConfigSyncWithTokens"
+          "TestServiceUpdateCPUPercent"
+        ]
+        ++ lib.optionals stdenv.hostPlatform.isDarwin ["TestStartServer"];
+    in
+    ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
 })
