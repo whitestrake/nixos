@@ -36,10 +36,14 @@ in {
           "TestConfigSyncWithTokens"
           "TestServiceUpdateCPUPercent"
         ]
+        # These tests bind to network ports (httptest.NewServer / net.Listen)
+        # which is not permitted in the Darwin Nix sandbox.
         ++ lib.optionals stdenv.hostPlatform.isDarwin [
           "TestStartServer"
           "TestConnectionManager_StartWithInvalidConfig"
           "TestCheckDockerVersion"
+          "TestGetDockerStatsChecksDockerVersionAfterContainerList"
+          "TestGetDockerStatsRetriesVersionCheckUntilSuccess"
         ];
     in
     ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
