@@ -4,9 +4,11 @@
   ];
 
   # Force local fish build to avoid broken code signatures from the binary cache
-  nixpkgs.overlays = [(final: prev: {
-    fish = prev.fish.overrideAttrs (old: { allowSubstitutes = false; });
-  })];
+  nixpkgs.overlays = [
+    (final: prev: {
+      fish = prev.fish.overrideAttrs (old: {allowSubstitutes = false;});
+    })
+  ];
 
   # Enable touch ID for sudo
   security.pam.services.sudo_local.touchIdAuth = true;

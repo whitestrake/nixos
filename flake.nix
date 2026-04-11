@@ -157,10 +157,11 @@
     deploy = mkDeploy (lib.mapAttrs mkNode deployableNodes);
 
     # Expose our custom packages for nix-update ease of use
-    packages = lib.genAttrs systems (system: import ./pkgs {
-      pkgs = nixpkgs.legacyPackages.${system};
-      unstablePkgs = unstablePkgs.${system};
-    });
+    packages = lib.genAttrs systems (system:
+      import ./pkgs {
+        pkgs = nixpkgs.legacyPackages.${system};
+        unstablePkgs = unstablePkgs.${system};
+      });
 
     # Per-system deploy checks for `nix flake check`
     # Group nodes by system architecture to avoid cross-compilation failures

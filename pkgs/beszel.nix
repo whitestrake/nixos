@@ -31,13 +31,11 @@ in {
   # access or GPU tools unavailable in the sandbox.
   doCheck = !stdenv.hostPlatform.isDarwin;
 
-  checkFlags =
-    let
-      skippedTests = [
-        "TestCollectorStartHelpers/nvtop_collector"
-        "TestConfigSyncWithTokens"
-        "TestServiceUpdateCPUPercent"
-      ];
-    in
-    ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
+  checkFlags = let
+    skippedTests = [
+      "TestCollectorStartHelpers/nvtop_collector"
+      "TestConfigSyncWithTokens"
+      "TestServiceUpdateCPUPercent"
+    ];
+  in ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
 })
