@@ -14,8 +14,9 @@
             /usr/bin/codesign --force --sign - $out/bin/fish_indent || true
             /usr/bin/codesign --force --sign - $out/bin/fish_key_reader || true
           '';
-        # Allow building on macOS builders with strict sandboxing
-        __noChroot = true;
+        # Clear custom sandbox profile so it can build on strict-sandbox CI builders
+        sandboxProfile = "";
+        __sandboxProfile = "";
       });
     })
   ];
