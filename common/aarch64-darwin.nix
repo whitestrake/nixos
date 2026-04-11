@@ -3,10 +3,20 @@
     ./all-systems.nix
   ];
 
-  # Force local fish build to avoid broken code signatures from the binary cache
+  # Re-sign fish binaries to fix broken code signatures after stripping
   nixpkgs.overlays = [
     (final: prev: {
-      fish = prev.fish.overrideAttrs (old: {allowSubstitutes = false;});
+      fish = prev.fish.overrideAttrs (old: {
+        postFixup =
+          (old.postFixup or "")
+          + prev.lib.optionalString prev.stdenv.isDarwin ''
+            /usr/bin/codesign --force --sign - $out/bin/fish || true
+            /usr/bin/codesign --force --sign - $out/bin/fish_indent || true
+            /usr/bin/codesign --force --sign - $out/bin/fish_key_reader || true
+          '';
+        # Allow building on macOS builders with strict sandboxing
+        __noChroot = true;
+      });
     })
   ];
 
