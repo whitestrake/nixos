@@ -27,6 +27,7 @@
   programs.zsh.enable = true;
   users.users.whitestrake.shell = pkgs.fish;
   users.users.whitestrake.home = "/Users/whitestrake";
+  home-manager.useGlobalPkgs = true;
   home-manager.users.whitestrake = {lib, ...}: {
     imports = [../../users/whitestrake/home.nix];
     home.sessionVariables = {
