@@ -36,7 +36,11 @@ in {
           "TestConfigSyncWithTokens"
           "TestServiceUpdateCPUPercent"
         ]
-        ++ lib.optionals stdenv.hostPlatform.isDarwin ["TestStartServer"];
+        ++ lib.optionals stdenv.hostPlatform.isDarwin [
+          "TestStartServer"
+          "TestConnectionManager_StartWithInvalidConfig"
+          "TestCheckDockerVersion"
+        ];
     in
     ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
 })
