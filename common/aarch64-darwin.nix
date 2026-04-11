@@ -52,6 +52,8 @@
       "obsidian"
       "soduto"
       "kando"
+      "ice@beta"
+      "fish"
     ];
   };
 
