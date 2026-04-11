@@ -1,6 +1,5 @@
 {
   pkgs,
-  lib,
   stdenv,
   unstablePkgs ? pkgs,
   ...
@@ -28,23 +27,17 @@ in {
   # internal/tests helpers (//go:build testing) used by hub api_test.go.
   tags = ["testing"];
 
+  # Upstream nixpkgs does not test on Darwin; many tests require network
+  # access or GPU tools unavailable in the sandbox.
+  doCheck = !stdenv.hostPlatform.isDarwin;
+
   checkFlags =
     let
-      skippedTests =
-        [
-          "TestCollectorStartHelpers/nvtop_collector"
-          "TestConfigSyncWithTokens"
-          "TestServiceUpdateCPUPercent"
-        ]
-        # These tests bind to network ports (httptest.NewServer / net.Listen)
-        # which is not permitted in the Darwin Nix sandbox.
-        ++ lib.optionals stdenv.hostPlatform.isDarwin [
-          "TestStartServer"
-          "TestConnectionManager_StartWithInvalidConfig"
-          "TestCheckDockerVersion"
-          "TestGetDockerStatsChecksDockerVersionAfterContainerList"
-          "TestGetDockerStatsRetriesVersionCheckUntilSuccess"
-        ];
+      skippedTests = [
+        "TestCollectorStartHelpers/nvtop_collector"
+        "TestConfigSyncWithTokens"
+        "TestServiceUpdateCPUPercent"
+      ];
     in
     ["-skip=^${builtins.concatStringsSep "$|^" skippedTests}$"];
 })
