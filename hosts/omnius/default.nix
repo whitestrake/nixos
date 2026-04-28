@@ -13,8 +13,6 @@
 
     ./hardware-configuration.nix
     ../../extra/docker.nix
-    ../../extra/attic.nix
-    ../../extra/hawser.nix
   ];
   system.stateVersion = "25.11";
 
