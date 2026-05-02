@@ -22,10 +22,13 @@
   # Don't need Tailscale as we have it on the Windows host
   services.tailscale.enable = false;
 
-  # Avahi for mDNS
-  services.avahi = {
+  # Use systemd-resolved for native, robust mDNS resolution
+  services.resolved = {
     enable = true;
-    nssmdns = true;
+    llmnr = "false";
+    extraConfig = ''
+      MulticastDNS=resolve
+    '';
   };
 
   services.vscode-server.enable = true;
