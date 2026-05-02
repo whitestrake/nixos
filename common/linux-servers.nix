@@ -5,7 +5,7 @@
 }: {
   imports = [
     ../extra/beszel.nix
-    # ../extra/alloy.nix
+    ../extra/alloy.nix
     ../extra/netronome.nix
   ];
 
