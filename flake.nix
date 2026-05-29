@@ -52,7 +52,7 @@
     disko.inputs.nixpkgs.follows = "nixpkgs";
 
     # https://github.com/strongtz/i915-sriov-dkms
-    i915-sriov.url = "github:strongtz/i915-sriov-dkms/2026.03.05.1";
+    i915-sriov.url = "github:strongtz/i915-sriov-dkms/2026.03.05.2";
     i915-sriov.inputs.nixpkgs.follows = "nixpkgs-unstable";
 
     # Github SSH keys
