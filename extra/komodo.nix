@@ -12,9 +12,6 @@
       PERIPHERY_CORE_ADDRESS=https://komodo.whitestrake.net
       PERIPHERY_CONNECT_AS=${config.networking.hostName}
       PERIPHERY_ONBOARDING_KEY=${config.sops.placeholder.komodoOnboardingKey}
-      PERIPHERY_SSL_ENABLED=true
-      PERIPHERY_SSL_KEY_FILE=/opt/docker/komodo/ssl/key.pem
-      PERIPHERY_SSL_CERT_FILE=/opt/docker/komodo/ssl/cert.pem
       PERIPHERY_INCLUDE_DISK_MOUNTS=/etc/hostname
     '';
   };
