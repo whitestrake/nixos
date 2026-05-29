@@ -1,10 +1,10 @@
 {pkgs, ...}: let
-  version = "2.1.2";
+  version = "2.2.0";
   src = pkgs.fetchFromGitHub {
     owner = "moghtech";
     repo = "komodo";
     tag = "v${version}";
-    hash = "sha256-Gq88ludr/l4/UqZ1Qbbdz6U/xvnilU4F4qdLY+u68Ro=";
+    hash = "sha256-Hw0JD4e/ODK19M/bZtX9foCu5c79XA8Jgv2fleltdLs=";
   };
 in
   pkgs.komodo.overrideAttrs (oldAttrs: {
@@ -12,7 +12,7 @@ in
     cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
       inherit src;
       name = "komodo-${version}";
-      hash = "sha256-H60WYnU9mmNioVZL298UEG7CLPZA4PMMZg3Bj7THaeM=";
+      hash = "sha256-b/AgQBmS1QfP+BOCT4xL8majVKobig5M2YJhGuXMToc=";
     };
     nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config];
     buildInputs = (oldAttrs.buildInputs or []) ++ [pkgs.openssl];
