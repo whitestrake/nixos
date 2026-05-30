@@ -9,10 +9,12 @@
   };
 
   caddyWithPlugins =
-    (pkgs.caddy.overrideAttrs (oldAttrs: {
-      inherit version src;
-      vendorHash = "sha256-wjcmWKVmLBAybILUi8tKEDnFbhtybf042ODH7jEq6r8=";
-    })).withPlugins {
+    (pkgs.caddy.override {
+      caddy = pkgs.caddy.overrideAttrs (oldAttrs: {
+        inherit version src;
+        vendorHash = "sha256-wjcmWKVmLBAybILUi8tKEDnFbhtybf042ODH7jEq6r8=";
+      });
+    }).withPlugins {
       plugins = ["github.com/caddy-dns/cloudflare@v0.2.2"];
       hash = "sha256-Gb1nC5fZfj7IodQmKmEPGygIHNYhKWV1L0JJiqnVtbs=";
     };
