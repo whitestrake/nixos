@@ -16,7 +16,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v15
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - id: eval
         name: Enumerate derivations
         run: |
@@ -39,24 +42,28 @@ jobs:
               end;
 
             ($nixos | to_entries | map({
+              name: ("nixosConfigurations." + .key + " (" + .value + ")"),
               attr: ("nixosConfigurations." + .key),
               system: .value,
               runner: runner(.value),
               path: ("nixosConfigurations." + .key + ".config.system.build.toplevel")
             })) +
             ($darwin | to_entries | map({
+              name: ("darwinConfigurations." + .key + " (" + .value + ")"),
               attr: ("darwinConfigurations." + .key),
               system: .value,
               runner: runner(.value),
               path: ("darwinConfigurations." + .key + ".system")
             })) +
             ($packages | to_entries | map(.key as $sys | .value[] | {
+              name: ("packages." + . + " (" + $sys + ")"),
               attr: ("packages." + $sys + "." + .),
               system: $sys,
               runner: runner($sys),
               path: ("packages." + $sys + "." + .)
             })) +
             ($checks | to_entries | map(.key as $sys | .value[] | {
+              name: ("checks." + . + " (" + $sys + ")"),
               attr: ("checks." + $sys + "." + .),
               system: $sys,
               runner: runner($sys),
@@ -69,7 +76,7 @@ jobs:
 
   build:
     needs: evaluate
-    name: "Build ${{ matrix.attr }} (${{ matrix.system }})"
+    name: "Build ${{ matrix.name }}"
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -81,7 +88,6 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: DeterminateSystems/magic-nix-cache-action@main
       - uses: cachix/cachix-action@v15
         with:
           name: whitestrake
