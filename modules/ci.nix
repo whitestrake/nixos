@@ -4,22 +4,25 @@
   ...
 }: {
   flake = {
-    # CI target for nix-fast-build
-    ci = {
-      # 1. NixOS Configurations (system toplevel derivations)
-      nixos = lib.mapAttrs (name: conf: conf.config.system.build.toplevel) self.nixosConfigurations;
+    # CI targets grouped by architecture to facilitate parallel, matrixed builds on GitHub Actions
+    ci = let
+      supportedSystems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
+      getConfigSystem = conf: conf.pkgs.system;
+      nixosForSystem = sys: lib.filterAttrs (_: conf: getConfigSystem conf == sys) self.nixosConfigurations;
+      darwinForSystem = sys: lib.filterAttrs (_: conf: getConfigSystem conf == sys) self.darwinConfigurations;
+    in
+      lib.genAttrs supportedSystems (sys: {
+        # NixOS system toplevels for this architecture
+        nixos = lib.mapAttrs (_: conf: conf.config.system.build.toplevel) (nixosForSystem sys);
 
-      # 2. Darwin Configurations (system derivations)
-      darwin = lib.mapAttrs (name: conf: conf.system) self.darwinConfigurations;
+        # Darwin system configurations for this architecture
+        darwin = lib.mapAttrs (_: conf: conf.system) (darwinForSystem sys);
 
-      # 3. Custom packages across all systems
-      packages = self.packages;
+        # Custom packages built for this architecture
+        packages = self.packages.${sys} or {};
 
-      # 4. Flake checks (excluding deploy-rs checks to avoid CI build duplication)
-      checks = lib.mapAttrs (
-        sys: sysChecks:
-          lib.filterAttrs (name: _: !(lib.hasPrefix "deploy" name)) sysChecks
-      ) (self.checks or {});
-    };
+        # Checks for this architecture (filtering out deploy-rs to prevent duplication)
+        checks = lib.filterAttrs (name: _: !(lib.hasPrefix "deploy" name)) (self.checks.${sys} or {});
+      });
   };
 }

@@ -1,0 +1,43 @@
+name: "CI: Build & Cache"
+
+on:
+  push:
+    branches:
+      - master
+      - dendritic
+  pull_request:
+
+jobs:
+  build-and-cache:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-latest
+
+    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.system }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v4
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build configurations
+        run: |
+          nix run github:Mic92/nix-fast-build -- \
+            --skip-cached \
+            --flake ".#ci.${{ matrix.system }}"
