@@ -21,58 +21,102 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - id: eval
-        name: Enumerate derivations
+        name: Enumerate derivations & pre-flight cache check
         run: |
-          NIXOS=$(nix eval --json '.#nixosConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
-          DARWIN=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
-          PACKAGES=$(nix eval --json '.#packages' --apply 'builtins.mapAttrs (sys: pkgs: builtins.attrNames pkgs)' --accept-flake-config 2>/dev/null || echo "{}")
-          CHECKS=$(nix eval --json '.#checks' --apply 'builtins.mapAttrs (sys: checks: builtins.attrNames checks)' --accept-flake-config 2>/dev/null || echo "{}")
+          # 1. Run Nix evaluation to get system, drvPath, and storePath of all hosts and checks
+          NIX_OUTPUT=$(nix eval --json --impure --expr '
+            with (builtins.getFlake (toString ./.)); {
+              nixos = builtins.mapAttrs (name: conf: {
+                system = conf.pkgs.system;
+                drvPath = conf.config.system.build.toplevel.drvPath;
+                storePath = conf.config.system.build.toplevel.outPath;
+              }) nixosConfigurations;
+              darwin = builtins.mapAttrs (name: conf: {
+                system = conf.pkgs.system;
+                drvPath = conf.system.drvPath;
+                storePath = conf.system.outPath;
+              }) darwinConfigurations;
+              checks = builtins.mapAttrs (sys: checks: builtins.mapAttrs (name: check: {
+                system = sys;
+                drvPath = check.drvPath;
+                storePath = check.outPath;
+              }) checks) checks;
+            }
+          ' --accept-flake-config)
 
-          MATRIX=$(jq -cn \
-            --argjson nixos "$NIXOS" \
-            --argjson darwin "$DARWIN" \
-            --argjson packages "$PACKAGES" \
-            --argjson checks "$CHECKS" \
-            '
-            def runner($sys):
-              if $sys == "x86_64-linux" then "ubuntu-latest"
-              elif $sys == "aarch64-linux" then "ubuntu-24.04-arm"
-              elif $sys == "aarch64-darwin" then "macos-latest"
-              else "ubuntu-latest"
-              end;
-
-            ($nixos | to_entries | map({
-              name: ("nixosConfigurations." + .key + " (" + .value + ")"),
-              attr: ("nixosConfigurations." + .key),
-              system: .value,
-              runner: runner(.value),
-              path: ("nixosConfigurations." + .key + ".config.system.build.toplevel")
-            })) +
-            ($darwin | to_entries | map({
-              name: ("darwinConfigurations." + .key + " (" + .value + ")"),
-              attr: ("darwinConfigurations." + .key),
-              system: .value,
-              runner: runner(.value),
-              path: ("darwinConfigurations." + .key + ".system")
-            })) +
-            ($packages | to_entries | map(.key as $sys | .value[] | {
-              name: ("packages." + . + " (" + $sys + ")"),
-              attr: ("packages." + $sys + "." + .),
-              system: $sys,
-              runner: runner($sys),
-              path: ("packages." + $sys + "." + .)
-            })) +
-            ($checks | to_entries | map(.key as $sys | .value[] | {
-              name: ("checks." + . + " (" + $sys + ")"),
-              attr: ("checks." + $sys + "." + .),
-              system: $sys,
-              runner: runner($sys),
-              path: ("checks." + $sys + "." + .)
-            }))
-            | map(select((.attr | startswith("checks.")) and (.attr | split(".")[2] | startswith("deploy")) | not))
-            ')
-
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          # 2. Concurrently query binary caches and output GHA matrix
+          python3 -c '
+          import sys, json, urllib.request, concurrent.futures
+          
+          def get_runner(system):
+              if system == "x86_64-linux": return "ubuntu-latest"
+              elif system == "aarch64-linux": return "ubuntu-24.04-arm"
+              elif system == "aarch64-darwin": return "macos-latest"
+              return "ubuntu-latest"
+          
+          def is_cached(item):
+              store_path = item.get("storePath")
+              if not store_path: return False
+              store_hash = store_path.split("/")[-1].split("-")[0]
+              caches = [
+                  "https://cache.nixos.org",
+                  "https://cache.garnix.io",
+                  "https://whitestrake.cachix.org"
+              ]
+              for cache in caches:
+                  url = f"{cache}/{store_hash}.narinfo"
+                  req = urllib.request.Request(url, method="HEAD")
+                  try:
+                      with urllib.request.urlopen(req, timeout=2) as resp:
+                          if resp.status == 200: return True
+                  except Exception: pass
+              return False
+          
+          data = json.loads(sys.argv[1])
+          candidates = []
+          for name, conf in data.get("nixos", {}).items():
+              candidates.append({
+                  "name": f"nixosConfigurations.{name} ({conf[\"system\"]})",
+                  "path": f"nixosConfigurations.{name}.config.system.build.toplevel",
+                  "system": conf["system"],
+                  "runner": get_runner(conf["system"]),
+                  "storePath": conf["storePath"]
+              })
+          for name, conf in data.get("darwin", {}).items():
+              candidates.append({
+                  "name": f"darwinConfigurations.{name} ({conf[\"system\"]})",
+                  "path": f"darwinConfigurations.{name}.system",
+                  "system": conf["system"],
+                  "runner": get_runner(conf["system"]),
+                  "storePath": conf["storePath"]
+              })
+          for system, checks in data.get("checks", {}).items():
+              for name, check in checks.items():
+                  if name.startswith("deploy"): continue
+                  candidates.append({
+                      "name": f"checks.{name} ({system})",
+                      "path": f"checks.{system}.{name}",
+                      "system": system,
+                      "runner": get_runner(system),
+                      "storePath": check["storePath"]
+                  })
+          
+          with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+              results = list(executor.map(is_cached, candidates))
+          
+          uncached = [item for item, cached in zip(candidates, results) if not cached]
+          if not uncached:
+              uncached = [{
+                  "name": "No builds needed (all cached)",
+                  "path": "",
+                  "system": "x86_64-linux",
+                  "runner": "ubuntu-latest",
+                  "storePath": "",
+                  "dummy": True
+              }]
+          
+          print("matrix=" + json.dumps(uncached))
+          ' "$NIX_OUTPUT" >> "$GITHUB_OUTPUT"
 
   build:
     needs: evaluate
@@ -84,15 +128,19 @@ jobs:
         include: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
+        if: ${{ !matrix.dummy }}
       - uses: DeterminateSystems/determinate-nix-action@v3
+        if: ${{ !matrix.dummy }}
         with:
           extra-conf: |
             accept-flake-config = true
       - uses: cachix/cachix-action@v15
+        if: ${{ !matrix.dummy }}
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build
+        if: ${{ !matrix.dummy }}
         run: nix build '.#${{ matrix.path }}' --print-build-logs
 
   all-builds-passed:
