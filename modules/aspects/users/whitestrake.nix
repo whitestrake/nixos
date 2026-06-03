@@ -22,7 +22,7 @@
     };
 
     homeManager = { pkgs, lib, ... }: {
-      imports = [ ../../../users/whitestrake/home.nix ];
+      imports = [ ./_home.nix ];
 
       home.sessionVariables = lib.mkMerge [
         { CLICOLOR = "1"; }
