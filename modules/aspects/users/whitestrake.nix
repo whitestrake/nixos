@@ -1,6 +1,6 @@
 { den, inputs, ... }: {
   den.aspects.user-whitestrake = {
-    includes = [ den.provides.define-user den.provides.primary-user ];
+    includes = [ den.provides.define-user den.provides.primary-user (den.provides.user-shell "fish") ];
 
     nixos = { config, pkgs, ... }: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
@@ -8,7 +8,6 @@
         isNormalUser = true;
         hashedPasswordFile = config.sops.secrets.whitestrakePassword.path;
         extraGroups = ["wheel" "docker" "www-data" "mediaserver"];
-        shell = pkgs.fish;
         openssh.authorizedKeys.keyFiles = [inputs.whitestrake-github-keys.outPath];
       };
       programs.git.enable = true;
@@ -16,7 +15,6 @@
 
     darwin = { pkgs, ... }: {
       users.users.whitestrake = {
-        shell = pkgs.fish;
         home = "/Users/whitestrake";
       };
     };

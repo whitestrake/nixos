@@ -23,7 +23,6 @@ in {
         })
       ];
 
-      programs.fish.enable = true;
       environment.systemPackages = with pkgs; [
         btop fish powershell helix nh dua tree rclone wget curl xh jq fx dig whois rdap iperf
       ];
@@ -31,7 +30,6 @@ in {
 
     darwin = { pkgs, ... }: {
       nix.settings = sharedNixSettings;
-      programs.fish.enable = true;
       environment.systemPackages = with pkgs; [
         btop fish powershell helix nh dua tree rclone wget curl xh jq fx dig whois rdap iperf ripgrep fd
       ];
