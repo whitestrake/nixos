@@ -36,6 +36,7 @@
         nixos = { pkgs, lib, ... }: {
           system.stateVersion = lib.mkDefault "24.05";
           nixpkgs.config.allowUnfree = true;
+          documentation.nixos.enable = false;
           imports = [ inputs.sops-nix.nixosModules.sops ];
           sops = {
             # Default secret file
@@ -55,6 +56,9 @@
         homeManager = { pkgs, lib, ... }: {
           home.stateVersion = lib.mkDefault "25.11";
           nixpkgs.config.allowUnfree = true;
+          manual.html.enable = false;
+          manual.manpages.enable = false;
+          manual.json.enable = false;
         };
       };
 
