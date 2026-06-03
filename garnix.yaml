@@ -4,6 +4,7 @@ builds:
   exclude:
     - "checks.*.deploy-activate"
     - "checks.*.deploy-schema"
+    - "packages.aarch64-darwin.*"
   include:
     - "*.x86_64-linux.*"
     - "*.aarch64-linux.*"
