@@ -20,7 +20,7 @@ jobs:
         name: Enumerate host configurations
         run: |
           # 1. Run cheap evaluation to get the host mapping
-          CI_METADATA=$(nix eval --json '.#ci' --accept-flake-config 2>/dev/null || echo "{}")
+          CI_METADATA=$(nix eval --json '.#ci' || echo "{}")
 
           # 2. Format host mapping into GHA build matrix JSON
           MATRIX=$(jq -cn \
