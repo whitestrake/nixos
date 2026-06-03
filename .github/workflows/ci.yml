@@ -5,54 +5,99 @@ on:
   pull_request:
 
 jobs:
-  build-and-cache:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-          - system: aarch64-darwin
-            runner: macos-latest
-
-    runs-on: ${{ matrix.runner }}
-    name: Build (${{ matrix.system }})
-
+  evaluate:
+    name: Evaluate
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.eval.outputs.matrix }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
             accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - id: eval
+        name: Enumerate derivations
+        run: |
+          NIXOS=$(nix eval --json '.#nixosConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
+          DARWIN=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
+          PACKAGES=$(nix eval --json '.#packages' --apply 'builtins.mapAttrs (sys: pkgs: builtins.attrNames pkgs)' --accept-flake-config 2>/dev/null || echo "{}")
+          CHECKS=$(nix eval --json '.#checks' --apply 'builtins.mapAttrs (sys: checks: builtins.attrNames checks)' --accept-flake-config 2>/dev/null || echo "{}")
 
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
+          MATRIX=$(jq -cn \
+            --argjson nixos "$NIXOS" \
+            --argjson darwin "$DARWIN" \
+            --argjson packages "$PACKAGES" \
+            --argjson checks "$CHECKS" \
+            '
+            def runner($sys):
+              if $sys == "x86_64-linux" then "ubuntu-latest"
+              elif $sys == "aarch64-linux" then "ubuntu-24.04-arm"
+              elif $sys == "aarch64-darwin" then "macos-latest"
+              else "ubuntu-latest"
+              end;
+
+            ($nixos | to_entries | map({
+              attr: ("nixosConfigurations." + .key),
+              system: .value,
+              runner: runner(.value),
+              path: ("nixosConfigurations." + .key + ".config.system.build.toplevel")
+            })) +
+            ($darwin | to_entries | map({
+              attr: ("darwinConfigurations." + .key),
+              system: .value,
+              runner: runner(.value),
+              path: ("darwinConfigurations." + .key + ".system")
+            })) +
+            ($packages | to_entries | map(.key as $sys | .value[] | {
+              attr: ("packages." + $sys + "." + .),
+              system: $sys,
+              runner: runner($sys),
+              path: ("packages." + $sys + "." + .)
+            })) +
+            ($checks | to_entries | map(.key as $sys | .value[] | {
+              attr: ("checks." + $sys + "." + .),
+              system: $sys,
+              runner: runner($sys),
+              path: ("checks." + $sys + "." + .)
+            }))
+            | map(select((.attr | startswith("checks.")) and (.attr | split(".")[2] | startswith("deploy")) | not))
+            ')
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: evaluate
+    name: "Build ${{ matrix.attr }} (${{ matrix.system }})"
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: cachix/cachix-action@v15
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build configurations
-        run: |
-          nix run github:Mic92/nix-fast-build/1.5.0 -- \
-            --no-nom \
-            --skip-cached \
-            --eval-workers 2 \
-            --flake ".#ci.${{ matrix.system }}"
+      - name: Build
+        run: nix build '.#${{ matrix.path }}' --print-build-logs
 
   all-builds-passed:
     name: "All Cachix Builds"
-    needs: build-and-cache
+    needs: build
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check build status
         run: |
-          if [[ "${{ needs.build-and-cache.result }}" == "success" ]]; then
+          if [[ "${{ needs.build.result }}" == "success" ]]; then
             echo "All builds succeeded!"
             exit 0
           else
