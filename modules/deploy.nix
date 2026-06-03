@@ -2,33 +2,22 @@
   self,
   inputs,
   lib,
+  config,
   ...
 }: {
   flake = let
     deploy-rs = inputs.deploy-rs;
 
-    nodes = {
-      pascal = {system = "x86_64-linux";};
-      rapier = {system = "x86_64-linux";};
-      sortie = {system = "x86_64-linux";};
-      orthus = {system = "x86_64-linux";};
-      oculus = {system = "x86_64-linux";};
-      omnius = {system = "x86_64-linux";};
-      jaeger = {system = "aarch64-linux";};
-      kronos = {
-        system = "x86_64-linux";
-        deployable = false;
-      };
+    # Flat map all host configurations defined in den.hosts
+    allHosts = lib.foldl' (acc: system: acc // config.den.hosts.${system}) {} (builtins.attrNames config.den.hosts);
+
+    # Filter out non-NixOS systems and WSL hosts (which are not deployable via deploy-rs)
+    deployableNodes = lib.filterAttrs (name: host: host.class == "nixos" && !(host.wsl.enable or false)) allHosts;
+
+    mkNode = name: host: {
+      hostname = "${name}.fell-monitor.ts.net";
+      profiles.system.path = deploy-rs.lib.${host.system}.activate.nixos self.nixosConfigurations.${name};
     };
-
-    deployableNodes = lib.filterAttrs (_: n: n.deployable or true) nodes;
-
-    mkNode = name: meta:
-      {
-        hostname = "${name}.fell-monitor.ts.net";
-        profiles.system.path = deploy-rs.lib.${meta.system}.activate.nixos self.nixosConfigurations.${name};
-      }
-      // (meta.deploy or {});
 
     mkDeploy = nodesList: {
       user = "root";
