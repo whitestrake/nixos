@@ -9,6 +9,7 @@
         nix-inspect
         nil
         alejandra
+        actionlint
       ];
       environment.shellAliases.deploy-rs-async = let
         deploy-rs-async = inputs.deploy-rs-async.packages.${pkgs.stdenv.hostPlatform.system}.deploy-rs;
@@ -24,6 +25,7 @@
         nix-inspect
         nil
         alejandra
+        actionlint
         nixos-rebuild
       ];
       environment.shellAliases.deploy-rs-async = let
