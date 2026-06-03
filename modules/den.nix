@@ -27,6 +27,10 @@
           });
       };
 
+      schema.user = {
+        classes = [ "homeManager" ];
+      };
+
       # Base overrides applied globally to classes
       default = {
         nixos = { pkgs, lib, ... }: {
@@ -49,7 +53,7 @@
           nixpkgs.config.allowUnfree = true;
         };
         homeManager = { pkgs, lib, ... }: {
-          home.stateVersion = "25.11";
+          home.stateVersion = lib.mkDefault "25.11";
           nixpkgs.config.allowUnfree = true;
         };
       };
