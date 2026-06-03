@@ -41,6 +41,7 @@ jobs:
           nix run github:Mic92/nix-fast-build/1.5.0 -- \
             --no-nom \
             --skip-cached \
+            --eval-workers 2 \
             --flake ".#ci.${{ matrix.system }}"
 
   all-builds-passed:
