@@ -5,7 +5,7 @@
 }: {
   den.aspects.sortie = {
     includes = [
-      den.aspects.server-base
+      den.aspects.lab-server
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.user-mediaserver
@@ -34,7 +34,6 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
 
       # Network hostname properties
-      networking.domain = "lab.whitestrake.net";
       networking.hostId = "bffd5e86";
 
       # SMB mount configs

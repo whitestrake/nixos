@@ -23,4 +23,14 @@
       '';
     };
   };
+
+  den.aspects.lab-server = {
+    includes = [
+      den.aspects.server-base
+    ];
+
+    nixos = {...}: {
+      networking.domain = "lab.whitestrake.net";
+    };
+  };
 }

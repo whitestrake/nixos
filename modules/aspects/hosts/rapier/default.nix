@@ -5,7 +5,7 @@
 }: {
   den.aspects.rapier = {
     includes = [
-      den.aspects.server-base
+      den.aspects.lab-server
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.user-mediaserver
@@ -39,7 +39,6 @@
       };
 
       # Hostname and TZ
-      networking.domain = "lab.whitestrake.net";
       networking.hostId = "3ae03bc7";
 
       sops.secrets."smbCredentials/rapier@tempus" = {};

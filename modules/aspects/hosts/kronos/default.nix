@@ -26,8 +26,6 @@
         '';
       };
 
-      networking.domain = "whitestrake.net";
-
       system.stateVersion = "25.11";
     };
   };

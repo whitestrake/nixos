@@ -5,7 +5,7 @@
 }: {
   den.aspects.pascal = {
     includes = [
-      den.aspects.server-base
+      den.aspects.lab-server
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.vscode-server
@@ -31,9 +31,6 @@
 
       # QEMU guest agent
       services.qemuGuest.enable = true;
-
-      # Hostname and TZ
-      networking.domain = "lab.whitestrake.net";
 
       environment.systemPackages = with pkgs; [
         cifs-utils

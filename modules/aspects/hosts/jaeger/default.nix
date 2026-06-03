@@ -22,8 +22,6 @@
 
       # Fixes sshAgentAuth for aarch64 systems
       security.sudo-rs.enable = true;
-
-      networking.domain = "whitestrake.net";
     };
   };
 }

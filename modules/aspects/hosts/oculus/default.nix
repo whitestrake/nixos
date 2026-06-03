@@ -31,7 +31,6 @@
       services.zfs.autoScrub.enable = true;
 
       # Hostname and TZ
-      networking.domain = "whitestrake.net";
       networking.hostId = "464b2c8a";
     };
   };

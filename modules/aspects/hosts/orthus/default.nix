@@ -19,8 +19,6 @@
         "net.ipv6.conf.all.forwarding" = 1;
       };
 
-      networking.domain = "whitestrake.net";
-
       # https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-1502421373
       systemd.services.NetworkManager-wait-online.enable = lib.mkForce false;
       systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
