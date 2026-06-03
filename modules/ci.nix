@@ -11,49 +11,56 @@
       nixosForSystem = sys: lib.filterAttrs (_: conf: getConfigSystem conf == sys) self.nixosConfigurations;
       darwinForSystem = sys: lib.filterAttrs (_: conf: getConfigSystem conf == sys) self.darwinConfigurations;
 
-      # Check if a custom package is actively enabled on a configuration (NixOS or Darwin)
+      # Check if a custom package is actively enabled on a configuration (NixOS or Darwin) using precise derivation equality and context-safe string matching
       isPackageEnabled = pkgName: conf: let
         cfg = conf.config;
-        getPkgName = p: p.pname or p.name or "";
+        customPkg = conf.pkgs.myPkgs.${pkgName} or null;
+        pkgStorePath =
+          if customPkg != null
+          then builtins.unsafeDiscardStringContext (builtins.toString customPkg)
+          else "";
 
         # 1. Search in environment.systemPackages
-        inSystemPackages = lib.any (p: lib.hasInfix pkgName (getPkgName p)) (cfg.environment.systemPackages or []);
+        inSystemPackages =
+          if customPkg != null
+          then lib.any (p: p == customPkg) (cfg.environment.systemPackages or [])
+          else false;
 
         # 2. Search in Home Manager users packages
         inHomePackages =
-          if cfg ? home-manager.users
+          if customPkg != null && cfg ? home-manager.users
           then
             lib.any (
               userConf:
-                lib.any (p: lib.hasInfix pkgName (getPkgName p)) (userConf.home.packages or [])
+                lib.any (p: p == customPkg) (userConf.home.packages or [])
             ) (builtins.attrValues cfg.home-manager.users)
           else false;
 
         # 3. Search in systemd service definitions (Linux)
         inSystemdServices =
-          if cfg ? systemd.services
+          if customPkg != null && cfg ? systemd.services
           then
             lib.any (
               serviceName: let
                 service = cfg.systemd.services.${serviceName};
                 execStartStr =
                   if service ? serviceConfig.ExecStart
-                  then builtins.toString service.serviceConfig.ExecStart
+                  then builtins.unsafeDiscardStringContext (builtins.toString service.serviceConfig.ExecStart)
                   else "";
                 servicePkg =
                   if service ? package && service.package != null
-                  then getPkgName service.package
-                  else "";
+                  then service.package
+                  else null;
               in
-                lib.hasInfix pkgName serviceName
-                || lib.hasInfix pkgName servicePkg
-                || lib.hasInfix pkgName execStartStr
+                servicePkg
+                == customPkg
+                || lib.hasInfix pkgStorePath execStartStr
             ) (builtins.attrNames cfg.systemd.services)
           else false;
 
         # 4. Search in launchd agents and daemons (Darwin)
         inLaunchd =
-          if cfg ? launchd
+          if customPkg != null && cfg ? launchd
           then let
             scanLaunchd = jobs:
               lib.any (
@@ -61,16 +68,15 @@
                   job = jobs.${jobName};
                   program =
                     if job ? serviceConfig.Program
-                    then builtins.toString job.serviceConfig.Program
+                    then builtins.unsafeDiscardStringContext (builtins.toString job.serviceConfig.Program)
                     else "";
                   programArgs =
                     if job ? serviceConfig.ProgramArguments
-                    then builtins.toString job.serviceConfig.ProgramArguments
+                    then builtins.unsafeDiscardStringContext (builtins.toString job.serviceConfig.ProgramArguments)
                     else "";
                 in
-                  lib.hasInfix pkgName jobName
-                  || lib.hasInfix pkgName program
-                  || lib.hasInfix pkgName programArgs
+                  lib.hasInfix pkgStorePath program
+                  || lib.hasInfix pkgStorePath programArgs
               ) (builtins.attrNames jobs);
           in
             scanLaunchd (cfg.launchd.agents or {}) || scanLaunchd (cfg.launchd.daemons or {})
