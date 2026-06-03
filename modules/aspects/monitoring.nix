@@ -1,6 +1,17 @@
-{ inputs, config, pkgs, lib, ... }: {
+{
+  inputs,
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
   den.aspects.monitoring = {
-    nixos = { config, pkgs, lib, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      lib,
+      ...
+    }: {
       imports = [
         # Use beszel-agent module from unstable (systemd monitoring support)
         "${inputs.nixpkgs-unstable}/nixos/modules/services/monitoring/beszel-agent.nix"

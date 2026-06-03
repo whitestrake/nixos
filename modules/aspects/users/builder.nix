@@ -1,6 +1,6 @@
-{ ... }: {
+{...}: {
   den.aspects.user-builder = {
-    nixos = { ... }: {
+    nixos = {...}: {
       users.users.builder = {
         isNormalUser = true;
         openssh.authorizedKeys.keys = [

@@ -1,43 +1,58 @@
-{ den, inputs, lib, config, ... }: {
-  imports = [ inputs.den.flakeModule ];
+{
+  den,
+  inputs,
+  lib,
+  config,
+  ...
+}: {
+  imports = [inputs.den.flakeModule];
 
   config = {
     # Supported systems
-    systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+    systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
 
     den = {
-      schema.host = { config, ... }: {
-        instantiate = args:
-          let
-            unstable = import inputs.nixpkgs-unstable {
-              inherit (config) system;
-              config.allowUnfree = true;
-            };
-            extendedLib = inputs.nixpkgs.lib.extend (final: prev: import ../lib);
-            builder = {
+      schema.host = {config, ...}: {
+        instantiate = args: let
+          unstable = import inputs.nixpkgs-unstable {
+            inherit (config) system;
+            config.allowUnfree = true;
+          };
+          extendedLib = inputs.nixpkgs.lib.extend (final: prev: import ../lib);
+          builder =
+            {
               nixos = inputs.nixpkgs.lib.nixosSystem;
               darwin = inputs.nix-darwin.lib.darwinSystem;
-            }.${config.class};
-          in
-          builder (args // {
-            specialArgs = (args.specialArgs or {}) // {
-              inherit inputs unstable;
-              lib = extendedLib;
+            }.${
+              config.class
             };
-          });
+        in
+          builder (args
+            // {
+              specialArgs =
+                (args.specialArgs or {})
+                // {
+                  inherit inputs unstable;
+                  lib = extendedLib;
+                };
+            });
       };
 
       schema.user = {
-        classes = [ "homeManager" ];
+        classes = ["homeManager"];
       };
 
       # Base overrides applied globally to classes
       default = {
-        nixos = { pkgs, lib, ... }: {
+        nixos = {
+          pkgs,
+          lib,
+          ...
+        }: {
           system.stateVersion = lib.mkDefault "24.05";
           nixpkgs.config.allowUnfree = true;
           documentation.nixos.enable = false;
-          imports = [ inputs.sops-nix.nixosModules.sops ];
+          imports = [inputs.sops-nix.nixosModules.sops];
           sops = {
             # Default secret file
             defaultSopsFile = ../secrets/secrets.yaml;
@@ -49,11 +64,19 @@
             age.generateKey = true;
           };
         };
-        darwin = { pkgs, lib, ... }: {
+        darwin = {
+          pkgs,
+          lib,
+          ...
+        }: {
           system.stateVersion = lib.mkDefault 4;
           nixpkgs.config.allowUnfree = true;
         };
-        homeManager = { pkgs, lib, ... }: {
+        homeManager = {
+          pkgs,
+          lib,
+          ...
+        }: {
           home.stateVersion = lib.mkDefault "25.11";
           nixpkgs.config.allowUnfree = true;
           manual.html.enable = false;

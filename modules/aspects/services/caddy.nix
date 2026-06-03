@@ -1,6 +1,14 @@
-{ config, pkgs, ... }: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   den.aspects.caddy = {
-    nixos = { config, pkgs, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
       sops.secrets.caddyEnv = {};
 
       services.caddy = {

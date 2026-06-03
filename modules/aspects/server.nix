@@ -1,11 +1,15 @@
-{ den, ... }: {
+{den, ...}: {
   den.aspects.server-base = {
     includes = [
       den.aspects.linux-base
       den.aspects.monitoring
     ];
 
-    nixos = { config, pkgs, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
       sops.secrets.tailscaleOauthKey = {};
       services.tailscale = {
         authKeyFile = config.sops.secrets.tailscaleOauthKey.path;

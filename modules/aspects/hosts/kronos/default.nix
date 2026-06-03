@@ -1,4 +1,4 @@
-{ den, ... }: {
+{den, ...}: {
   den.aspects.kronos = {
     includes = [
       den.provides.hostname
@@ -7,7 +7,7 @@
       den.aspects.vscode-server
     ];
 
-    nixos = { pkgs, ... }: {
+    nixos = {pkgs, ...}: {
       # Don't need Tailscale as we have it on the Windows host
       services.tailscale.enable = false;
 

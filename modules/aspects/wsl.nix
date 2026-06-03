@@ -1,7 +1,7 @@
-{ inputs, ... }: {
+{inputs, ...}: {
   den.aspects.wsl = {
-    nixos = { ... }: {
-      imports = [ inputs.nixos-wsl.nixosModules.default ];
+    nixos = {...}: {
+      imports = [inputs.nixos-wsl.nixosModules.default];
       wsl.enable = true;
       wsl.defaultUser = "whitestrake";
 

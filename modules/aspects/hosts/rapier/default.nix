@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.rapier = {
     includes = [
       den.provides.hostname
@@ -8,7 +12,11 @@
       den.aspects.user-mediaserver
     ];
 
-    nixos = { config, lib, ... }: {
+    nixos = {
+      config,
+      lib,
+      ...
+    }: {
       imports = [
         inputs.disko.nixosModules.disko
         (import ./_disko.nix {

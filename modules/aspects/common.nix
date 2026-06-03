@@ -1,45 +1,98 @@
-{ den, inputs, config, lib, ... }:
-let
+{
+  den,
+  inputs,
+  config,
+  lib,
+  ...
+}: let
   sharedNixSettings = {
     experimental-features = ["nix-command" "flakes"];
     trusted-users = ["root" "@wheel" "@staff" "whitestrake"];
   };
 in {
   den.aspects.common-base = {
-    nixos = { pkgs, unstable, ... }: {
-      nix.settings = sharedNixSettings // {
-        download-buffer-size = 524288000;
-        substituters = ["https://cache.garnix.io" "https://nix-community.cachix.org"];
-        trusted-public-keys = [
-          "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
-          "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        ];
-      };
+    nixos = {
+      pkgs,
+      unstable,
+      ...
+    }: {
+      nix.settings =
+        sharedNixSettings
+        // {
+          download-buffer-size = 524288000;
+          substituters = ["https://cache.garnix.io" "https://nix-community.cachix.org"];
+          trusted-public-keys = [
+            "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
+            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+          ];
+        };
 
       nixpkgs.overlays = [
         (final: prev: {
           inherit unstable;
-          myPkgs = import ../../pkgs { pkgs = final; unstablePkgs = unstable; };
+          myPkgs = import ../../pkgs {
+            pkgs = final;
+            unstablePkgs = unstable;
+          };
         })
       ];
 
       environment.systemPackages = with pkgs; [
-        btop fish powershell helix nh dua tree rclone wget curl xh jq fx dig whois rdap iperf
+        btop
+        fish
+        powershell
+        helix
+        nh
+        dua
+        tree
+        rclone
+        wget
+        curl
+        xh
+        jq
+        fx
+        dig
+        whois
+        rdap
+        iperf
       ];
     };
 
-    darwin = { pkgs, ... }: {
+    darwin = {pkgs, ...}: {
       nix.settings = sharedNixSettings;
       environment.systemPackages = with pkgs; [
-        btop fish powershell helix nh dua tree rclone wget curl xh jq fx dig whois rdap iperf ripgrep fd
+        btop
+        fish
+        powershell
+        helix
+        nh
+        dua
+        tree
+        rclone
+        wget
+        curl
+        xh
+        jq
+        fx
+        dig
+        whois
+        rdap
+        iperf
+        ripgrep
+        fd
       ];
     };
   };
 
   den.aspects.linux-base = {
-    includes = [ den.aspects.common-base ];
+    includes = [den.aspects.common-base];
 
-    nixos = { pkgs, config, lib, ... }: {
+    nixos = {
+      pkgs,
+      config,
+      lib,
+      ...
+    }: {
       nix.settings.auto-optimise-store = true;
       programs.nh = {
         enable = true;
@@ -65,7 +118,12 @@ in {
       security.pam.services.sudo.sshAgentAuth = true;
 
       environment.systemPackages = with pkgs; [
-        service-wrapper iftop iotop ethtool pciutils usbutils
+        service-wrapper
+        iftop
+        iotop
+        ethtool
+        pciutils
+        usbutils
       ];
 
       # Set up basic SSH protection

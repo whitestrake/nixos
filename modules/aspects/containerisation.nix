@@ -1,6 +1,14 @@
-{ config, pkgs, ... }: {
+{
+  config,
+  pkgs,
+  ...
+}: {
   den.aspects.docker = {
-    nixos = { config, pkgs, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
       # Docker Service
       virtualisation.docker.enable = true;
       virtualisation.docker.autoPrune.enable = true;

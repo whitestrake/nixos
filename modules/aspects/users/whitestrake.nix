@@ -1,8 +1,16 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.user-whitestrake = {
-    includes = [ den.provides.define-user den.provides.primary-user (den.provides.user-shell "fish") ];
+    includes = [den.provides.define-user den.provides.primary-user (den.provides.user-shell "fish")];
 
-    nixos = { config, pkgs, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
       users.users.whitestrake = {
         isNormalUser = true;
@@ -13,13 +21,17 @@
       programs.git.enable = true;
     };
 
-    darwin = { pkgs, ... }: {
+    darwin = {pkgs, ...}: {
       users.users.whitestrake = {
         home = "/Users/whitestrake";
       };
     };
 
-    homeManager = { pkgs, lib, ... }: {
+    homeManager = {
+      pkgs,
+      lib,
+      ...
+    }: {
       home.stateVersion = "23.11";
       home.sessionVariables = lib.mkMerge [
         {
@@ -29,7 +41,7 @@
           BAT_THEME = "TwoDark";
           CLICOLOR = "1";
         }
-        (lib.mkIf pkgs.stdenv.isDarwin { EDITOR = "antigravity"; })
+        (lib.mkIf pkgs.stdenv.isDarwin {EDITOR = "antigravity";})
       ];
 
       home.shellAliases = lib.mkMerge [

@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.omnius = {
     includes = [
       den.provides.hostname
@@ -6,7 +10,11 @@
       den.aspects.docker
     ];
 
-    nixos = { config, pkgs, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
       imports = [
         inputs.disko.nixosModules.disko
         (import ./_disko.nix {

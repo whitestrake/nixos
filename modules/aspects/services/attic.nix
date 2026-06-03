@@ -1,9 +1,19 @@
-{ inputs, config, pkgs, lib, ... }: {
+{
+  inputs,
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
   den.aspects.attic = {
-    includes = [ "caddy" ];
+    includes = ["caddy"];
 
-    nixos = { config, pkgs, ... }: {
-      imports = [ inputs.attic.nixosModules.atticd ];
+    nixos = {
+      config,
+      pkgs,
+      ...
+    }: {
+      imports = [inputs.attic.nixosModules.atticd];
 
       environment.systemPackages = [
         inputs.attic.packages.${pkgs.stdenv.hostPlatform.system}.attic-client

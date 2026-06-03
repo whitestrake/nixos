@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.oculus = {
     includes = [
       den.provides.hostname
@@ -6,7 +10,7 @@
       den.aspects.docker
     ];
 
-    nixos = { config, ... }: {
+    nixos = {config, ...}: {
       imports = [
         inputs.disko.nixosModules.disko
         (import ./_disko.nix {

@@ -1,8 +1,12 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.darwin-base = {
-    includes = [ den.aspects.common-base ];
+    includes = [den.aspects.common-base];
 
-    darwin = { pkgs, ... }: {
+    darwin = {pkgs, ...}: {
       # Fix broken fish signatures after stripping
       nixpkgs.overlays = [
         (final: prev: {
@@ -32,7 +36,14 @@
       ];
 
       environment.systemPackages = with pkgs; [
-        watch go caddy xcaddy duplicacy zulu samba cacert
+        watch
+        go
+        caddy
+        xcaddy
+        duplicacy
+        zulu
+        samba
+        cacert
       ];
 
       environment.shells = with pkgs; [fish];
@@ -45,10 +56,18 @@
           upgrade = true;
           cleanup = "zap";
         };
-        brews = [ "bitwarden-cli" ];
+        brews = ["bitwarden-cli"];
         casks = [
-          "music-decoy" "finetune" "visual-studio-code" "iina"
-          "raycast" "warp" "obsidian" "soduto" "kando" "jordanbaird-ice@beta"
+          "music-decoy"
+          "finetune"
+          "visual-studio-code"
+          "iina"
+          "raycast"
+          "warp"
+          "obsidian"
+          "soduto"
+          "kando"
+          "jordanbaird-ice@beta"
         ];
       };
 

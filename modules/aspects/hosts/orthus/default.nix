@@ -1,4 +1,4 @@
-{ den, ... }: {
+{den, ...}: {
   den.aspects.orthus = {
     includes = [
       den.provides.hostname
@@ -7,7 +7,7 @@
       den.aspects.user-builder
     ];
 
-    nixos = { lib, ... }: {
+    nixos = {lib, ...}: {
       imports = [
         ./_hardware.nix
       ];

@@ -1,6 +1,6 @@
-{ ... }: {
+{...}: {
   den.aspects.user-mediaserver = {
-    nixos = { ... }: {
+    nixos = {...}: {
       users.users.mediaserver = {
         isSystemUser = true;
         group = "mediaserver";

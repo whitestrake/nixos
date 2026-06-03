@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.pascal = {
     includes = [
       den.provides.hostname
@@ -10,7 +14,12 @@
       den.aspects.user-mediaserver
     ];
 
-    nixos = { config, pkgs, lib, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      lib,
+      ...
+    }: {
       imports = [
         ./_hardware.nix
       ];

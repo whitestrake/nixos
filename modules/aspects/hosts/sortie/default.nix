@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.sortie = {
     includes = [
       den.provides.hostname
@@ -8,10 +12,15 @@
       den.aspects.user-mediaserver
     ];
 
-    nixos = { config, pkgs, lib, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      lib,
+      ...
+    }: {
       imports = [
         inputs.disko.nixosModules.disko
-        (import ./_disko.nix { zpoolName = config.networking.hostName; })
+        (import ./_disko.nix {zpoolName = config.networking.hostName;})
         ./_hardware.nix
       ];
 

@@ -1,6 +1,16 @@
-{ config, pkgs, lib, ... }: {
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
   den.aspects.hawser = {
-    nixos = { config, pkgs, lib, ... }: {
+    nixos = {
+      config,
+      pkgs,
+      lib,
+      ...
+    }: {
       sops.secrets."hawser/server_url" = {};
       sops.secrets."hawser/token_${config.networking.hostName}" = {};
       sops.templates."hawserEnv" = {

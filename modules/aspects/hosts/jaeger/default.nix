@@ -1,4 +1,8 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.jaeger = {
     includes = [
       den.provides.hostname
@@ -7,7 +11,7 @@
       den.aspects.user-builder
     ];
 
-    nixos = { ... }: {
+    nixos = {...}: {
       imports = [
         ./_hardware.nix
       ];
