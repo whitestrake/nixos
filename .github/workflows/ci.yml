@@ -75,19 +75,21 @@ jobs:
           data = json.loads(sys.argv[1])
           candidates = []
           for name, conf in data.get("nixos", {}).items():
+              sys_val = conf["system"]
               candidates.append({
-                  "name": f"nixosConfigurations.{name} ({conf[\"system\"]})",
+                  "name": f"nixosConfigurations.{name} ({sys_val})",
                   "path": f"nixosConfigurations.{name}.config.system.build.toplevel",
-                  "system": conf["system"],
-                  "runner": get_runner(conf["system"]),
+                  "system": sys_val,
+                  "runner": get_runner(sys_val),
                   "storePath": conf["storePath"]
               })
           for name, conf in data.get("darwin", {}).items():
+              sys_val = conf["system"]
               candidates.append({
-                  "name": f"darwinConfigurations.{name} ({conf[\"system\"]})",
+                  "name": f"darwinConfigurations.{name} ({sys_val})",
                   "path": f"darwinConfigurations.{name}.system",
-                  "system": conf["system"],
-                  "runner": get_runner(conf["system"]),
+                  "system": sys_val,
+                  "runner": get_runner(sys_val),
                   "storePath": conf["storePath"]
               })
           for system, checks in data.get("checks", {}).items():
