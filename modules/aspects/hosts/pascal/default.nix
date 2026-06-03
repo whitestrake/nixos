@@ -5,7 +5,6 @@
 }: {
   den.aspects.pascal = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
       den.aspects.i915-sriov
@@ -33,7 +32,6 @@
       services.qemuGuest.enable = true;
 
       # Hostname and TZ
-      networking.hostName = "pascal";
       networking.domain = "lab.whitestrake.net";
       time.timeZone = "Australia/Brisbane";
 

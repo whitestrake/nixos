@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.orthus = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
       den.aspects.user-builder
@@ -20,7 +19,6 @@
         "net.ipv6.conf.all.forwarding" = 1;
       };
 
-      networking.hostName = "orthus";
       networking.domain = "whitestrake.net";
       time.timeZone = "Australia/Brisbane";
 

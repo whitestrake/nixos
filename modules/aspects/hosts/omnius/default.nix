@@ -5,7 +5,6 @@
 }: {
   den.aspects.omnius = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
     ];
@@ -37,7 +36,6 @@
       services.zfs.autoScrub.enable = true;
 
       # Hostname and TZ
-      networking.hostName = "omnius";
       networking.domain = "whitestrake.net";
       networking.hostId = "4018c181";
       time.timeZone = "Australia/Brisbane";

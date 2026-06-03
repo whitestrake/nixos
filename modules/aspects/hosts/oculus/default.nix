@@ -5,7 +5,6 @@
 }: {
   den.aspects.oculus = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
     ];
@@ -32,7 +31,6 @@
       services.zfs.autoScrub.enable = true;
 
       # Hostname and TZ
-      networking.hostName = "oculus";
       networking.domain = "whitestrake.net";
       networking.hostId = "464b2c8a";
       time.timeZone = "Australia/Brisbane";

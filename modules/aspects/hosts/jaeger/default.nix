@@ -5,7 +5,6 @@
 }: {
   den.aspects.jaeger = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
       den.aspects.user-builder
@@ -24,7 +23,6 @@
       # Fixes sshAgentAuth for aarch64 systems
       security.sudo-rs.enable = true;
 
-      networking.hostName = "jaeger";
       networking.domain = "whitestrake.net";
       time.timeZone = "Australia/Brisbane";
     };

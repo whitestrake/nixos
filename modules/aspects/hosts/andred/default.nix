@@ -1,12 +1,10 @@
 {den, ...}: {
   den.aspects.andred = {
     includes = [
-      den.provides.hostname
       den.aspects.darwin-base
     ];
 
     darwin = {pkgs, ...}: {
-      networking.hostName = "andred";
       system.stateVersion = 4;
       system.primaryUser = "whitestrake";
 

@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.kronos = {
     includes = [
-      den.provides.hostname
       den.aspects.common-base
       den.aspects.vscode-server
     ];
@@ -36,7 +35,6 @@
         nix-inspect
       ];
 
-      networking.hostName = "kronos";
       networking.domain = "whitestrake.net";
       time.timeZone = "Australia/Brisbane";
 

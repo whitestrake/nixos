@@ -44,6 +44,9 @@
 
       # Base overrides applied globally to classes
       default = {
+        includes = [
+          den.provides.hostname
+        ];
         nixos = {
           pkgs,
           lib,

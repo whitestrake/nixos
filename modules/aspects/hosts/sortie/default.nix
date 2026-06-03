@@ -5,7 +5,6 @@
 }: {
   den.aspects.sortie = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
       den.aspects.i915-sriov
@@ -35,7 +34,6 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
 
       # Network hostname properties
-      networking.hostName = "sortie";
       networking.domain = "lab.whitestrake.net";
       networking.hostId = "bffd5e86";
       time.timeZone = "Australia/Brisbane";

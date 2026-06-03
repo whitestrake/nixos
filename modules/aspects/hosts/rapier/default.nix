@@ -5,7 +5,6 @@
 }: {
   den.aspects.rapier = {
     includes = [
-      den.provides.hostname
       den.aspects.server-base
       den.aspects.docker
       den.aspects.i915-sriov
@@ -40,7 +39,6 @@
       };
 
       # Hostname and TZ
-      networking.hostName = "rapier";
       networking.domain = "lab.whitestrake.net";
       networking.hostId = "3ae03bc7";
       time.timeZone = "Australia/Brisbane";
