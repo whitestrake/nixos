@@ -42,3 +42,19 @@ jobs:
             --no-nom \
             --skip-cached \
             --flake ".#ci.${{ matrix.system }}"
+
+  all-builds-passed:
+    name: "All Cachix Builds"
+    needs: build-and-cache
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check build status
+        run: |
+          if [[ "${{ needs.build-and-cache.result }}" == "success" ]]; then
+            echo "All builds succeeded!"
+            exit 0
+          else
+            echo "One or more builds failed."
+            exit 1
+          fi
