@@ -19,14 +19,12 @@ jobs:
       - id: eval
         name: Enumerate host configurations
         run: |
-          # 1. Run cheap evaluations to get hostname to system mappings from public outputs
-          NIXOS=$(nix eval --json '.#nixosConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
-          DARWIN=$(nix eval --json '.#darwinConfigurations' --apply 'builtins.mapAttrs (name: conf: conf.pkgs.system)' --accept-flake-config 2>/dev/null || echo "{}")
+          # 1. Run cheap evaluation to get the host mapping
+          CI_METADATA=$(nix eval --json '.#ci' --accept-flake-config 2>/dev/null || echo "{}")
 
           # 2. Format host mapping into GHA build matrix JSON
           MATRIX=$(jq -cn \
-            --argjson nixos "$NIXOS" \
-            --argjson darwin "$DARWIN" \
+            --argjson ci "$CI_METADATA" \
             '
             def runner($sys):
               if $sys == "x86_64-linux" then "ubuntu-latest"
@@ -35,18 +33,12 @@ jobs:
               else "ubuntu-latest"
               end;
 
-            ($nixos | to_entries | map({
-              name: ("nixosConfigurations." + .key + " (" + .value + ")"),
-              path: ("nixosConfigurations." + .key + ".config.system.build.toplevel"),
-              system: .value,
-              runner: runner(.value)
-            })) +
-            ($darwin | to_entries | map({
-              name: ("darwinConfigurations." + .key + " (" + .value + ")"),
-              path: ("darwinConfigurations." + .key + ".system"),
-              system: .value,
-              runner: runner(.value)
-            }))
+            $ci | to_entries | map(.key as $sys | .value[] | {
+              name: (if ($sys | endswith("-darwin")) then "darwinConfigurations." else "nixosConfigurations." end + . + " (" + $sys + ")"),
+              path: (if ($sys | endswith("-darwin")) then "darwinConfigurations." + . + ".system" else "nixosConfigurations." + . + ".config.system.build.toplevel" end),
+              system: $sys,
+              runner: runner($sys)
+            })
             ')
 
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
