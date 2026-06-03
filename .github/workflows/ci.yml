@@ -3,6 +3,7 @@ name: "CI: Build & Cache"
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   evaluate:
@@ -36,6 +37,7 @@ jobs:
             $ci | to_entries | map(.key as $sys | .value[] | {
               name: (if ($sys | endswith("-darwin")) then "darwinConfigurations." else "nixosConfigurations." end + . + " (" + $sys + ")"),
               path: (if ($sys | endswith("-darwin")) then "darwinConfigurations." + . + ".system" else "nixosConfigurations." + . + ".config.system.build.toplevel" end),
+              host: .,
               system: $sys,
               runner: runner($sys)
             })
@@ -63,6 +65,16 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build
         run: nix build '.#${{ matrix.path }}' --print-build-logs
+      - name: Pin System Toplevel to Cachix
+        if: |
+          (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
+          (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.'))
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          STORE_PATH=$(readlink -f result)
+          echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
+          cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
 
   all-builds-passed:
     name: "All Cachix Builds"
