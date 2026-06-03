@@ -9,7 +9,7 @@
 
   config = {
     # Supported systems
-    systems = ["x86_64-linux" "aarch64-linux" "aarch64-darwin"];
+    systems = builtins.attrNames config.den.hosts;
 
     # Expose a lightweight host-to-system map for GitHub Actions
     flake.ci = builtins.mapAttrs (sys: hosts: builtins.attrNames hosts) config.den.hosts;

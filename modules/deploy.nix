@@ -30,7 +30,7 @@
     deploy = mkDeploy deployableNodes;
 
     # checks for CI matrix builds
-    checks = lib.genAttrs ["x86_64-linux" "aarch64-linux" "aarch64-darwin"] (
+    checks = lib.genAttrs config.systems (
       system:
         if deploy-rs.lib ? ${system}
         then deploy-rs.lib.${system}.deployChecks (mkDeploy (lib.filterAttrs (_: n: n.system == system) deployableNodes))
