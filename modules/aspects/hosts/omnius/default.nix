@@ -38,7 +38,6 @@
       # Hostname and TZ
       networking.domain = "whitestrake.net";
       networking.hostId = "4018c181";
-      time.timeZone = "Australia/Brisbane";
 
       # TrueNAS user
       users.users.truenas = {

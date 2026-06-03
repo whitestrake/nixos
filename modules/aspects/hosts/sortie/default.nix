@@ -36,7 +36,6 @@
       # Network hostname properties
       networking.domain = "lab.whitestrake.net";
       networking.hostId = "bffd5e86";
-      time.timeZone = "Australia/Brisbane";
 
       # SMB mount configs
       sops.secrets."smbCredentials/sortie@tempus" = {};

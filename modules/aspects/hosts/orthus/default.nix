@@ -20,7 +20,6 @@
       };
 
       networking.domain = "whitestrake.net";
-      time.timeZone = "Australia/Brisbane";
 
       # https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-1502421373
       systemd.services.NetworkManager-wait-online.enable = lib.mkForce false;

@@ -54,6 +54,7 @@
         }: {
           system.stateVersion = lib.mkDefault "24.05";
           nixpkgs.config.allowUnfree = true;
+          time.timeZone = lib.mkDefault "Australia/Brisbane";
           documentation.nixos.enable = false;
           imports = [inputs.sops-nix.nixosModules.sops];
           sops = {

@@ -33,7 +33,6 @@
       # Hostname and TZ
       networking.domain = "whitestrake.net";
       networking.hostId = "464b2c8a";
-      time.timeZone = "Australia/Brisbane";
     };
   };
 }

@@ -11,6 +11,7 @@
       den.aspects.vscode-server
       den.aspects.user-builder
       den.aspects.user-mediaserver
+      den.aspects.nix-tools
     ];
 
     nixos = {
@@ -33,16 +34,8 @@
 
       # Hostname and TZ
       networking.domain = "lab.whitestrake.net";
-      time.timeZone = "Australia/Brisbane";
 
       environment.systemPackages = with pkgs; [
-        sops
-        age
-        deploy-rs
-        nix-update
-        nix-inspect
-        nil
-        alejandra
         cifs-utils
       ];
 

@@ -41,7 +41,6 @@
       # Hostname and TZ
       networking.domain = "lab.whitestrake.net";
       networking.hostId = "3ae03bc7";
-      time.timeZone = "Australia/Brisbane";
 
       sops.secrets."smbCredentials/rapier@tempus" = {};
       fileSystems = let

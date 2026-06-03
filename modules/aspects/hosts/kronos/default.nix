@@ -3,6 +3,7 @@
     includes = [
       den.aspects.common-base
       den.aspects.vscode-server
+      den.aspects.nix-tools
     ];
 
     nixos = {pkgs, ...}: {
@@ -25,18 +26,7 @@
         '';
       };
 
-      environment.systemPackages = with pkgs; [
-        age
-        sops
-        deploy-rs
-        alejandra
-        nil
-        nix-update
-        nix-inspect
-      ];
-
       networking.domain = "whitestrake.net";
-      time.timeZone = "Australia/Brisbane";
 
       system.stateVersion = "25.11";
     };

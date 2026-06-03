@@ -24,7 +24,6 @@
       security.sudo-rs.enable = true;
 
       networking.domain = "whitestrake.net";
-      time.timeZone = "Australia/Brisbane";
     };
   };
 }
