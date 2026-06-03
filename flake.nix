@@ -42,9 +42,6 @@
     vscode-server.url = "github:nix-community/nixos-vscode-server";
     vscode-server.inputs.nixpkgs.follows = "nixpkgs";
 
-    # attic
-    attic.url = "github:zhaofengli/attic";
-
     # disko
     disko.url = "github:nix-community/disko/latest";
     disko.inputs.nixpkgs.follows = "nixpkgs";
