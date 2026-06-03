@@ -33,7 +33,7 @@ in {
       nix.settings = sharedNixSettings;
       programs.fish.enable = true;
       environment.systemPackages = with pkgs; [
-        btop fish helix nh tree wget curl jq ripgrep fd
+        btop fish powershell helix nh dua tree rclone wget curl xh jq fx dig whois rdap iperf ripgrep fd
       ];
     };
   };
