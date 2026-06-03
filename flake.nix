@@ -3,9 +3,9 @@
 
   nixConfig = {
     extra-substituters = [
-      "https://cache.garnix.io"
-      "https://nix-community.cachix.org"
-      "https://whitestrake.cachix.org"
+      "https://whitestrake.cachix.org?priority=10"
+      "https://cache.garnix.io?priority=50"
+      "https://nix-community.cachix.org?priority=60"
     ];
     extra-trusted-public-keys = [
       "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
