@@ -94,7 +94,10 @@
           orthus.users.whitestrake.aspect = den.aspects.user-whitestrake;
           oculus.users.whitestrake.aspect = den.aspects.user-whitestrake;
           omnius.users.whitestrake.aspect = den.aspects.user-whitestrake;
-          kronos.users.whitestrake.aspect = den.aspects.user-whitestrake;
+          kronos = {
+            users.whitestrake.aspect = den.aspects.user-whitestrake;
+            wsl.enable = true;
+          };
         };
         aarch64-linux = {
           jaeger.users.whitestrake.aspect = den.aspects.user-whitestrake;
