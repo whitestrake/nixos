@@ -2,9 +2,6 @@ name: "CI: Build & Cache"
 
 on:
   push:
-    branches:
-      - master
-      - dendritic
   pull_request:
 
 jobs:
@@ -39,5 +36,6 @@ jobs:
       - name: Build configurations
         run: |
           nix run github:Mic92/nix-fast-build -- \
+            --no-nom \
             --skip-cached \
             --flake ".#ci.${{ matrix.system }}"
