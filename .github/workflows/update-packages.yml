@@ -1,0 +1,112 @@
+name: "Packages: check for updates"
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Single package to update (leave empty for all)"
+        required: false
+        type: string
+  schedule:
+    - cron: "0 12 * * *"  # Daily at 12:00 UTC
+
+jobs:
+  detect-packages:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          if [ -n "$PACKAGE" ]; then
+            echo "matrix={\"package\":[\"$PACKAGE\"]}" >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"package":["beszel","caddy","komodo","netronome"]}' >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          PACKAGE: ${{ inputs.package }}
+
+  update-package:
+    needs: detect-packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect-packages.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Run nix-update
+        id: update
+        run: |
+          nix run nixpkgs#nix-update -- \
+            --flake \
+            "${{ matrix.package }}"
+
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fix caddy withPlugins hash
+        if: >-
+          steps.update.outputs.changed == 'true' &&
+          matrix.package == 'caddy'
+        run: |
+          # Set withPlugins hash to fakeHash to trigger a build with mismatch
+          python3 -c '
+          import re
+          content = open("pkgs/caddy.nix").read()
+          new_content = re.sub(r"      hash = \"sha256-[^\"]*\";", "      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", content)
+          open("pkgs/caddy.nix", "w").write(new_content)
+          '
+
+          # Attempt build — capture the correct hash from the error
+          BUILD_LOG=$(nix build .#caddy 2>&1 || true)
+          CORRECT_HASH=$(echo "$BUILD_LOG" | grep -oP 'got:\s+\Ksha256-[A-Za-z0-9+/=]+')
+
+          if [ -z "$CORRECT_HASH" ]; then
+            echo "::error::Failed to extract withPlugins hash from build output"
+            echo "$BUILD_LOG"
+            exit 1
+          fi
+
+          echo "Extracted withPlugins hash: $CORRECT_HASH"
+
+          # Patch the correct hash back in
+          python3 -c '
+          import sys, re
+          content = open("pkgs/caddy.nix").read()
+          new_content = re.sub(r"      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", f"      hash = \"{sys.argv[1]}\";", content)
+          open("pkgs/caddy.nix", "w").write(new_content)
+          ' "$CORRECT_HASH"
+
+      - name: Format with alejandra
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          nix run nixpkgs#alejandra -- pkgs/
+
+      - name: Create Pull Request
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: nix-update/${{ matrix.package }}
+          title: "chore(pkgs): update ${{ matrix.package }}"
+          body: |
+            Automated update of `${{ matrix.package }}` via `nix-update`.
+
+            ---
+            _This PR was created automatically by the package update workflow._
+          labels: |
+            dependencies
+            automated
+          commit-message: "chore(pkgs): update ${{ matrix.package }}"
+          delete-branch: true
