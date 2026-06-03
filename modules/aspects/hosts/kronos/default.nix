@@ -14,6 +14,10 @@
       # Fix for running Windows binaries (Exec format error)
       environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
 
+      environment.systemPackages = with pkgs; [
+        powershell
+      ];
+
       # Don't need Tailscale as we have it on the Windows host
       services.tailscale.enable = false;
 

@@ -40,7 +40,6 @@ in {
       environment.systemPackages = with pkgs; [
         btop
         fish
-        powershell
         helix
         nh
         dua
@@ -63,7 +62,6 @@ in {
       environment.systemPackages = with pkgs; [
         btop
         fish
-        powershell
         helix
         nh
         dua
