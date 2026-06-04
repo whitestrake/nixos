@@ -62,7 +62,6 @@
         pigz
         plzip
         myPkgs.lz4
-        hello
       ];
     };
   };
