@@ -71,15 +71,18 @@ jobs:
           CURRENT_PINS=$(curl -s -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
             https://app.cachix.org/api/v1/cache/whitestrake/pin || echo "[]")
 
-          # 3. Check if whitelisted host (omnius) has registered Cachix agent
-          OMNIUS_REGISTERED="false"
+          # 3. Check which hosts have registered Cachix deploy agents
+          REGISTERED_HOSTS="[]"
           if [[ -n "$CACHIX_PERSONAL_TOKEN" ]]; then
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
-              "https://cachix.org/api/v1/deploy/agent/whitestrake/omnius")
-            if [ "$HTTP_STATUS" -eq 200 ]; then
-              OMNIUS_REGISTERED="true"
-            fi
+            hosts=$(echo "$ALL_HOSTS" | jq -r '.[] | .host')
+            for host in $hosts; do
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
+                "https://cachix.org/api/v1/deploy/agent/whitestrake/$host")
+              if [ "$HTTP_STATUS" -eq 200 ]; then
+                REGISTERED_HOSTS=$(jq -c --arg h "$host" '. + [$h]' <<< "$REGISTERED_HOSTS")
+              fi
+            done
           fi
 
           # 4. Filter build matrix dynamically (storePath changed OR force manual dispatch)
@@ -97,15 +100,15 @@ jobs:
               if ($force == "true" or $item.storePath != $pinned) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
-          # 5. Filter deploy matrix dynamically (is omnius AND registered AND storePath changed/force)
+          # 5. Filter deploy matrix dynamically (host is registered AND (storePath changed OR force))
           DEPLOY_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
             --arg force "$FORCE_RUN" \
-            --arg omnius_registered "$OMNIUS_REGISTERED" \
+            --argjson registered "$REGISTERED_HOSTS" \
             'map(
               . as $item |
               (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
-              if ($item.host == "omnius" and $omnius_registered == "true" and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
+              if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
           # 6. Debug output grouping
@@ -132,9 +135,19 @@ jobs:
             fi
 
             if [[ "$store_path" != "$pinned_path" ]]; then
-              echo "  - Decision: QUEUE BUILD (Mismatch or not pinned)"
+              echo "  - Build Decision: QUEUE BUILD (Mismatch or not pinned)"
             else
-              echo "  - Decision: SKIP BUILD (Identical)"
+              echo "  - Build Decision: SKIP BUILD (Identical)"
+            fi
+
+            if jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
+              if [[ "$FORCE_RUN" == "true" || "$store_path" != "$pinned_path" ]]; then
+                echo "  - Deploy Decision: QUEUE DEPLOY (Agent registered & config changed/forced)"
+              else
+                echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged)"
+              fi
+            else
+              echo "  - Deploy Decision: SKIP DEPLOY (Cachix deploy agent not registered)"
             fi
           done
           echo "::endgroup::"
