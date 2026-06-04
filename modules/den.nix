@@ -55,6 +55,9 @@
           lib,
           ...
         }: {
+          home-manager.useGlobalPkgs = true;
+          home-manager.useUserPackages = true;
+
           system.stateVersion = lib.mkDefault "24.05";
           nixpkgs.config.allowUnfree = true;
           time.timeZone = lib.mkDefault "Australia/Brisbane";
@@ -77,6 +80,9 @@
           lib,
           ...
         }: {
+          home-manager.useGlobalPkgs = true;
+          home-manager.useUserPackages = true;
+
           system.stateVersion = lib.mkDefault 4;
           nixpkgs.config.allowUnfree = true;
         };
@@ -86,7 +92,6 @@
           ...
         }: {
           home.stateVersion = lib.mkDefault "25.11";
-          nixpkgs.config.allowUnfree = true;
           manual.html.enable = false;
           manual.manpages.enable = false;
           manual.json.enable = false;
