@@ -26,6 +26,7 @@ jobs:
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+          CACHIX_PERSONAL_TOKEN: ${{ secrets.CACHIX_PERSONAL_TOKEN }}
         run: |
           # shellcheck disable=SC2016
           # 1. Run a single bulk evaluation for all configurations
@@ -72,9 +73,9 @@ jobs:
 
           # 3. Check if whitelisted host (omnius) has registered Cachix agent
           OMNIUS_REGISTERED="false"
-          if [[ -n "$CACHIX_ACTIVATE_TOKEN" ]]; then
+          if [[ -n "$CACHIX_PERSONAL_TOKEN" ]]; then
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $CACHIX_ACTIVATE_TOKEN" \
+              -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
               "https://cachix.org/api/v1/deploy/agent/whitestrake/omnius")
             if [ "$HTTP_STATUS" -eq 200 ]; then
               OMNIUS_REGISTERED="true"
