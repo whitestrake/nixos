@@ -120,12 +120,6 @@
       # GitHub CLI configuration
       programs.gh = {
         enable = true;
-        settings = {
-          git_protocol =
-            if pkgs.stdenv.isDarwin
-            then "ssh"
-            else "https";
-        };
         gitCredentialHelper = {
           enable = true;
         };
