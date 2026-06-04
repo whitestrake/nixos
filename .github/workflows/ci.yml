@@ -252,7 +252,9 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - name: Run Nix flake check (eval only)
-        run: nix flake check --no-build --accept-flake-config
+        run: |
+          nix flake archive --accept-flake-config
+          nix flake check --no-build --accept-flake-config
 
   all-builds-passed:
     name: "All Cachix CI/CD"
