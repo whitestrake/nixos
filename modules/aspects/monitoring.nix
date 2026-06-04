@@ -1,10 +1,4 @@
-{
-  inputs,
-  config,
-  pkgs,
-  lib,
-  ...
-}: {
+{inputs, ...}: {
   den.aspects.monitoring = {
     nixos = {
       config,

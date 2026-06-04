@@ -1,8 +1,4 @@
-{
-  config,
-  pkgs,
-  ...
-}: {
+{...}: {
   den.aspects.caddy = {
     nixos = {
       config,
