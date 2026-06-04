@@ -67,7 +67,7 @@ jobs:
         run: nix build '.#${{ matrix.path }}' --print-build-logs
       - name: Pin System Toplevel to Cachix
         if: |
-          (github.ref_name == 'dendritic' || github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
+          (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
           (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
