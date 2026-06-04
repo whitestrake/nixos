@@ -12,6 +12,19 @@
       ...
     }: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
+
+      # Decrypt GitHub Token and template the hosts.yml configuration for gh CLI
+      sops.secrets.githubToken = {};
+      sops.templates."gh-hosts" = {
+        content = ''
+          github.com:
+            oauth_token: ${config.sops.placeholder.githubToken}
+            git_protocol: https
+            user: whitestrake
+        '';
+        owner = "whitestrake";
+      };
+
       users.users.whitestrake = {
         isNormalUser = true;
         hashedPasswordFile = config.sops.secrets.whitestrakePassword.path;
@@ -28,8 +41,10 @@
     };
 
     homeManager = {
+      config,
       pkgs,
       lib,
+      osConfig ? {},
       ...
     }: {
       home.stateVersion = "23.11";
@@ -100,6 +115,25 @@
         core.fileMode = false;
         pull.rebase = true;
         push.autoSetupRemote = true;
+      };
+
+      # GitHub CLI configuration
+      programs.gh = {
+        enable = true;
+        settings = {
+          git_protocol =
+            if pkgs.stdenv.isDarwin
+            then "ssh"
+            else "https";
+        };
+        gitCredentialHelper = {
+          enable = true;
+        };
+      };
+
+      # Symlink gh hosts.yml dynamically only on NixOS systems where sops-nix is active
+      home.file = lib.mkIf (osConfig ? sops) {
+        ".config/gh/hosts.yml".source = config.lib.file.mkOutOfStoreSymlink osConfig.sops.templates."gh-hosts".path;
       };
 
       programs.starship = {
