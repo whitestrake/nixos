@@ -7,7 +7,6 @@
     includes = [
       den.aspects.server-base
       den.aspects.docker
-      den.aspects.cachix-agent
     ];
 
     nixos = {config, ...}: {

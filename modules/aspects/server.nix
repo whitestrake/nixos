@@ -3,6 +3,7 @@
     includes = [
       den.aspects.linux-base
       den.aspects.monitoring
+      den.aspects.cachix-agent
     ];
 
     nixos = {
