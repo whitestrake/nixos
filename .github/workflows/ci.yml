@@ -201,7 +201,7 @@ jobs:
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
-          STORE_PATH=$(nix eval --raw '.#${{ matrix.path }}' --accept-flake-config)
+          STORE_PATH="${{ matrix.storePath }}"
           jq -n \
             --arg agent "${{ matrix.host }}" \
             --arg path "$STORE_PATH" \
