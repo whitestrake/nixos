@@ -73,6 +73,8 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           STORE_PATH=$(readlink -f result)
+          echo "Pushing $STORE_PATH to Cachix..."
+          cachix push whitestrake "$STORE_PATH"
           echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
           cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
 
