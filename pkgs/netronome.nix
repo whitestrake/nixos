@@ -5,16 +5,16 @@
 }:
 buildGoModule rec {
   pname = "netronome";
-  version = "0.8.0";
+  version = "0.11.0";
 
   src = fetchFromGitHub {
     owner = "autobrr";
     repo = "netronome";
     tag = "v${version}";
-    hash = "sha256-MGMHOvI+Tw92cadZXyFNXhSC+FMxCYlKwnBp1+OGaf0=";
+    hash = "sha256-gh05b9o1o09KGyXDocibopXY7FC4mq1nuM08+7cnNtM=";
   };
 
-  vendorHash = "sha256-oQ72RJXJHavl/LYIGZpaqnA4VFYTLaUmYF9hijBzr0c=";
+  vendorHash = "sha256-xokfOOxA1ZbkxzABbTEWXno6ZOTZYaWDCSgjBW99JOE=";
 
   subPackages = ["cmd/netronome"];
 

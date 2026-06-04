@@ -1,0 +1,282 @@
+name: "Cachix CI/CD"
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Evaluate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      build_matrix: ${{ steps.eval.outputs.build_matrix }}
+      deploy_matrix: ${{ steps.eval.outputs.deploy_matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - id: eval
+        name: Enumerate and filter configurations
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_PERSONAL_TOKEN: ${{ secrets.CACHIX_PERSONAL_TOKEN }}
+          IS_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+        run: |
+          # shellcheck disable=SC2016
+          # 1. Run a single bulk evaluation for all configurations
+          ALL_HOSTS=$(nix eval --json --impure --expr '
+            let
+              self = builtins.getFlake (toString ./.);
+              
+              runner = sys:
+                if sys == "x86_64-linux" then "ubuntu-latest"
+                else if sys == "aarch64-linux" then "ubuntu-24.04-arm"
+                else if sys == "aarch64-darwin" then "macos-latest"
+                else "ubuntu-latest";
+
+              nixosItems = builtins.mapAttrs (name: cfg: let
+                sys = cfg.pkgs.stdenv.hostPlatform.system;
+                path = "nixosConfigurations.${name}.config.system.build.toplevel";
+              in {
+                host = name;
+                inherit path;
+                name = "${path} (${sys})";
+                system = sys;
+                runner = runner sys;
+                storePath = cfg.config.system.build.toplevel.outPath;
+              }) (self.nixosConfigurations or {});
+
+              darwinItems = builtins.mapAttrs (name: cfg: let
+                sys = cfg.pkgs.stdenv.hostPlatform.system;
+                path = "darwinConfigurations.${name}.system";
+              in {
+                host = name;
+                inherit path;
+                name = "${path} (${sys})";
+                system = sys;
+                runner = runner sys;
+                storePath = cfg.system.outPath;
+              }) (self.darwinConfigurations or {});
+            in
+              builtins.attrValues nixosItems ++ builtins.attrValues darwinItems
+          ' --accept-flake-config)
+
+          # 2. Fetch current pins from Cachix API
+          CURRENT_PINS=$(curl -s -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
+            https://app.cachix.org/api/v1/cache/whitestrake/pin || echo "[]")
+
+          # 3. Check which hosts have registered Cachix deploy agents
+          REGISTERED_HOSTS="[]"
+          if [[ "$IS_PRODUCTION" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
+            hosts=$(echo "$ALL_HOSTS" | jq -r '.[] | .host')
+            for host in $hosts; do
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
+                "https://cachix.org/api/v1/deploy/agent/whitestrake/$host")
+              if [ "$HTTP_STATUS" -eq 200 ]; then
+                REGISTERED_HOSTS=$(jq -c --arg h "$host" '. + [$h]' <<< "$REGISTERED_HOSTS")
+              fi
+            done
+          fi
+
+          # 4. Filter build matrix dynamically (storePath changed OR force manual dispatch)
+          FORCE_RUN="false"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FORCE_RUN="true"
+          fi
+
+          BUILD_MATRIX=$(jq -c \
+            --argjson pins "$CURRENT_PINS" \
+            --arg force "$FORCE_RUN" \
+            'map(
+              . as $item |
+              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
+              if ($force == "true" or $item.storePath != $pinned) then $item else empty end
+            )' <<< "$ALL_HOSTS")
+
+          # 5. Filter deploy matrix dynamically (host is registered AND (storePath changed OR force))
+          DEPLOY_MATRIX=$(jq -c \
+            --argjson pins "$CURRENT_PINS" \
+            --arg force "$FORCE_RUN" \
+            --argjson registered "$REGISTERED_HOSTS" \
+            'map(
+              . as $item |
+              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
+              if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
+            )' <<< "$ALL_HOSTS")
+
+          # 6. Debug output grouping
+          echo "::group::Raw Flake Evaluation Output"
+          echo "$ALL_HOSTS" | jq .
+          echo "::endgroup::"
+
+          echo "::group::Raw Cachix Pins Output"
+          echo "$CURRENT_PINS" | jq .
+          echo "::endgroup::"
+
+          echo "::group::Detailed Filtering Trace"
+          for host in $(echo "$ALL_HOSTS" | jq -r '.[] | .host'); do
+            item=$(echo "$ALL_HOSTS" | jq -r --arg h "$host" '.[] | select(.host == $h)')
+            store_path=$(echo "$item" | jq -r '.storePath')
+            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .lastRevision.storePath // ""')
+            
+            echo "[$host]:"
+            echo "  - Local System Store Path:  $store_path"
+            if [[ -n "$pinned_path" ]]; then
+              echo "  - Pinned Cachix Store Path: $pinned_path"
+            else
+              echo "  - Pinned Cachix Store Path: [NOT FOUND]"
+            fi
+
+            if [[ "$store_path" != "$pinned_path" ]]; then
+              echo "  - Build Decision: QUEUE BUILD (Mismatch or not pinned)"
+            else
+              echo "  - Build Decision: SKIP BUILD (Identical)"
+            fi
+
+            if jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
+              if [[ "$FORCE_RUN" == "true" || "$store_path" != "$pinned_path" ]]; then
+                echo "  - Deploy Decision: QUEUE DEPLOY (Agent registered & config changed/forced)"
+              else
+                echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged)"
+              fi
+            else
+              echo "  - Deploy Decision: SKIP DEPLOY (Cachix deploy agent not registered)"
+            fi
+          done
+          echo "::endgroup::"
+
+          # 7. Output single-line JSON matrices safely to GHA
+          echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
+          echo "deploy_matrix=$DEPLOY_MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: evaluate
+    if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
+    name: "Build ${{ matrix.name }}"
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.evaluate.outputs.build_matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v15
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build
+        run: nix build '.#${{ matrix.path }}' --print-build-logs
+      - name: Pin System Toplevel to Cachix
+        if: |
+          (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
+          (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.'))
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          STORE_PATH=$(readlink -f result)
+          echo "Pushing $STORE_PATH to Cachix..."
+          cachix push whitestrake "$STORE_PATH"
+          echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
+          cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+
+  deploy:
+    needs: [build, evaluate]
+    # Execute only on workflow_dispatch or pushes to the default branch,
+    # and only if there are deployable hosts and builds did not fail/cancel.
+    if: >-
+      always()
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+              && github.ref_name == github.event.repository.default_branch))
+      && needs.evaluate.outputs.deploy_matrix != '[]'
+      && needs.evaluate.outputs.deploy_matrix != ''
+      && !contains(needs.build.result, 'failure')
+      && !contains(needs.build.result, 'cancelled')
+    name: "Deploy ${{ matrix.name }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v15
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Deploy to Cachix Agent
+        env:
+          CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+        run: |
+          STORE_PATH="${{ matrix.storePath }}"
+          jq -n \
+            --arg agent "${{ matrix.host }}" \
+            --arg path "$STORE_PATH" \
+            '{"agents": {($agent): $path}}' > deploy.json
+          echo "Activating deployment for ${{ matrix.host }} ($STORE_PATH)..."
+          cachix deploy activate deploy.json
+
+  validate-deploy-rs:
+    name: "Validate deploy-rs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - name: Validate deploy-rs schema
+        run: |
+          nix flake archive --accept-flake-config
+          nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
+
+  all-builds-passed:
+    name: "All Cachix CI/CD"
+    needs: [evaluate, build, deploy, validate-deploy-rs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    steps:
+      - name: Check build and deployment status
+        run: |
+          if [[ "${{ needs.evaluate.result }}" != "success" ]]; then
+            echo "Evaluation stage failed or was not run."
+            exit 1
+          fi
+          if [[ "${{ needs.validate-deploy-rs.result }}" != "success" ]]; then
+            echo "deploy-rs validation failed."
+            exit 1
+          fi
+          if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
+            echo "Build stage failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.deploy.result }}" == "failure" || "${{ needs.deploy.result }}" == "cancelled" ]]; then
+            echo "Deployment stage failed or was cancelled."
+            exit 1
+          fi
+          echo "All builds and deployments succeeded or were skipped!"
+          exit 0
