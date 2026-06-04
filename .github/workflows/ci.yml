@@ -107,7 +107,38 @@ jobs:
               if ($item.host == "omnius" and $omnius_registered == "true" and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
-          # 6. Output single-line JSON matrices safely to GHA
+          # 6. Debug output grouping
+          echo "::group::Raw Flake Evaluation Output"
+          echo "$ALL_HOSTS" | jq .
+          echo "::endgroup::"
+
+          echo "::group::Raw Cachix Pins Output"
+          echo "$CURRENT_PINS" | jq .
+          echo "::endgroup::"
+
+          echo "::group::Detailed Filtering Trace"
+          for host in $(echo "$ALL_HOSTS" | jq -r '.[] | .host'); do
+            item=$(echo "$ALL_HOSTS" | jq -r --arg h "$host" '.[] | select(.host == $h)')
+            store_path=$(echo "$item" | jq -r '.storePath')
+            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .storePath // ""')
+            
+            echo "[$host]:"
+            echo "  - Local System Store Path:  $store_path"
+            if [[ -n "$pinned_path" ]]; then
+              echo "  - Pinned Cachix Store Path: $pinned_path"
+            else
+              echo "  - Pinned Cachix Store Path: [NOT FOUND]"
+            fi
+
+            if [[ "$store_path" != "$pinned_path" ]]; then
+              echo "  - Decision: QUEUE BUILD (Mismatch or not pinned)"
+            else
+              echo "  - Decision: SKIP BUILD (Identical)"
+            fi
+          done
+          echo "::endgroup::"
+
+          # 7. Output single-line JSON matrices safely to GHA
           echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
           echo "deploy_matrix=$DEPLOY_MATRIX" >> "$GITHUB_OUTPUT"
 
