@@ -12,10 +12,14 @@ concurrency:
   group: cicd-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   evaluate:
     name: Evaluate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       build_matrix: ${{ steps.eval.outputs.build_matrix }}
       deploy_matrix: ${{ steps.eval.outputs.deploy_matrix }}
@@ -165,6 +169,7 @@ jobs:
     if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
     name: "Build ${{ matrix.name }}"
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -209,6 +214,7 @@ jobs:
       && !contains(needs.build.result, 'cancelled')
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -238,6 +244,7 @@ jobs:
   validate-deploy-rs:
     name: "Validate deploy-rs"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -251,6 +258,7 @@ jobs:
     name: "All Cachix CI/CD"
     needs: [evaluate, build, deploy, validate-deploy-rs]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: always()
     steps:
       - name: Check build and deployment status

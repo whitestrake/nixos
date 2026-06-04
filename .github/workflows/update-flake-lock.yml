@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 12 * * 6" # every Saturday 12:00 UTC
 
+permissions:
+  contents: read
+
 jobs:
   nix-flake-update:
     permissions:
@@ -12,10 +15,11 @@ jobs:
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
