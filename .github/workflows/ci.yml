@@ -92,7 +92,7 @@ jobs:
             --arg force "$FORCE_RUN" \
             'map(
               . as $item |
-              (($pins[] | select(.name == "host-" + $item.host) | .storePath) // "") as $pinned |
+              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
               if ($force == "true" or $item.storePath != $pinned) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
@@ -103,7 +103,7 @@ jobs:
             --arg omnius_registered "$OMNIUS_REGISTERED" \
             'map(
               . as $item |
-              (($pins[] | select(.name == "host-" + $item.host) | .storePath) // "") as $pinned |
+              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
               if ($item.host == "omnius" and $omnius_registered == "true" and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
@@ -120,7 +120,7 @@ jobs:
           for host in $(echo "$ALL_HOSTS" | jq -r '.[] | .host'); do
             item=$(echo "$ALL_HOSTS" | jq -r --arg h "$host" '.[] | select(.host == $h)')
             store_path=$(echo "$item" | jq -r '.storePath')
-            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .storePath // ""')
+            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .lastRevision.storePath // ""')
             
             echo "[$host]:"
             echo "  - Local System Store Path:  $store_path"
