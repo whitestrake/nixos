@@ -2,6 +2,9 @@ name: "CI: Build & Cache"
 
 on:
   push:
+    branches:
+      - dendritic
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +13,8 @@ jobs:
     name: Evaluate
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.eval.outputs.matrix }}
+      build_matrix: ${{ steps.eval.outputs.build_matrix }}
+      deploy_matrix: ${{ steps.eval.outputs.deploy_matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -18,41 +22,98 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - id: eval
-        name: Enumerate host configurations
+        name: Enumerate and filter configurations
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
-          # 1. Run cheap evaluation to get the host mapping
+          # 1. Get host-to-system mapping
           CI_METADATA=$(nix eval --json '.#ci' || echo "{}")
 
-          # 2. Format host mapping into GHA build matrix JSON
-          MATRIX=$(jq -cn \
-            --argjson ci "$CI_METADATA" \
-            '
-            def runner($sys):
-              if $sys == "x86_64-linux" then "ubuntu-latest"
-              elif $sys == "aarch64-linux" then "ubuntu-24.04-arm"
-              elif $sys == "aarch64-darwin" then "macos-latest"
-              else "ubuntu-latest"
-              end;
+          # 2. Fetch current pins from Cachix API
+          CURRENT_PINS=$(curl -s -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
+            https://app.cachix.org/api/v1/cache/whitestrake/pin || echo "[]")
 
-            $ci | to_entries | map(.key as $sys | .value[] | {
-              name: (if ($sys | endswith("-darwin")) then "darwinConfigurations." else "nixosConfigurations." end + . + " (" + $sys + ")"),
-              path: (if ($sys | endswith("-darwin")) then "darwinConfigurations." + . + ".system" else "nixosConfigurations." + . + ".config.system.build.toplevel" end),
-              host: .,
-              system: $sys,
-              runner: runner($sys)
-            })
-            ')
+          # 3. Initialize matrix arrays
+          BUILD_ARR="[]"
+          DEPLOY_ARR="[]"
+          
+          # Temporary whitelist for deployment testing
+          WHITELIST='["omnius"]'
+          
+          # Force build/deploy on manual dispatch
+          FORCE_RUN="false"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FORCE_RUN="true"
+          fi
 
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          # Loop through hosts and evaluate store paths
+          for host in $(echo "$CI_METADATA" | jq -r '.[] | .[]'); do
+            system=$(echo "$CI_METADATA" | jq -r --arg h "$host" 'to_entries[] | select(.value | contains([$h])) | .key')
+            
+            if [[ "$system" == *"-darwin" ]]; then
+              path="darwinConfigurations.$host.system"
+            else
+              path="nixosConfigurations.$host.config.system.build.toplevel"
+            fi
+
+            # Evaluate the store path (fast evaluation)
+            store_path=$(nix eval --raw ".#$path" --accept-flake-config)
+            
+            # Fetch current pin path
+            pin_name="host-$host"
+            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg name "$pin_name" '.[] | select(.name == $name) | .storePath' || echo "")
+
+            # Set runner architecture
+            runner="ubuntu-latest"
+            if [[ "$system" == "aarch64-linux" ]]; then runner="ubuntu-24.04-arm"; fi
+            if [[ "$system" == "aarch64-darwin" ]]; then runner="macos-latest"; fi
+
+            item=$(jq -n \
+              --arg name "$path ($system)" \
+              --arg path "$path" \
+              --arg host "$host" \
+              --arg sys "$system" \
+              --arg run "$runner" \
+              --arg sp "$store_path" \
+              '{"name": $name, "path": $path, "host": $host, "system": $sys, "runner": $run, "storePath": $sp}')
+
+            # Build Filtering: Add if store path changed OR if we are forcing run
+            if [[ "$store_path" != "$pinned_path" || "$FORCE_RUN" == "true" ]]; then
+              BUILD_ARR=$(echo "$BUILD_ARR" | jq --argjson item "$item" '. += [$item]')
+            fi
+
+            # Deploy Filtering:
+            # 1. Whitelist Check
+            in_whitelist=$(echo "$WHITELIST" | jq -r --arg h "$host" 'contains([$h])')
+            if [[ -n "$CACHIX_ACTIVATE_TOKEN" && "$in_whitelist" == "true" ]]; then
+              # 2. Agent Existence Check via Cachix API
+              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer $CACHIX_ACTIVATE_TOKEN" \
+                "https://cachix.org/api/v1/deploy/agent/whitestrake/$host")
+              
+              if [ "$HTTP_STATUS" -eq 200 ]; then
+                # 3. Store Path Changed Check
+                if [[ "$store_path" != "$pinned_path" || "$FORCE_RUN" == "true" ]]; then
+                  DEPLOY_ARR=$(echo "$DEPLOY_ARR" | jq --argjson item "$item" '. += [$item]')
+                fi
+              fi
+            fi
+          done
+
+          # Output matrices to GitHub Actions
+          echo "build_matrix=$BUILD_ARR" >> "$GITHUB_OUTPUT"
+          echo "deploy_matrix=$DEPLOY_ARR" >> "$GITHUB_OUTPUT"
 
   build:
     needs: evaluate
+    if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
     name: "Build ${{ matrix.name }}"
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
+        include: ${{ fromJSON(needs.evaluate.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -80,12 +141,14 @@ jobs:
 
   deploy:
     needs: [build, evaluate]
+    # Execute if deploy_matrix is not empty and builds succeeded (or were skipped)
+    if: ${{ always() && needs.evaluate.outputs.deploy_matrix != '[]' && needs.evaluate.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') }}
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
+        include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -97,9 +160,6 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Deploy to Cachix Agent
-        if: |
-          (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.')) &&
-          (matrix.host == 'omnius')
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
@@ -112,17 +172,20 @@ jobs:
           cachix deploy activate deploy.json
 
   all-builds-passed:
-    name: "All Cachix Builds"
-    needs: deploy
+    name: "All Cachix CI/CD"
+    needs: [build, deploy]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Check build status
+      - name: Check build and deployment status
         run: |
-          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
-            echo "All builds and deployments succeeded!"
-            exit 0
-          else
-            echo "One or more builds or deployments failed."
+          if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
+            echo "Build stage failed or was cancelled."
             exit 1
           fi
+          if [[ "${{ needs.deploy.result }}" == "failure" || "${{ needs.deploy.result }}" == "cancelled" ]]; then
+            echo "Deployment stage failed or was cancelled."
+            exit 1
+          fi
+          echo "All builds and deployments succeeded or were skipped!"
+          exit 0
