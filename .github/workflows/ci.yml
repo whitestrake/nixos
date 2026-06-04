@@ -251,10 +251,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - name: Run Nix flake check (eval only)
+      - name: Validate deploy-rs schema
         run: |
           nix flake archive --accept-flake-config
-          nix flake check --no-build --accept-flake-config
+          nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
 
   all-builds-passed:
     name: "All Cachix CI/CD"
