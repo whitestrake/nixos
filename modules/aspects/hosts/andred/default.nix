@@ -8,6 +8,7 @@
     darwin = {pkgs, ...}: {
       system.stateVersion = 4;
       system.primaryUser = "whitestrake";
+      programs.zsh.enable = true;
     };
   };
 }
