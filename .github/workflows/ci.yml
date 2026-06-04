@@ -1,4 +1,4 @@
-name: "CI: Build & Cache"
+name: "Cachix CI/CD"
 
 on:
   push:
