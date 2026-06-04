@@ -77,6 +77,20 @@ jobs:
           cachix push whitestrake "$STORE_PATH"
           echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
           cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+      - name: Deploy to Cachix Agent
+        if: |
+          (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.')) &&
+          (matrix.host == 'omnius')
+        env:
+          CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+        run: |
+          STORE_PATH=$(readlink -f result)
+          jq -n \
+            --arg agent "${{ matrix.host }}" \
+            --arg path "$STORE_PATH" \
+            '{"agents": {($agent): $path}}' > deploy.json
+          echo "Activating deployment for ${{ matrix.host }} ($STORE_PATH)..."
+          cachix deploy activate deploy.json
 
   all-builds-passed:
     name: "All Cachix Builds"
