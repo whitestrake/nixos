@@ -235,9 +235,21 @@ jobs:
           echo "Activating deployment for ${{ matrix.host }} ($STORE_PATH)..."
           cachix deploy activate deploy.json
 
+  validate-deploy-rs:
+    name: "Validate deploy-rs"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - name: Run Nix flake check (eval only)
+        run: nix flake check --no-build --accept-flake-config
+
   all-builds-passed:
     name: "All Cachix CI/CD"
-    needs: [evaluate, build, deploy]
+    needs: [evaluate, build, deploy, validate-deploy-rs]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -245,6 +257,10 @@ jobs:
         run: |
           if [[ "${{ needs.evaluate.result }}" != "success" ]]; then
             echo "Evaluation stage failed or was not run."
+            exit 1
+          fi
+          if [[ "${{ needs.validate-deploy-rs.result }}" != "success" ]]; then
+            echo "deploy-rs validation failed."
             exit 1
           fi
           if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then

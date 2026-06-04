@@ -1,3 +1,10 @@
+# Deployment Configuration (deploy-rs)
+#
+# Note on Deployment Coexistence:
+# - deploy-rs remains supported for manual or fallback deployments.
+# - Cachix Deploy is the preferred automated CI/CD activation path for hosts with registered agents.
+# - Avoid running deploy-rs and Cachix Deploy concurrently against the same host.
+# - As hosts move to Cachix Deploy, deploy-rs should be treated as manual fallback unless intentionally retained.
 {
   self,
   inputs,
