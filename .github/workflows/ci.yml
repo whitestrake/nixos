@@ -24,7 +24,7 @@ jobs:
       build_matrix: ${{ steps.eval.outputs.build_matrix }}
       deploy_matrix: ${{ steps.eval.outputs.deploy_matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -175,7 +175,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.evaluate.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -220,7 +220,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -246,7 +246,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
