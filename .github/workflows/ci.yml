@@ -67,7 +67,7 @@ jobs:
         run: nix build '.#${{ matrix.path }}' --print-build-logs
       - name: Pin System Toplevel to Cachix
         if: |
-          (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
+          (github.ref_name == 'dendritic' || github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
           (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -77,6 +77,25 @@ jobs:
           cachix push whitestrake "$STORE_PATH"
           echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
           cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+
+  deploy:
+    needs: [build, evaluate]
+    name: "Deploy ${{ matrix.name }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - uses: cachix/cachix-action@v15
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Deploy to Cachix Agent
         if: |
           (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.')) &&
@@ -84,7 +103,7 @@ jobs:
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
-          STORE_PATH=$(readlink -f result)
+          STORE_PATH=$(nix eval --raw '.#${{ matrix.path }}' --accept-flake-config)
           jq -n \
             --arg agent "${{ matrix.host }}" \
             --arg path "$STORE_PATH" \
@@ -94,16 +113,16 @@ jobs:
 
   all-builds-passed:
     name: "All Cachix Builds"
-    needs: build
+    needs: deploy
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check build status
         run: |
-          if [[ "${{ needs.build.result }}" == "success" ]]; then
-            echo "All builds succeeded!"
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "All builds and deployments succeeded!"
             exit 0
           else
-            echo "One or more builds failed."
+            echo "One or more builds or deployments failed."
             exit 1
           fi
