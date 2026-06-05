@@ -2,7 +2,18 @@ name: "Cachix CI/CD"
 
 on:
   push:
+    # Docs-only changes cannot affect Nix evaluation, deploy scripts, modules,
+    # secrets/templates, lockfiles, or workflow behaviour, so they skip CI entirely.
+    # When every changed path matches, the whole workflow is skipped and no deploy
+    # can occur by construction. Scope is intentionally narrow: only the docs dir and
+    # top-level Markdown (NOT '**/*.md', which could match Markdown inside modules/).
+    paths-ignore:
+      - 'doc/**'
+      - '*.md'
   pull_request:
+    paths-ignore:
+      - 'doc/**'
+      - '*.md'
   workflow_dispatch:
 
 concurrency:
@@ -82,26 +93,67 @@ jobs:
           CURRENT_PINS=$(curl -s -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
             https://app.cachix.org/api/v1/cache/whitestrake/pin || echo "[]")
 
-          # 3. Check which hosts have registered Cachix deploy agents
-          REGISTERED_HOSTS="[]"
-          if [[ "$IS_PRODUCTION" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
-            hosts=$(echo "$ALL_HOSTS" | jq -r '.[] | .host')
-            for host in $hosts; do
-              HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-                -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
-                "https://cachix.org/api/v1/deploy/agent/whitestrake/$host")
-              if [ "$HTTP_STATUS" -eq 200 ]; then
-                REGISTERED_HOSTS=$(jq -c --arg h "$host" '. + [$h]' <<< "$REGISTERED_HOSTS")
-              fi
-            done
-          fi
-
-          # 4. Filter build matrix dynamically (storePath changed OR force manual dispatch)
+          # 3. Determine force flag (manual dispatch forces a full build/deploy run)
           FORCE_RUN="false"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             FORCE_RUN="true"
           fi
 
+          # 4. Probe Cachix deploy agents, but ONLY for hosts where a deployment could
+          #    actually occur: deploy-capable (isCachixDeployTarget) AND (config changed
+          #    vs. pinned OR forced). If no such candidate exists, skip probing entirely
+          #    since no deployment can happen by construction.
+          REGISTERED_HOSTS="[]"
+          if [[ "$IS_PRODUCTION" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
+            # Compute the deploy-candidate host set with the same predicate used by the
+            # deploy matrix filter below (minus the registration check we are about to do).
+            CANDIDATE_HOSTS=$(jq -r \
+              --argjson pins "$CURRENT_PINS" \
+              --arg force "$FORCE_RUN" \
+              '.[]
+                 | select(.isCachixDeployTarget == true)
+                 | . as $item
+                 | (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned
+                 | select($force == "true" or $item.storePath != $pinned)
+                 | .host' <<< "$ALL_HOSTS")
+
+            if [[ -n "$CANDIDATE_HOSTS" ]]; then
+              # Probe candidates in parallel with bounded concurrency. Each probe writes a
+              # single deterministic "host status" line; we sort the collected results so
+              # output is stable regardless of completion order, then collect the 200s.
+              probe_agent() {
+                local host="$1"
+                local code
+                code=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -H "Authorization: Bearer $CACHIX_PERSONAL_TOKEN" \
+                  "https://cachix.org/api/v1/deploy/agent/whitestrake/$host" || echo "000")
+                printf '%s %s\n' "$host" "$code"
+              }
+              export -f probe_agent
+              export CACHIX_PERSONAL_TOKEN
+
+              PROBE_RESULTS=$(printf '%s\n' "$CANDIDATE_HOSTS" \
+                | xargs -P 8 -I {} bash -c 'probe_agent "$@"' _ {} \
+                | sort)
+
+              echo "::group::Cachix Agent Probe Results"
+              echo "$PROBE_RESULTS"
+              echo "::endgroup::"
+
+              while read -r host code; do
+                [[ -z "$host" ]] && continue
+                if [[ "$code" == "200" ]]; then
+                  REGISTERED_HOSTS=$(jq -c --arg h "$host" '. + [$h]' <<< "$REGISTERED_HOSTS")
+                else
+                  echo "Agent for '$host' not registered/reachable (HTTP $code); will not deploy."
+                fi
+              done <<< "$PROBE_RESULTS"
+            else
+              echo "No deploy-capable host changed (or forced); skipping Cachix agent probing."
+            fi
+          fi
+
+          # 5. Filter build matrix dynamically (storePath changed OR force manual dispatch)
           BUILD_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
             --arg force "$FORCE_RUN" \
@@ -111,7 +163,7 @@ jobs:
               if ($force == "true" or $item.storePath != $pinned) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
-          # 5. Filter deploy matrix dynamically (host is registered AND (storePath changed OR force))
+          # 6. Filter deploy matrix dynamically (host is registered AND (storePath changed OR force))
           DEPLOY_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
             --arg force "$FORCE_RUN" \
@@ -122,7 +174,7 @@ jobs:
               if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
-          # 6. Debug output grouping
+          # 7. Debug output grouping
           echo "::group::Raw Flake Evaluation Output"
           echo "$ALL_HOSTS" | jq .
           echo "::endgroup::"
@@ -151,19 +203,24 @@ jobs:
               echo "  - Build Decision: SKIP BUILD (Identical)"
             fi
 
+            is_deploy_target=$(echo "$item" | jq -r '.isCachixDeployTarget // false')
             if jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
               if [[ "$FORCE_RUN" == "true" || "$store_path" != "$pinned_path" ]]; then
                 echo "  - Deploy Decision: QUEUE DEPLOY (Agent registered & config changed/forced)"
               else
                 echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged)"
               fi
+            elif [[ "$is_deploy_target" != "true" ]]; then
+              echo "  - Deploy Decision: SKIP DEPLOY (Host is not a Cachix deploy target)"
+            elif [[ "$FORCE_RUN" != "true" && "$store_path" == "$pinned_path" ]]; then
+              echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged; agent not probed)"
             else
-              echo "  - Deploy Decision: SKIP DEPLOY (Cachix deploy agent not registered)"
+              echo "  - Deploy Decision: SKIP DEPLOY (Cachix deploy agent not registered/reachable)"
             fi
           done
           echo "::endgroup::"
 
-          # 7. Output single-line JSON matrices safely to GHA
+          # 8. Output single-line JSON matrices safely to GHA
           echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
           echo "deploy_matrix=$DEPLOY_MATRIX" >> "$GITHUB_OUTPUT"
 
@@ -277,6 +334,16 @@ jobs:
           cachix deploy activate "deploy-${{ matrix.host }}.json"
 
   validate-deployment:
+    # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
+    # hard-requires `needs.validate-deployment.result == 'success'`, and GitHub reports
+    # a non-matched/skipped matrix system as 'skipped' (not 'success'). Dynamically
+    # scoping this matrix to only the systems present in the evaluated change set would
+    # therefore risk turning a legitimate deploy into a blocked one, OR require
+    # rewriting the deploy gate to treat "no deploy candidate for system X" as an
+    # acceptable skip — which touches deploy gate semantics directly. Per the
+    # zero-compromise-on-validation / preserve-gating constraints, this is deferred.
+    # The schema/rollback checks here are cheap and fully cached, so the marginal cost
+    # of validating both systems unconditionally is low.
     name: "Validate Deployment (${{ matrix.system }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
@@ -295,7 +362,6 @@ jobs:
             accept-flake-config = true
       - name: Validate deploy-rs schema
         run: |
-          nix flake archive --accept-flake-config
           nix build ".#checks.${{ matrix.system }}.deploy-schema" --no-link --accept-flake-config
       - name: Validate deploy health rollback script
         run: |
