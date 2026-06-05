@@ -18,38 +18,48 @@
 
     # Function to generate health check commands for a single host
     mkHostChecks = name: let
-      cfg = self.nixosConfigurations.${name}.config.den.deploy.health;
+      cfg = self.nixosConfigurations.${name}.config;
+      healthCfg = cfg.den.deploy.health;
 
-      # systemd unit checks
+      # systemd unit checks (budget: 5 attempts, 1s delay)
       unitChecks =
         map (unit: ''
-          check_with_retry "systemd-unit-${unit}" "${pkgs.systemd}/bin/systemctl is-active --quiet ${unit}" || fail "Systemd unit ${unit} is not active"
+          check_with_retry "systemd-unit-${unit}" 5 1 check_systemd_unit "${unit}"
         '')
-        cfg.requiredSystemdUnits;
+        healthCfg.requiredSystemdUnits;
 
-      # custom command checks
+      # custom command checks (budget: global default)
       commandChecks =
         lib.mapAttrsToList (cmdName: cmd: ''
-          check_with_retry "command-${cmdName}" "${cmd}" || fail "Command check ${cmdName} failed"
+          check_with_retry "command-${cmdName}" - - check_command ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg cmd}
         '')
-        cfg.requiredCommands;
+        healthCfg.requiredCommands;
 
-      # HTTP endpoint checks
+      # HTTP endpoint checks (budget: 10 attempts, 3s delay)
       httpChecks =
         lib.mapAttrsToList (epName: ep: ''
-          check_with_retry "http-${epName}" "STATUS=\\\$(${pkgs.curl}/bin/curl --silent --write-out '%{http_code}' --output /dev/null --max-time 10 ${lib.escapeShellArg ep.url}); [ \\\"\\\$STATUS\\\" -eq ${toString ep.expectStatus} ]" || fail "HTTP check ${epName} failed"
+          check_with_retry "http-${epName}" 10 3 check_http_endpoint "${epName}" "${ep.url}" "${toString ep.expectStatus}"
         '')
-        cfg.requiredHttpEndpoints;
+        healthCfg.requiredHttpEndpoints;
+
+      # rsyncd checks (if enabled on this host)
+      # systemd service budget: 5 attempts, 1s delay
+      # socket check budget: 15 attempts, 2s delay
+      rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
+        check_with_retry "systemd-unit-rsync.service" 5 1 check_systemd_unit "rsync.service"
+        check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.fell-monitor.ts.net/873'
+      '';
 
       # extra check script
-      extraCheck = lib.optionalString (cfg.extraCheckScript != "") ''
+      extraCheck = lib.optionalString (healthCfg.extraCheckScript != "") ''
         log "Running extra check script for ${name}..."
-        ${cfg.extraCheckScript}
+        ${healthCfg.extraCheckScript}
       '';
     in ''
       ${lib.concatStringsSep "\n" unitChecks}
       ${lib.concatStringsSep "\n" commandChecks}
       ${lib.concatStringsSep "\n" httpChecks}
+      ${rsyncdChecks}
       ${extraCheck}
     '';
 
@@ -101,16 +111,54 @@
       log() { echo "deploy-health: $*" >&2; }
       fail() { log "FAIL: $*"; exit 1; }
 
+      check_systemd_unit() {
+        local unit="$1"
+        ${pkgs.systemd}/bin/systemctl is-active --quiet "$unit"
+      }
+
+      check_command() {
+        "$@"
+      }
+
+      check_http_endpoint() {
+        local ep_name="$1"
+        local url="$2"
+        local expected_status="$3"
+
+        local status
+        if ! status=$(${pkgs.curl}/bin/curl --silent --show-error --max-time 10 --write-out '%{http_code}' --output /dev/null "$url"); then
+          log "HTTP check '$ep_name' failed: curl execution failed"
+          return 1
+        fi
+
+        status="''${status:-0}"
+        if [ "$status" -ne "$expected_status" ]; then
+          log "HTTP check '$ep_name' failed: expected status $expected_status, got $status"
+          return 1
+        fi
+        return 0
+      }
+
       check_with_retry() {
         local name="$1"
-        local cmd="$2"
-        local max_attempts="''${DEPLOY_HEALTH_RETRY_ATTEMPTS:-10}"
-        local delay="''${DEPLOY_HEALTH_RETRY_DELAY_SECONDS:-2}"
-        local attempt=1
+        local attempts_override="$2"
+        local delay_override="$3"
+        shift 3
 
-        log "Running check '$name'..."
+        local max_attempts="''${DEPLOY_HEALTH_RETRY_ATTEMPTS:-10}"
+        if [ "$attempts_override" != "-" ]; then
+          max_attempts="$attempts_override"
+        fi
+
+        local delay="''${DEPLOY_HEALTH_RETRY_DELAY_SECONDS:-2}"
+        if [ "$delay_override" != "-" ]; then
+          delay="$delay_override"
+        fi
+
+        local attempt=1
+        log "Running check '$name' (max attempts: $max_attempts, delay: $delay s)..."
         while true; do
-          if eval "$cmd"; then
+          if "$@"; then
             log "Check '$name' PASSED"
             return 0
           fi
@@ -138,10 +186,28 @@
 
       log "all checks passed for $host"
     '';
+
+    isLinux = lib.strings.hasSuffix "-linux" system;
   in {
-    packages = {
+    packages = lib.optionalAttrs isLinux {
       # The hostname-dispatching rollback script for this system (outputs a file directly in store)
       deploy-health-rollback-script = pkgs.writeShellScript "deploy-health-rollback-script" rollbackScriptText;
+    };
+
+    checks = lib.optionalAttrs isLinux {
+      # Flake check that validates the syntax and shell quality of the generated script
+      validate-deploy-health-rollback-script =
+        pkgs.runCommand "validate-deploy-health-rollback-script" {
+          nativeBuildInputs = [pkgs.shellcheck];
+        } ''
+          echo "Checking syntax with bash -n..."
+          bash -n ${self.packages.${system}.deploy-health-rollback-script}
+
+          echo "Checking script style with shellcheck..."
+          shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
+
+          touch $out
+        '';
     };
   };
 }

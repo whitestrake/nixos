@@ -252,6 +252,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: deploy-spec-${{ matrix.host }}
+      # Determinate Nix Action is required here because the downstream cachix-action
+      # requires a functional Nix installation on the runner to configure caching and
+      # install/run the Cachix CLI, even though the deploy job itself performs no cold
+      # Nix evaluations or builds.
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -283,6 +287,9 @@ jobs:
         run: |
           nix flake archive --accept-flake-config
           nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
+      - name: Validate deploy health rollback script
+        run: |
+          nix build .#checks.x86_64-linux.validate-deploy-health-rollback-script --no-link --accept-flake-config
 
   all-builds-passed:
     name: "All Cachix CI/CD"

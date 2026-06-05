@@ -23,7 +23,7 @@
         ];
         requiredCommands = {
           dns = "${pkgs.dnsutils}/bin/host whitestrake.net";
-          tailscale = "${pkgs.tailscale}/bin/tailscale status";
+          tailscale = "${pkgs.tailscale}/bin/tailscale status --peers=false";
         };
       };
 
