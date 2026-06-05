@@ -48,6 +48,9 @@ jobs:
               nixosItems = builtins.mapAttrs (name: cfg: let
                 sys = cfg.pkgs.stdenv.hostPlatform.system;
                 path = "nixosConfigurations.${name}.config.system.build.toplevel";
+                rollbackScript = if self.packages.${sys} ? deploy-health-rollback-script
+                  then self.packages.${sys}.deploy-health-rollback-script.outPath
+                  else "";
               in {
                 host = name;
                 inherit path;
@@ -55,6 +58,7 @@ jobs:
                 system = sys;
                 runner = runner sys;
                 storePath = cfg.config.system.build.toplevel.outPath;
+                rollbackScript = rollbackScript;
               }) (self.nixosConfigurations or {});
 
               darwinItems = builtins.mapAttrs (name: cfg: let
@@ -182,7 +186,12 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build
-        run: nix build '.#${{ matrix.path }}' --print-build-logs
+        run: |
+          nix build '.#${{ matrix.path }}' --print-build-logs
+          if [[ "${{ matrix.path }}" == nixosConfigurations.* && "${{ matrix.host }}" != "kronos" && -n "${{ matrix.rollbackScript }}" ]]; then
+            echo "Building rollback script..."
+            nix build "${{ matrix.rollbackScript }}" --no-link --print-build-logs
+          fi
       - name: Pin System Toplevel to Cachix
         if: |
           (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
@@ -193,8 +202,30 @@ jobs:
           STORE_PATH=$(readlink -f result)
           echo "Pushing $STORE_PATH to Cachix..."
           cachix push whitestrake "$STORE_PATH"
+          if [[ "${{ matrix.path }}" == nixosConfigurations.* && "${{ matrix.host }}" != "kronos" && -n "${{ matrix.rollbackScript }}" ]]; then
+            echo "Pushing rollback script ${{ matrix.rollbackScript }} to Cachix..."
+            cachix push whitestrake "${{ matrix.rollbackScript }}"
+          fi
           echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
           cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+      - name: Generate Deploy Spec
+        if: startsWith(matrix.path, 'nixosConfigurations.') && matrix.host != 'kronos'
+        run: |
+          jq -n \
+            --arg agent "${{ matrix.host }}" \
+            --arg path "${{ matrix.storePath }}" \
+            --arg sys "${{ matrix.system }}" \
+            --arg rollback "${{ matrix.rollbackScript }}" \
+            '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' > "deploy-${{ matrix.host }}.json"
+          echo "Generated deploy-${{ matrix.host }}.json:"
+          cat "deploy-${{ matrix.host }}.json"
+      - name: Upload Deploy Spec
+        if: startsWith(matrix.path, 'nixosConfigurations.') && matrix.host != 'kronos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-spec-${{ matrix.host }}
+          path: deploy-${{ matrix.host }}.json
+          retention-days: 1
 
   deploy:
     needs: [build, evaluate]
@@ -217,7 +248,10 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Download Deploy Spec
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-spec-${{ matrix.host }}
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -230,13 +264,10 @@ jobs:
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
-          STORE_PATH="${{ matrix.storePath }}"
-          jq -n \
-            --arg agent "${{ matrix.host }}" \
-            --arg path "$STORE_PATH" \
-            '{"agents": {($agent): $path}}' > deploy.json
-          echo "Activating deployment for ${{ matrix.host }} ($STORE_PATH)..."
-          cachix deploy activate deploy.json
+          echo "deploy-${{ matrix.host }}.json content:"
+          cat "deploy-${{ matrix.host }}.json"
+          echo "Activating deployment for ${{ matrix.host }}..."
+          cachix deploy activate "deploy-${{ matrix.host }}.json"
 
   validate-deploy-rs:
     name: "Validate deploy-rs"
