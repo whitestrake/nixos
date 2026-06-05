@@ -1,5 +1,4 @@
 name: "Cachix CI/CD"
-
 on:
   push:
     # Docs-only changes cannot affect Nix evaluation, deploy scripts, modules,
@@ -15,14 +14,11 @@ on:
       - 'doc/**'
       - '*.md'
   workflow_dispatch:
-
 concurrency:
   group: cicd-${{ github.ref }}
   cancel-in-progress: false
-
 permissions:
   contents: read
-
 jobs:
   evaluate:
     name: Evaluate
@@ -67,7 +63,7 @@ jobs:
           ALL_HOSTS=$(nix eval --json --impure --expr '
             let
               self = builtins.getFlake (toString ./.);
-              
+
               runner = sys:
                 if sys == "x86_64-linux" then "ubuntu-latest"
                 else if sys == "aarch64-linux" then "ubuntu-24.04-arm"
@@ -218,7 +214,7 @@ jobs:
             item=$(echo "$ALL_HOSTS" | jq -r --arg h "$host" '.[] | select(.host == $h)')
             store_path=$(echo "$item" | jq -r '.storePath')
             pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .lastRevision.storePath // ""')
-            
+
             echo "[$host]:"
             echo "  - Local System Store Path:  $store_path"
             if [[ -n "$pinned_path" ]]; then
@@ -272,7 +268,6 @@ jobs:
           echo "Skipped build count: $SKIPPED_BUILD_COUNT"
           echo "Deploy matrix count: $DEPLOY_COUNT"
           echo "::endgroup::"
-
   build:
     needs: evaluate
     if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
@@ -334,21 +329,17 @@ jobs:
           name: deploy-spec-${{ matrix.host }}
           path: deploy-${{ matrix.host }}.json
           retention-days: 1
-
   deploy:
     needs: [build, evaluate, validate-deployment]
     # Execute only on workflow_dispatch or pushes to the default branch,
     # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
-      always()
-      && (github.event_name == 'workflow_dispatch'
+      always() && (github.event_name == 'workflow_dispatch'
+
+
           || (github.event_name == 'push'
               && github.ref_name == github.event.repository.default_branch))
-      && needs.evaluate.outputs.deploy_matrix != '[]'
-      && needs.evaluate.outputs.deploy_matrix != ''
-      && !contains(needs.build.result, 'failure')
-      && !contains(needs.build.result, 'cancelled')
-      && needs.validate-deployment.result == 'success'
+      && needs.evaluate.outputs.deploy_matrix != '[]' && needs.evaluate.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deployment.result == 'success'
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -381,7 +372,6 @@ jobs:
           cat "deploy-${{ matrix.host }}.json"
           echo "Activating deployment for ${{ matrix.host }}..."
           cachix deploy activate "deploy-${{ matrix.host }}.json"
-
   validate-deployment:
     # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
     # hard-requires `needs.validate-deployment.result == 'success'`, and GitHub reports
@@ -415,7 +405,6 @@ jobs:
       - name: Validate deploy health rollback script
         run: |
           nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
- 
   all-builds-passed:
     name: "All Cachix CI/CD"
     needs: [evaluate, build, deploy, validate-deployment]

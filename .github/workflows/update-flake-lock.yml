@@ -1,13 +1,10 @@
 name: "Flake.lock: update Nix dependencies"
-
 on:
   workflow_dispatch: # allow manual runs
   schedule:
     - cron: "0 12 * * 6" # every Saturday 12:00 UTC
-
 permissions:
   contents: read
-
 jobs:
   nix-flake-update:
     permissions:
@@ -16,14 +13,11 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
-
       - name: Update flake.lock
         uses: DeterminateSystems/update-flake-lock@main
         id: update
@@ -33,7 +27,6 @@ jobs:
           pr-labels: |
             dependencies
             automated
-
       - name: Enable auto-merge
         if: steps.update.outputs.pull-request-number != ''
         run: gh pr merge "${{ steps.update.outputs.pull-request-number }}" --auto --rebase

@@ -34,30 +34,38 @@
     };
 
     stripDeployPathContexts = deploy:
-      deploy // {
-        nodes = builtins.mapAttrs (_nodeName: node:
-          node // {
-            profiles = builtins.mapAttrs (_profileName: profile:
-              profile // {
-                path = builtins.unsafeDiscardStringContext (toString profile.path);
-              }
-            ) (node.profiles or {});
-          }
+      deploy
+      // {
+        nodes = builtins.mapAttrs (
+          _nodeName: node:
+            node
+            // {
+              profiles = builtins.mapAttrs (
+                _profileName: profile:
+                  profile
+                  // {
+                    path = builtins.unsafeDiscardStringContext (toString profile.path);
+                  }
+              ) (node.profiles or {});
+            }
         ) (deploy.nodes or {});
       };
 
-    mkFastDeploySchemaCheck = { pkgs, deploy, deployRsSrc }:
+    mkFastDeploySchemaCheck = {
+      pkgs,
+      deploy,
+      deployRsSrc,
+    }:
       pkgs.runCommand "deploy-rs-schema-fast" {
-        nativeBuildInputs = [ pkgs.check-jsonschema ];
+        nativeBuildInputs = [pkgs.check-jsonschema];
         deployJson = builtins.toJSON (stripDeployPathContexts deploy);
-        passAsFile = [ "deployJson" ];
+        passAsFile = ["deployJson"];
       } ''
         check-jsonschema \
           --schemafile ${deployRsSrc}/interface.json \
           "$deployJsonPath"
         touch "$out"
       '';
-
   in {
     # deploy-rs configurations
     deploy = mkDeploy deployableNodes;
@@ -66,12 +74,13 @@
     checks = lib.genAttrs config.systems (
       system:
         if deploy-rs.lib ? ${system}
-        then
-          let
-            pkgs = inputs.nixpkgs.legacyPackages.${system};
-            sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
-            upstreamDeployChecks = deploy-rs.lib.${system}.deployChecks (mkDeploy sysDeployableNodes);
-          in upstreamDeployChecks // {
+        then let
+          pkgs = inputs.nixpkgs.legacyPackages.${system};
+          sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
+          upstreamDeployChecks = deploy-rs.lib.${system}.deployChecks (mkDeploy sysDeployableNodes);
+        in
+          upstreamDeployChecks
+          // {
             deploy-schema-fast = mkFastDeploySchemaCheck {
               inherit pkgs;
               deploy = mkDeploy sysDeployableNodes;
