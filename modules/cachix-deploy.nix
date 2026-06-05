@@ -216,6 +216,12 @@
             exit 1
           fi
 
+          echo "Checking for missing host command regression..."
+          if grep -E '/bin/host([[:space:]]|$)' "$script"; then
+            echo "ERROR: generated rollback script contains a reference to /bin/host." >&2
+            exit 1
+          fi
+
           echo "Verifying presence of store-qualified hostname retrieval..."
           grep -F '${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname' "$script"
 

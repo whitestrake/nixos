@@ -22,7 +22,7 @@
           "cachix-agent.service"
         ];
         requiredCommands = {
-          dns = "${pkgs.dnsutils}/bin/host whitestrake.net";
+          dns = "${pkgs.dig}/bin/dig +short whitestrake.net";
           tailscale = "${pkgs.tailscale}/bin/tailscale status --peers=false";
         };
       };

@@ -1,5 +1,4 @@
 # yaml-language-server: $schema=https://garnix.io/api/garnix-config-schema.json
-
 builds:
   exclude:
     - "checks.*.deploy-activate"

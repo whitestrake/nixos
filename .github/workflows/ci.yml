@@ -66,6 +66,7 @@ jobs:
           phase_start "job_script"
           phase_start "nix_eval"
           # 1. Run a single bulk evaluation for all configurations
+          # shellcheck disable=SC2016
           ALL_HOSTS=$(nix eval --json --impure --expr '
             let
               self = builtins.getFlake (toString ./.);
@@ -349,6 +350,7 @@ jobs:
     # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
       always() && (github.event_name == 'workflow_dispatch'
+
 
 
           || (github.event_name == 'push'
