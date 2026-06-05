@@ -1,5 +1,4 @@
 name: "Packages: check for updates"
-
 on:
   workflow_dispatch:
     inputs:
@@ -8,11 +7,9 @@ on:
         required: false
         type: string
   schedule:
-    - cron: "0 12 * * *"  # Daily at 12:00 UTC
-
+    - cron: "0 12 * * *" # Daily at 12:00 UTC
 permissions:
   contents: read
-
 jobs:
   detect-packages:
     runs-on: ubuntu-latest
@@ -20,17 +17,29 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
       - id: set-matrix
         run: |
+          # shellcheck disable=SC2016
           if [ -n "$PACKAGE" ]; then
             MATRIX=$(jq -cn --arg p "$PACKAGE" '{package: [$p]}')
             echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix={"package":["beszel","caddy","komodo","netronome"]}' >> "$GITHUB_OUTPUT"
+            PACKAGES=$(nix eval --impure --json --expr '
+              builtins.filter (name:
+                let
+                  file = ./pkgs + "/${name}.nix";
+                  content = builtins.readFile file;
+                in
+                  builtins.match ".*[[:space:]]version[[:space:]]*=.*" content != null
+              ) (builtins.attrNames (import ./pkgs { pkgs = import <nixpkgs> {}; }))
+            ')
+            MATRIX=$(jq -cn --argjson pkgs "$PACKAGES" '{package: $pkgs}')
+            echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           fi
         env:
           PACKAGE: ${{ inputs.package }}
-
   update-package:
     needs: detect-packages
     runs-on: ubuntu-latest
@@ -41,12 +50,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.detect-packages.outputs.matrix) }}
-
     steps:
       - uses: actions/checkout@v6
-
       - uses: DeterminateSystems/determinate-nix-action@v3
-
       - name: Run nix-update
         id: update
         run: |
@@ -61,11 +67,9 @@ jobs:
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Fix caddy withPlugins hash
         if: >-
-          steps.update.outputs.changed == 'true' &&
-          matrix.package == 'caddy'
+          steps.update.outputs.changed == 'true' && matrix.package == 'caddy'
         run: |
           # Set withPlugins hash to fakeHash to trigger a build with mismatch
           python3 -c '
@@ -94,12 +98,10 @@ jobs:
           new_content = re.sub(r"      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", f"      hash = \"{sys.argv[1]}\";", content)
           open("pkgs/caddy.nix", "w").write(new_content)
           ' "$CORRECT_HASH"
-
       - name: Format with alejandra
         if: steps.update.outputs.changed == 'true'
         run: |
           nix run nixpkgs#alejandra -- pkgs/
-
       - name: Create Pull Request
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
