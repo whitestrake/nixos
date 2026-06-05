@@ -7,8 +7,6 @@
     includes = [
       den.aspects.server-base
       den.aspects.docker
-      den.aspects.rsyncd-docker-export
-      den.aspects.komodo-periphery
     ];
 
     nixos = {config, ...}: {

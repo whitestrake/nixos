@@ -7,8 +7,6 @@
     includes = [
       den.aspects.lab-server
       den.aspects.docker
-      den.aspects.rsyncd-docker-export
-      den.aspects.komodo-periphery
       den.aspects.i915-sriov
       den.aspects.user-mediaserver
     ];
