@@ -230,9 +230,9 @@ jobs:
           retention-days: 1
 
   deploy:
-    needs: [build, evaluate]
+    needs: [build, evaluate, validate-deployment]
     # Execute only on workflow_dispatch or pushes to the default branch,
-    # and only if there are deployable hosts and builds did not fail/cancel.
+    # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
       always()
       && (github.event_name == 'workflow_dispatch'
@@ -242,6 +242,7 @@ jobs:
       && needs.evaluate.outputs.deploy_matrix != ''
       && !contains(needs.build.result, 'failure')
       && !contains(needs.build.result, 'cancelled')
+      && needs.validate-deployment.result == 'success'
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
