@@ -293,7 +293,7 @@ jobs:
           nix build '.#${{ matrix.path }}' --print-build-logs
           if [[ "${{ matrix.isCachixDeployTarget }}" == "true" && -n "${{ matrix.rollbackScript }}" ]]; then
             echo "Building rollback script..."
-            nix build "${{ matrix.rollbackScript }}" --no-link --print-build-logs
+            nix build ".#packages.${{ matrix.system }}.deploy-health-rollback-script" --no-link --print-build-logs
           fi
       - name: Pin System Toplevel to Cachix
         if: |
