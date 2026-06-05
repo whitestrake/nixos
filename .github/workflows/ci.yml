@@ -287,9 +287,10 @@ jobs:
         run: |
           nix flake archive --accept-flake-config
           nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
-      - name: Validate deploy health rollback script
+      - name: Validate deploy health rollback scripts
         run: |
           nix build .#checks.x86_64-linux.validate-deploy-health-rollback-script --no-link --accept-flake-config
+          nix build .#checks.x86_64-linux.validate-deploy-health-rollback-script-aarch64-linux --no-link --accept-flake-config
 
   all-builds-passed:
     name: "All Cachix CI/CD"

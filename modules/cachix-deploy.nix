@@ -45,6 +45,8 @@
       # rsyncd checks (if enabled on this host)
       # systemd service budget: 5 attempts, 1s delay
       # socket check budget: 15 attempts, 2s delay
+      # NOTE: We intentionally check rsync.service instead of rsyncd.service because
+      # this repository uses the non-socket-activated rsyncd configuration in NixOS.
       rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
         check_with_retry "systemd-unit-rsync.service" 5 1 check_systemd_unit "rsync.service"
         check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.fell-monitor.ts.net/873'
@@ -194,20 +196,36 @@
       deploy-health-rollback-script = pkgs.writeShellScript "deploy-health-rollback-script" rollbackScriptText;
     };
 
-    checks = lib.optionalAttrs isLinux {
-      # Flake check that validates the syntax and shell quality of the generated script
-      validate-deploy-health-rollback-script =
-        pkgs.runCommand "validate-deploy-health-rollback-script" {
-          nativeBuildInputs = [pkgs.shellcheck];
-        } ''
-          echo "Checking syntax with bash -n..."
-          bash -n ${self.packages.${system}.deploy-health-rollback-script}
+    checks =
+      lib.optionalAttrs isLinux {
+        # Flake check that validates the syntax and shell quality of the generated script
+        validate-deploy-health-rollback-script =
+          pkgs.runCommand "validate-deploy-health-rollback-script" {
+            nativeBuildInputs = [pkgs.shellcheck];
+          } ''
+            echo "Checking syntax with bash -n..."
+            bash -n ${self.packages.${system}.deploy-health-rollback-script}
 
-          echo "Checking script style with shellcheck..."
-          shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
+            echo "Checking script style with shellcheck..."
+            shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
 
-          touch $out
-        '';
-    };
+            touch $out
+          '';
+      }
+      // lib.optionalAttrs (system == "x86_64-linux") {
+        # Custom check that validates the aarch64-linux rollback script on x86_64-linux natively in CI
+        validate-deploy-health-rollback-script-aarch64-linux =
+          pkgs.runCommand "validate-deploy-health-rollback-script-aarch64-linux" {
+            nativeBuildInputs = [pkgs.shellcheck];
+          } ''
+            echo "Checking syntax of aarch64-linux script with bash -n..."
+            bash -n ${self.packages.aarch64-linux.deploy-health-rollback-script}
+
+            echo "Checking script style of aarch64-linux script with shellcheck..."
+            shellcheck -s bash ${self.packages.aarch64-linux.deploy-health-rollback-script}
+
+            touch $out
+          '';
+      };
   };
 }
