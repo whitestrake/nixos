@@ -27,7 +27,7 @@ den.deploy.health = {
 
   # Commands that must return exit status 0
   requiredCommands = {
-    dns = "${pkgs.dnsutils}/bin/host whitestrake.net";
+    dns = "${pkgs.dig}/bin/dig +short whitestrake.net";
   };
 
   # Local or remote HTTP endpoints that must return a specific status code (default: 200)
