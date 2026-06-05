@@ -1,8 +1,4 @@
-{
-  den,
-  inputs,
-  ...
-}: {
+{den, ...}: {
   den.aspects.darwin-base = {
     includes = [den.aspects.common-base];
 

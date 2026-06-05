@@ -1,10 +1,4 @@
-{
-  den,
-  inputs,
-  config,
-  lib,
-  ...
-}: let
+{den, ...}: let
   sharedNixSettings = {
     experimental-features = ["nix-command" "flakes"];
     trusted-users = ["root" "@wheel" "@staff" "whitestrake"];

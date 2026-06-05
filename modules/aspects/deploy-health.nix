@@ -1,4 +1,4 @@
-{den, ...}: {
+{...}: {
   den.aspects.deploy-health = {
     nixos = {
       config,

@@ -1,4 +1,4 @@
-{den, ...}: {
+{...}: {
   den.aspects.cachix-agent = {
     nixos = {config, ...}: {
       # Decrypt the shared agent token
