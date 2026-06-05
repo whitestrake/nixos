@@ -4,13 +4,29 @@
       den.aspects.linux-base
       den.aspects.monitoring
       den.aspects.cachix-agent
+      den.aspects.deploy-health
     ];
 
     nixos = {
       config,
       pkgs,
+      lib,
       ...
     }: {
+      den.deploy.health = {
+        enable = lib.mkDefault true;
+        allowUnprotected = lib.mkDefault false;
+        requiredSystemdUnits = [
+          "sshd.service"
+          "tailscaled.service"
+          "cachix-agent.service"
+        ];
+        requiredCommands = {
+          dns = "${pkgs.dnsutils}/bin/host whitestrake.net";
+          tailscale = "${pkgs.tailscale}/bin/tailscale status --peers=false";
+        };
+      };
+
       sops.secrets.tailscaleOauthKey = {};
       services.tailscale = {
         authKeyFile = config.sops.secrets.tailscaleOauthKey.path;

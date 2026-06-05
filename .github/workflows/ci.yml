@@ -48,6 +48,10 @@ jobs:
               nixosItems = builtins.mapAttrs (name: cfg: let
                 sys = cfg.pkgs.stdenv.hostPlatform.system;
                 path = "nixosConfigurations.${name}.config.system.build.toplevel";
+                isCachixDeployTarget = cfg.config.services.cachix-agent.enable or false;
+                rollbackScript = if isCachixDeployTarget && self.packages.${sys} ? deploy-health-rollback-script
+                  then self.packages.${sys}.deploy-health-rollback-script.outPath
+                  else "";
               in {
                 host = name;
                 inherit path;
@@ -55,6 +59,8 @@ jobs:
                 system = sys;
                 runner = runner sys;
                 storePath = cfg.config.system.build.toplevel.outPath;
+                isCachixDeployTarget = isCachixDeployTarget;
+                rollbackScript = rollbackScript;
               }) (self.nixosConfigurations or {});
 
               darwinItems = builtins.mapAttrs (name: cfg: let
@@ -182,7 +188,12 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build
-        run: nix build '.#${{ matrix.path }}' --print-build-logs
+        run: |
+          nix build '.#${{ matrix.path }}' --print-build-logs
+          if [[ "${{ matrix.isCachixDeployTarget }}" == "true" && -n "${{ matrix.rollbackScript }}" ]]; then
+            echo "Building rollback script..."
+            nix build "${{ matrix.rollbackScript }}" --no-link --print-build-logs
+          fi
       - name: Pin System Toplevel to Cachix
         if: |
           (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
@@ -193,13 +204,35 @@ jobs:
           STORE_PATH=$(readlink -f result)
           echo "Pushing $STORE_PATH to Cachix..."
           cachix push whitestrake "$STORE_PATH"
+          if [[ "${{ matrix.isCachixDeployTarget }}" == "true" && -n "${{ matrix.rollbackScript }}" ]]; then
+            echo "Pushing rollback script ${{ matrix.rollbackScript }} to Cachix..."
+            cachix push whitestrake "${{ matrix.rollbackScript }}"
+          fi
           echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
           cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+      - name: Generate Deploy Spec
+        if: matrix.isCachixDeployTarget == true
+        run: |
+          jq -n \
+            --arg agent "${{ matrix.host }}" \
+            --arg path "${{ matrix.storePath }}" \
+            --arg sys "${{ matrix.system }}" \
+            --arg rollback "${{ matrix.rollbackScript }}" \
+            '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' > "deploy-${{ matrix.host }}.json"
+          echo "Generated deploy-${{ matrix.host }}.json:"
+          cat "deploy-${{ matrix.host }}.json"
+      - name: Upload Deploy Spec
+        if: matrix.isCachixDeployTarget == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-spec-${{ matrix.host }}
+          path: deploy-${{ matrix.host }}.json
+          retention-days: 1
 
   deploy:
-    needs: [build, evaluate]
+    needs: [build, evaluate, validate-deployment]
     # Execute only on workflow_dispatch or pushes to the default branch,
-    # and only if there are deployable hosts and builds did not fail/cancel.
+    # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
       always()
       && (github.event_name == 'workflow_dispatch'
@@ -209,6 +242,7 @@ jobs:
       && needs.evaluate.outputs.deploy_matrix != ''
       && !contains(needs.build.result, 'failure')
       && !contains(needs.build.result, 'cancelled')
+      && needs.validate-deployment.result == 'success'
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -217,7 +251,14 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Download Deploy Spec
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-spec-${{ matrix.host }}
+      # Determinate Nix Action is required here because the downstream cachix-action
+      # requires a functional Nix installation on the runner to configure caching and
+      # install/run the Cachix CLI, even though the deploy job itself performs no cold
+      # Nix evaluations or builds.
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -230,18 +271,22 @@ jobs:
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
         run: |
-          STORE_PATH="${{ matrix.storePath }}"
-          jq -n \
-            --arg agent "${{ matrix.host }}" \
-            --arg path "$STORE_PATH" \
-            '{"agents": {($agent): $path}}' > deploy.json
-          echo "Activating deployment for ${{ matrix.host }} ($STORE_PATH)..."
-          cachix deploy activate deploy.json
+          echo "deploy-${{ matrix.host }}.json content:"
+          cat "deploy-${{ matrix.host }}.json"
+          echo "Activating deployment for ${{ matrix.host }}..."
+          cachix deploy activate "deploy-${{ matrix.host }}.json"
 
-  validate-deploy-rs:
-    name: "Validate deploy-rs"
-    runs-on: ubuntu-latest
+  validate-deployment:
+    name: "Validate Deployment (${{ matrix.system }})"
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
+    strategy:
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -251,11 +296,14 @@ jobs:
       - name: Validate deploy-rs schema
         run: |
           nix flake archive --accept-flake-config
-          nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
-
+          nix build ".#checks.${{ matrix.system }}.deploy-schema" --no-link --accept-flake-config
+      - name: Validate deploy health rollback script
+        run: |
+          nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
+ 
   all-builds-passed:
     name: "All Cachix CI/CD"
-    needs: [evaluate, build, deploy, validate-deploy-rs]
+    needs: [evaluate, build, deploy, validate-deployment]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -266,8 +314,8 @@ jobs:
             echo "Evaluation stage failed or was not run."
             exit 1
           fi
-          if [[ "${{ needs.validate-deploy-rs.result }}" != "success" ]]; then
-            echo "deploy-rs validation failed."
+          if [[ "${{ needs.validate-deployment.result }}" != "success" ]]; then
+            echo "Deployment validation failed."
             exit 1
           fi
           if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
