@@ -1,7 +1,7 @@
 {
   den,
-  inputs,
-  flakeRoot,
+  caches,
+  mkLocalPackages,
   ...
 }: let
   sharedNixSettings = {
@@ -19,22 +19,16 @@ in {
         sharedNixSettings
         // {
           download-buffer-size = 524288000;
-          substituters = ["https://cache.garnix.io" "https://nix-community.cachix.org"];
-          trusted-public-keys = [
-            "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
-            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-          ];
+          substituters = [caches.garnix.url caches.nix-community.url];
+          trusted-public-keys = [caches.garnix.key caches.nix-community.key];
         };
 
       nixpkgs.overlays = [
         (final: prev: {
           inherit unstable;
-          myPkgs = import (flakeRoot + "/lib/local-packages.nix") {
-            inherit (final) lib;
+          myPkgs = mkLocalPackages {
             pkgs = final;
             unstablePkgs = unstable;
-            inherit (inputs) import-tree;
-            packageDir = flakeRoot + "/pkgs";
           };
         })
       ];
@@ -85,11 +79,13 @@ in {
   };
 
   den.aspects.linux-base = {
-    includes = [den.aspects.common-base];
+    includes = [
+      den.aspects.common-base
+      den.aspects.distributed-builds
+    ];
 
     nixos = {
       pkgs,
-      config,
       lib,
       ...
     }: {
@@ -144,36 +140,6 @@ in {
         useRoutingFeatures = lib.mkDefault "client";
         openFirewall = true;
       };
-
-      # Distributed builds configuration
-      sops.secrets.nixBuilderKey = {};
-      nix.distributedBuilds = true;
-      nix.settings.builders-use-substitutes = true;
-      nix.buildMachines = let
-        mkMachine = attrs:
-          {
-            protocol = "ssh-ng";
-            sshUser = "builder";
-            sshKey = config.sops.secrets.nixBuilderKey.path;
-            maxJobs = 4;
-            supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
-          }
-          // attrs;
-        systems = map mkMachine [
-          {
-            hostName = "jaeger.fell-monitor.ts.net";
-            system = "aarch64-linux";
-            publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
-          }
-          {
-            hostName = "orthus.fell-monitor.ts.net";
-            system = "x86_64-linux";
-            publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
-          }
-        ];
-      in
-        # Don't include the current host in its own buildMachines list
-        lib.filter (x: x.hostName != "${config.networking.hostName}.fell-monitor.ts.net") systems;
 
       # www-data user
       users.users.www-data = {
