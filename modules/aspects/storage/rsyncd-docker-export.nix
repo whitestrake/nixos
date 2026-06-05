@@ -1,16 +1,20 @@
 {...}: {
   den.aspects.rsyncd-docker-export = {
-    nixos = {config, ...}: {
+    nixos = {
+      config,
+      tailnetSuffix,
+      ...
+    }: {
       # Allow for NAS pulls of the entire /opt/docker directory via rsyncd
       services.rsyncd.enable = true;
       services.rsyncd.settings = {
-        globalSection.address = "${config.networking.hostName}.fell-monitor.ts.net";
+        globalSection.address = "${config.networking.hostName}.${tailnetSuffix}";
         sections = {
           docker = {
             path = "/opt/docker";
             uid = "root";
             gid = "root";
-            "hosts allow" = "triton.fell-monitor.ts.net,tempus.fell-monitor.ts.net";
+            "hosts allow" = "triton.${tailnetSuffix},tempus.${tailnetSuffix}";
             "read only" = true;
           };
         };

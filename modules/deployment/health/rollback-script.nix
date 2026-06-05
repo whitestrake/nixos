@@ -1,6 +1,7 @@
 {
   self,
   lib,
+  tailnetSuffix,
   ...
 }: {
   perSystem = {
@@ -51,7 +52,7 @@
       # services.rsyncd on /opt/docker NAS-export hosts.
       rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
         check_with_retry "systemd-unit-rsync.service" 5 1 check_systemd_unit "rsync.service"
-        check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.fell-monitor.ts.net/873'
+        check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${tailnetSuffix}/873'
       '';
 
       # extra check script

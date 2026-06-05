@@ -4,7 +4,9 @@
   config,
   flakeRoot,
   ...
-}: {
+}: let
+  flakeConfig = config;
+in {
   imports = [inputs.den.flakeModule];
 
   config = {
@@ -36,6 +38,8 @@
                 (args.specialArgs or {})
                 // {
                   inherit inputs unstable flakeRoot;
+                  inherit (flakeConfig) caches;
+                  inherit (flakeConfig.network) tailnetSuffix;
                   lib = extendedLib;
                 };
             });

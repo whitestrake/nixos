@@ -10,6 +10,7 @@
   inputs,
   lib,
   config,
+  tailnetSuffix,
   ...
 }: {
   flake = let
@@ -22,7 +23,7 @@
     deployableNodes = lib.filterAttrs (name: host: host.class == "nixos" && !(host.wsl.enable or false)) allHosts;
 
     mkNode = name: host: {
-      hostname = "${name}.fell-monitor.ts.net";
+      hostname = "${name}.${tailnetSuffix}";
       profiles.system.path = deploy-rs.lib.${host.system}.activate.nixos self.nixosConfigurations.${name};
     };
 
