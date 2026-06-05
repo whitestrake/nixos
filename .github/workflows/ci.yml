@@ -14,6 +14,12 @@ on:
       - 'doc/**'
       - '*.md'
   workflow_dispatch:
+    inputs:
+      host:
+        description: "Optional host to build/deploy. Empty means all eligible hosts."
+        required: false
+        default: ""
+        type: string
 concurrency:
   group: cicd-${{ github.ref }}
   cancel-in-progress: false
@@ -119,8 +125,10 @@ jobs:
 
           # 3. Determine force flag (manual dispatch forces a full build/deploy run)
           FORCE_RUN="false"
+          TARGET_HOST=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             FORCE_RUN="true"
+            TARGET_HOST="${{ inputs.host }}"
           fi
 
           # 4. Probe Cachix deploy agents, but ONLY for hosts where a deployment could
@@ -134,8 +142,10 @@ jobs:
             CANDIDATE_HOSTS=$(jq -r \
               --argjson pins "$CURRENT_PINS" \
               --arg force "$FORCE_RUN" \
+              --arg target "$TARGET_HOST" \
               '.[]
                  | select(.isCachixDeployTarget == true)
+                 | select($target == "" or .host == $target)
                  | . as $item
                  | (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned
                  | select($force == "true" or $item.storePath != $pinned)
@@ -182,7 +192,9 @@ jobs:
           BUILD_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
             --arg force "$FORCE_RUN" \
+            --arg target "$TARGET_HOST" \
             'map(
+              select($target == "" or .host == $target) |
               . as $item |
               (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
               if ($force == "true" or $item.storePath != $pinned) then $item else empty end
@@ -192,8 +204,10 @@ jobs:
           DEPLOY_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
             --arg force "$FORCE_RUN" \
+            --arg target "$TARGET_HOST" \
             --argjson registered "$REGISTERED_HOSTS" \
             'map(
+              select($target == "" or .host == $target) |
               . as $item |
               (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
               if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
