@@ -174,7 +174,7 @@
         done
       }
 
-      host="$(hostname)"
+      host="$(${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname)"
 
       log "Starting deploy health checks on $host (settling delay: ''${DEPLOY_HEALTH_SETTLE_SECONDS:-10}s)..."
       sleep "''${DEPLOY_HEALTH_SETTLE_SECONDS:-10}"
@@ -202,11 +202,22 @@
         pkgs.runCommand "validate-deploy-health-rollback-script" {
           nativeBuildInputs = [pkgs.shellcheck];
         } ''
+          script="${self.packages.${system}.deploy-health-rollback-script}"
+
           echo "Checking syntax with bash -n..."
-          bash -n ${self.packages.${system}.deploy-health-rollback-script}
+          bash -n "$script"
 
           echo "Checking script style with shellcheck..."
-          shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
+          shellcheck -s bash "$script"
+
+          echo "Checking for bare hostname command regression..."
+          if grep -E '\$\([[:space:]]*hostname[[:space:]]*\)|(^|[;&|[:space:]])hostname([[:space:]]|$)' "$script"; then
+            echo "ERROR: generated rollback script contains a bare hostname invocation." >&2
+            exit 1
+          fi
+
+          echo "Verifying presence of store-qualified hostname retrieval..."
+          grep -F '${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname' "$script"
 
           touch $out
         '';
