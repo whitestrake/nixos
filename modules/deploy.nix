@@ -74,7 +74,7 @@
           in upstreamDeployChecks // {
             deploy-schema-fast = mkFastDeploySchemaCheck {
               inherit pkgs;
-              deploy = self.deploy;
+              deploy = mkDeploy sysDeployableNodes;
               deployRsSrc = inputs.deploy-rs;
             };
           }

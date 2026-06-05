@@ -45,6 +45,20 @@ jobs:
           IS_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
         run: |
           # shellcheck disable=SC2016
+          phase_start() {
+            PHASE_NAME="$1"
+            PHASE_TS="$(date +%s%3N)"
+            echo "::group::phase: ${PHASE_NAME}"
+            echo "phase_start_ms=${PHASE_TS}"
+          }
+          phase_end() {
+            local end
+            end="$(date +%s%3N)"
+            echo "phase_end_ms=${end}"
+            echo "::endgroup::"
+          }
+          phase_start "job_script"
+          phase_start "nix_eval"
           # 1. Run a single bulk evaluation for all configurations
           ALL_HOSTS=$(nix eval --json --impure --expr '
             let
@@ -88,10 +102,20 @@ jobs:
             in
               builtins.attrValues nixosItems ++ builtins.attrValues darwinItems
           ' --accept-flake-config)
+          phase_end # nix_eval
 
+          phase_start "cachix_pin_fetch"
           # 2. Fetch current pins from Cachix API
-          CURRENT_PINS=$(curl -s -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-            https://app.cachix.org/api/v1/cache/whitestrake/pin || echo "[]")
+          CURRENT_PINS="$(
+            curl -fsS -H "Authorization: Bearer ${CACHIX_AUTH_TOKEN}" \
+              "https://app.cachix.org/api/v1/cache/whitestrake/pin" \
+            | jq -e 'if type == "array" then . else empty end' \
+            || {
+              echo "::warning::Failed to fetch a valid Cachix pin list; treating pins as empty." >&2
+              echo "[]"
+            }
+          )"
+          phase_end # cachix_pin_fetch
 
           # 3. Determine force flag (manual dispatch forces a full build/deploy run)
           FORCE_RUN="false"
@@ -153,6 +177,7 @@ jobs:
             fi
           fi
 
+          phase_start "matrix_construction"
           # 5. Filter build matrix dynamically (storePath changed OR force manual dispatch)
           BUILD_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
@@ -174,6 +199,7 @@ jobs:
               if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
+          phase_end # matrix_construction
           # 7. Debug output grouping
           echo "::group::Raw Flake Evaluation Output"
           echo "$ALL_HOSTS" | jq .
@@ -220,9 +246,28 @@ jobs:
           done
           echo "::endgroup::"
 
+          phase_start "github_output_writing"
           # 8. Output single-line JSON matrices safely to GHA
           echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
           echo "deploy_matrix=$DEPLOY_MATRIX" >> "$GITHUB_OUTPUT"
+          phase_end # github_output_writing
+          phase_end # job_script
+
+          BUILD_COUNT=$(echo "$BUILD_MATRIX" | jq length)
+          DEPLOY_COUNT=$(echo "$DEPLOY_MATRIX" | jq length)
+          TOTAL_HOSTS=$(echo "$ALL_HOSTS" | jq length)
+          PINNED_COUNT=$(echo "$CURRENT_PINS" | jq length)
+          SKIPPED_BUILD_COUNT=$((TOTAL_HOSTS - BUILD_COUNT))
+
+          echo "::group::Evaluate Summary"
+          echo "Branch/Ref evaluated: ${{ github.ref_name }}"
+          echo "Force mode status: $FORCE_RUN"
+          echo "Total hosts evaluated: $TOTAL_HOSTS"
+          echo "Cachix pins fetched: $PINNED_COUNT"
+          echo "Build matrix count: $BUILD_COUNT"
+          echo "Skipped build count: $SKIPPED_BUILD_COUNT"
+          echo "Deploy matrix count: $DEPLOY_COUNT"
+          echo "::endgroup::"
 
   build:
     needs: evaluate
