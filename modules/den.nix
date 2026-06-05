@@ -2,6 +2,7 @@
   den,
   inputs,
   config,
+  flakeRoot,
   ...
 }: {
   imports = [inputs.den.flakeModule];
@@ -34,7 +35,7 @@
               specialArgs =
                 (args.specialArgs or {})
                 // {
-                  inherit inputs unstable;
+                  inherit inputs unstable flakeRoot;
                   lib = extendedLib;
                 };
             });

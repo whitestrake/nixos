@@ -1,6 +1,7 @@
 {
   den,
   inputs,
+  flakeRoot,
   ...
 }: let
   sharedNixSettings = {
@@ -28,12 +29,12 @@ in {
       nixpkgs.overlays = [
         (final: prev: {
           inherit unstable;
-          myPkgs = import ../../lib/local-packages.nix {
+          myPkgs = import (flakeRoot + "/lib/local-packages.nix") {
             inherit (final) lib;
             pkgs = final;
             unstablePkgs = unstable;
             inherit (inputs) import-tree;
-            packageDir = ../../pkgs;
+            packageDir = flakeRoot + "/pkgs";
           };
         })
       ];
