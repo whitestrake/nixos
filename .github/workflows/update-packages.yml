@@ -15,7 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      packages: ${{ steps.set-matrix.outputs.packages }}
+      has_packages: ${{ steps.set-matrix.outputs.has_packages }}
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -23,25 +24,19 @@ jobs:
         run: |
           # shellcheck disable=SC2016
           if [ -n "$PACKAGE" ]; then
-            MATRIX=$(jq -cn --arg p "$PACKAGE" '{package: [$p]}')
-            echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            PACKAGES=$(jq -cn --arg p "$PACKAGE" '[$p]')
           else
-            PACKAGES=$(nix eval --impure --json --expr '
-              builtins.filter (name:
-                let
-                  file = ./pkgs + "/${name}.nix";
-                  content = builtins.readFile file;
-                in
-                  builtins.match ".*[[:space:]]version[[:space:]]*=.*" content != null
-              ) (builtins.attrNames (import ./pkgs { pkgs = import <nixpkgs> {}; }))
-            ')
-            MATRIX=$(jq -cn --argjson pkgs "$PACKAGES" '{package: $pkgs}')
-            echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
           fi
+          echo "packages=$PACKAGES" >> "$GITHUB_OUTPUT"
+
+          COUNT="$(jq 'length' <<< "$PACKAGES")"
+          echo "has_packages=$([[ "$COUNT" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
         env:
           PACKAGE: ${{ inputs.package }}
   update-package:
     needs: detect-packages
+    if: needs.detect-packages.outputs.has_packages == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -49,7 +44,8 @@ jobs:
       pull-requests: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.detect-packages.outputs.matrix) }}
+      matrix:
+        package: ${{ fromJson(needs.detect-packages.outputs.packages) }}
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
