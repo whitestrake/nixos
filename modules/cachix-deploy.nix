@@ -10,11 +10,13 @@
     system,
     ...
   }: let
-    # Flat map all host configurations defined in den.hosts
-    allHosts = lib.foldl' (acc: sys: acc // config.den.hosts.${sys}) {} (builtins.attrNames config.den.hosts);
-
-    # Get all NixOS hosts on this system (excluding WSL)
-    nixosHostsOnSystem = lib.filterAttrs (name: host: host.system == system && host.class == "nixos" && !(host.wsl.enable or false)) allHosts;
+    # Get all NixOS configurations on this system that have the Cachix Agent enabled
+    nixosHostsOnSystem = lib.filterAttrs (
+      name: cfg:
+        cfg.pkgs.stdenv.hostPlatform.system
+        == system
+        && cfg.config.services.cachix-agent.enable or false
+    ) (self.nixosConfigurations or {});
 
     # Function to generate health check commands for a single host
     mkHostChecks = name: let
@@ -196,36 +198,20 @@
       deploy-health-rollback-script = pkgs.writeShellScript "deploy-health-rollback-script" rollbackScriptText;
     };
 
-    checks =
-      lib.optionalAttrs isLinux {
-        # Flake check that validates the syntax and shell quality of the generated script
-        validate-deploy-health-rollback-script =
-          pkgs.runCommand "validate-deploy-health-rollback-script" {
-            nativeBuildInputs = [pkgs.shellcheck];
-          } ''
-            echo "Checking syntax with bash -n..."
-            bash -n ${self.packages.${system}.deploy-health-rollback-script}
+    checks = lib.optionalAttrs isLinux {
+      # Flake check that validates the syntax and shell quality of the generated script
+      validate-deploy-health-rollback-script =
+        pkgs.runCommand "validate-deploy-health-rollback-script" {
+          nativeBuildInputs = [pkgs.shellcheck];
+        } ''
+          echo "Checking syntax with bash -n..."
+          bash -n ${self.packages.${system}.deploy-health-rollback-script}
 
-            echo "Checking script style with shellcheck..."
-            shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
+          echo "Checking script style with shellcheck..."
+          shellcheck -s bash ${self.packages.${system}.deploy-health-rollback-script}
 
-            touch $out
-          '';
-      }
-      // lib.optionalAttrs (system == "x86_64-linux") {
-        # Custom check that validates the aarch64-linux rollback script on x86_64-linux natively in CI
-        validate-deploy-health-rollback-script-aarch64-linux =
-          pkgs.runCommand "validate-deploy-health-rollback-script-aarch64-linux" {
-            nativeBuildInputs = [pkgs.shellcheck];
-          } ''
-            echo "Checking syntax of aarch64-linux script with bash -n..."
-            bash -n ${self.packages.aarch64-linux.deploy-health-rollback-script}
-
-            echo "Checking script style of aarch64-linux script with shellcheck..."
-            shellcheck -s bash ${self.packages.aarch64-linux.deploy-health-rollback-script}
-
-            touch $out
-          '';
-      };
+          touch $out
+        '';
+    };
   };
 }
