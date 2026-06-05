@@ -1,4 +1,8 @@
-{den, ...}: let
+{
+  den,
+  inputs,
+  ...
+}: let
   sharedNixSettings = {
     experimental-features = ["nix-command" "flakes"];
     trusted-users = ["root" "@wheel" "@staff" "whitestrake"];
@@ -24,9 +28,12 @@ in {
       nixpkgs.overlays = [
         (final: prev: {
           inherit unstable;
-          myPkgs = import ../../pkgs {
+          myPkgs = import ../../lib/local-packages.nix {
+            inherit (final) lib;
             pkgs = final;
             unstablePkgs = unstable;
+            inherit (inputs) import-tree;
+            packageDir = ../../pkgs;
           };
         })
       ];
