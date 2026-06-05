@@ -1,14 +1,15 @@
-{inputs, ...}: let
-  mkLocalPackages = pkgs: system:
-    import ../lib/local-packages.nix {
-      inherit (pkgs) lib;
+{
+  inputs,
+  mkLocalPackages,
+  ...
+}: let
+  localPackagesFor = pkgs: system:
+    mkLocalPackages {
       inherit pkgs;
       unstablePkgs = import inputs.nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
       };
-      inherit (inputs) import-tree;
-      packageDir = ../pkgs;
     };
 
   # updatablePackages is currently based on x86_64-linux evaluation.
@@ -18,7 +19,7 @@
     system = "x86_64-linux";
     config.allowUnfree = true;
   };
-  packages = mkLocalPackages x86_64-pkgs "x86_64-linux";
+  packages = localPackagesFor x86_64-pkgs "x86_64-linux";
 
   lib = x86_64-pkgs.lib;
   hasLocalVersion = name: drv: let
@@ -35,7 +36,7 @@ in {
     system,
     ...
   }: {
-    packages = mkLocalPackages pkgs system;
+    packages = localPackagesFor pkgs system;
   };
 
   flake.updatablePackages =
