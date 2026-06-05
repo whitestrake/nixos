@@ -55,6 +55,10 @@ jobs:
             local end
             end="$(date +%s%3N)"
             echo "phase_end_ms=${end}"
+            if [[ -n "${PHASE_TS:-}" ]]; then
+              local duration=$(( end - PHASE_TS ))
+              echo "phase_duration_ms=${duration}"
+            fi
             echo "::endgroup::"
           }
           phase_start "job_script"
