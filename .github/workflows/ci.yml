@@ -294,10 +294,9 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - name: Validate deploy-rs schema
-        if: matrix.system == 'x86_64-linux'
         run: |
           nix flake archive --accept-flake-config
-          nix build .#checks.x86_64-linux.deploy-schema --no-link --accept-flake-config
+          nix build ".#checks.${{ matrix.system }}.deploy-schema" --no-link --accept-flake-config
       - name: Validate deploy health rollback script
         run: |
           nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
