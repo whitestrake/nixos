@@ -414,7 +414,7 @@ jobs:
       && needs.plan.outputs.deploy_matrix != '[]' && needs.plan.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deploy.result == 'success' && needs.validate-flake.result == 'success'
     name: "Deploy · ${{ matrix.name }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
