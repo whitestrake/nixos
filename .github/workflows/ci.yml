@@ -283,8 +283,20 @@ jobs:
           echo "Skipped build count: $SKIPPED_BUILD_COUNT"
           echo "Deploy matrix count: $DEPLOY_COUNT"
           echo "::endgroup::"
+  eval-gate:
+    name: "Eval Gate"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - name: Force-evaluate all non-IFD flake outputs
+        run: ./ci/eval-gate.sh .
   build:
-    needs: evaluate
+    needs: [evaluate, eval-gate]
     if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
     name: "Build ${{ matrix.name }}"
     runs-on: ${{ matrix.runner }}
@@ -345,7 +357,7 @@ jobs:
           path: deploy-${{ matrix.host }}.json
           retention-days: 1
   deploy:
-    needs: [build, evaluate, validate-deployment]
+    needs: [build, evaluate, validate-deployment, eval-gate]
     # Execute only on workflow_dispatch or pushes to the default branch,
     # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
@@ -355,7 +367,7 @@ jobs:
 
           || (github.event_name == 'push'
               && github.ref_name == github.event.repository.default_branch))
-      && needs.evaluate.outputs.deploy_matrix != '[]' && needs.evaluate.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deployment.result == 'success'
+      && needs.evaluate.outputs.deploy_matrix != '[]' && needs.evaluate.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deployment.result == 'success' && needs.eval-gate.result == 'success'
     name: "Deploy ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -389,6 +401,7 @@ jobs:
           echo "Activating deployment for ${{ matrix.host }}..."
           cachix deploy activate "deploy-${{ matrix.host }}.json"
   validate-deployment:
+    needs: [eval-gate]
     # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
     # hard-requires `needs.validate-deployment.result == 'success'`, and GitHub reports
     # a non-matched/skipped matrix system as 'skipped' (not 'success'). Dynamically
@@ -423,7 +436,7 @@ jobs:
           nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
   all-builds-passed:
     name: "All Cachix CI/CD"
-    needs: [evaluate, build, deploy, validate-deployment]
+    needs: [evaluate, build, deploy, validate-deployment, eval-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -432,6 +445,10 @@ jobs:
         run: |
           if [[ "${{ needs.evaluate.result }}" != "success" ]]; then
             echo "Evaluation stage failed or was not run."
+            exit 1
+          fi
+          if [[ "${{ needs.eval-gate.result }}" != "success" ]]; then
+            echo "Eval gate failed."
             exit 1
           fi
           if [[ "${{ needs.validate-deployment.result }}" != "success" ]]; then
