@@ -421,7 +421,7 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.deploy_matrix) }}
     steps:
       - name: Download Deploy Spec
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: deploy-spec-${{ matrix.host }}
       # Determinate Nix Action is required here because the downstream cachix-action
