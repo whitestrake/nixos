@@ -2,7 +2,7 @@
 
 A dendritic Nix flake for managing NixOS, nix-darwin, WSL, Home Manager, packages, secrets, and deployment behavior from a centralized declarative source of truth.
 
-It follows the dendritic Nix pattern[2] through the Den framework[4], and is meant to be explored through the flake structure rather than through a hand-maintained inventory. The evaluated flake remains authoritative for the current set of hosts, aspects, packages, checks, and deployment outputs.
+It follows the [dendritic Nix pattern](https://github.com/mightyiam/dendritic) through the [Den framework](https://github.com/denful/den), and is meant to be explored through the flake structure rather than through a hand-maintained inventory. The evaluated flake remains authoritative for the current set of hosts, aspects, packages, checks, and deployment outputs.
 
 ## Configuration Model
 
@@ -11,8 +11,6 @@ The repository is organized around Den/dendritic composition rather than a flat 
 `flake.nix` is the root entry point, but `modules/den.nix` is the de-facto entry point into the configuration model after that. It defines the Den topology that the rest of the flake flows through: hosts, users, context, and the way aspects are composed into concrete outputs.
 
 Aspects describe capabilities, roles, and reusable behavior. Host-specific directories primarily compose those capabilities and hold local details such as hardware profiles, disk layout, or machine-specific overrides. This keeps most changes reviewable as shared configuration rather than isolated host mutations.
-
-Prose lists in this README should not be treated as authoritative inventories. If the question is “what exists right now?”, inspect or evaluate the flake.
 
 ## Repository Structure
 
@@ -96,5 +94,3 @@ The repository is easiest to understand by following the composition model rathe
 Host configuration flows from `modules/aspects/hosts/<hostname>` into the aspects it includes. Reusable aspects generally explain shared behavior better than host-specific files, while host-private files such as hardware profiles and disk layouts provide the local details needed by an individual machine.
 
 The CI workflows are best read in terms of which flake outputs they evaluate, build, cache, or deploy. Deployment and health-check modules are worth treating as operational safety boundaries rather than ordinary service configuration.
-
-README prose is intentionally only a map of the repository shape. For current state, evaluate or inspect the flake itself.
