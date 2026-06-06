@@ -5,9 +5,10 @@
       den.aspects.komodo-periphery
     ];
 
-    nixos = {...}: {
+    nixos = {pkgs, ...}: {
       # Docker Service
       virtualisation.docker.enable = true;
+      virtualisation.docker.package = pkgs.docker_29;
       virtualisation.docker.autoPrune.enable = true;
       virtualisation.docker.liveRestore = false;
       systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];

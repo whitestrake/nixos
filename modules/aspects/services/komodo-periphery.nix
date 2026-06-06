@@ -24,7 +24,7 @@
         wants = ["network-online.target"];
         wantedBy = ["multi-user.target"];
         description = "Agent to connect with Komodo Core";
-        path = with pkgs; [bash docker openssl];
+        path = with pkgs; [bash config.virtualisation.docker.package openssl];
         serviceConfig = {
           EnvironmentFile = config.sops.templates."komodo-periphery.env".path;
           ExecStart = "${pkgs.myPkgs.komodo}/bin/periphery";
