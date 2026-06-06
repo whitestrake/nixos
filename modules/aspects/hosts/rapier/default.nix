@@ -9,6 +9,7 @@
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.user-mediaserver
+      den.aspects.cifs-client
     ];
 
     nixos = {
@@ -42,19 +43,19 @@
       networking.hostId = "3ae03bc7";
 
       sops.secrets."smbCredentials/rapier@tempus" = {};
-      fileSystems = let
+      storage.cifsMounts = let
         credentials = config.sops.secrets."smbCredentials/rapier@tempus".path;
         uid = config.users.users.mediaserver.uid;
       in {
-        "/mnt/media" = lib.mkCifs {
+        "/mnt/media" = {
           device = "//tempus.lab.whitestrake.net/Media";
           inherit uid credentials;
         };
-        "/mnt/plex" = lib.mkCifs {
+        "/mnt/plex" = {
           device = "//tempus.lab.whitestrake.net/Plex";
           inherit uid credentials;
         };
-        "/mnt/jellyfin" = lib.mkCifs {
+        "/mnt/jellyfin" = {
           device = "//tempus.lab.whitestrake.net/Jellyfin";
           inherit uid credentials;
         };

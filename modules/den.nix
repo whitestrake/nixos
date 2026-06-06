@@ -23,7 +23,7 @@ in {
             inherit (config) system;
             config.allowUnfree = true;
           };
-          extendedLib = inputs.nixpkgs.lib.extend (final: prev: import ../lib);
+
           builder =
             {
               nixos = inputs.nixpkgs.lib.nixosSystem;
@@ -41,7 +41,7 @@ in {
                   inherit (flakeConfig) caches;
                   inherit (flakeConfig.network) tailnetSuffix;
                   clusterHosts = flakeConfig.den.hosts;
-                  lib = extendedLib;
+                  lib = inputs.nixpkgs.lib;
                 };
             });
       };

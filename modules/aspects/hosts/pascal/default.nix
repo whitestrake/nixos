@@ -7,6 +7,7 @@
       den.aspects.vscode-server
       den.aspects.user-mediaserver
       den.aspects.nix-tools
+      den.aspects.cifs-client
     ];
 
     nixos = {
@@ -33,23 +34,24 @@
 
       # Filesystem mounts from Tempus
       sops.secrets."smbCredentials/pascal@tempus" = {};
-      fileSystems = let
+      storage.cifsMounts = let
         credentials = config.sops.secrets."smbCredentials/pascal@tempus".path;
       in {
-        "/mnt/media" = lib.mkCifs {
+        "/mnt/media" = {
           device = "//tempus.lab.whitestrake.net/Media";
           uid = config.users.users.mediaserver.uid;
           inherit credentials;
         };
-        "/mnt/nextcloud" = lib.mkCifs {
+        "/mnt/nextcloud" = {
           device = "//tempus.lab.whitestrake.net/Nextcloud";
           uid = 33;
           inherit credentials;
         };
-        "/mnt/downloads" = {
-          device = "/dev/disk/by-label/downloads";
-          fsType = "ext4";
-        };
+      };
+
+      fileSystems."/mnt/downloads" = {
+        device = "/dev/disk/by-label/downloads";
+        fsType = "ext4";
       };
 
       networking.firewall.trustedInterfaces = [

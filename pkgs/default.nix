@@ -3,13 +3,12 @@
   pkgs,
   unstablePkgs,
   import-tree,
-  packageDir,
 }: let
   callPackage = lib.callPackageWith (pkgs // {inherit unstablePkgs;});
 
   # Retrieve files under the package directory.
   # Note: import-tree.files returns a flat list of paths to .nix files.
-  files = ((import-tree.withLib lib).addPath packageDir).files;
+  files = ((import-tree.withLib lib).addPath ./.).files;
   relevantFiles = builtins.filter (p: builtins.baseNameOf p != "default.nix") files;
 
   # Map files to names (stripping .nix extension)

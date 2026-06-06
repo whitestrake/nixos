@@ -10,11 +10,10 @@
     pkgs,
     unstablePkgs,
   }:
-    import (flakeRoot + "/lib/local-packages.nix") {
+    import (flakeRoot + "/pkgs") {
       inherit (pkgs) lib;
       inherit pkgs unstablePkgs;
       inherit (inputs) import-tree;
-      packageDir = flakeRoot + "/pkgs";
     };
 in {
   _module.args.mkLocalPackages = mkLocalPackages;
