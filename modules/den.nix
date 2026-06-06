@@ -40,6 +40,7 @@ in {
                   inherit inputs unstable flakeRoot;
                   inherit (flakeConfig) caches;
                   inherit (flakeConfig.network) tailnetSuffix;
+                  clusterHosts = flakeConfig.den.hosts;
                   lib = extendedLib;
                 };
             });
@@ -108,7 +109,13 @@ in {
           pascal.users.whitestrake.aspect = den.aspects.user-whitestrake;
           rapier.users.whitestrake.aspect = den.aspects.user-whitestrake;
           sortie.users.whitestrake.aspect = den.aspects.user-whitestrake;
-          orthus.users.whitestrake.aspect = den.aspects.user-whitestrake;
+          orthus = {
+            users.whitestrake.aspect = den.aspects.user-whitestrake;
+            builder = {
+              enable = true;
+              publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
+            };
+          };
           oculus.users.whitestrake.aspect = den.aspects.user-whitestrake;
           omnius.users.whitestrake.aspect = den.aspects.user-whitestrake;
           kronos = {
@@ -117,7 +124,13 @@ in {
           };
         };
         aarch64-linux = {
-          jaeger.users.whitestrake.aspect = den.aspects.user-whitestrake;
+          jaeger = {
+            users.whitestrake.aspect = den.aspects.user-whitestrake;
+            builder = {
+              enable = true;
+              publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
+            };
+          };
         };
         aarch64-darwin = {
           andred.users.whitestrake.aspect = den.aspects.user-whitestrake;

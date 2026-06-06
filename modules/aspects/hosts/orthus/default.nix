@@ -3,7 +3,6 @@
     includes = [
       den.aspects.server-base
       den.aspects.docker
-      den.aspects.user-builder
     ];
 
     nixos = {lib, ...}: {

@@ -5,7 +5,6 @@
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.vscode-server
-      den.aspects.user-builder
       den.aspects.user-mediaserver
       den.aspects.nix-tools
     ];
