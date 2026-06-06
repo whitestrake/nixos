@@ -11,10 +11,14 @@
 # them here would re-introduce the original eval-time IFD race.
 set -euo pipefail
 FLAKE="${1:-.}"
+# Resolve to an absolute path so getFlake accepts it (a bare "." is invalid in a Nix expr).
+if [ -e "$FLAKE" ]; then
+  FLAKE="$(realpath "$FLAKE")"
+fi
 
 nix eval --raw --impure --no-substitute --expr '
 let
-  flake = builtins.getFlake (toString '"$FLAKE"');
+  flake = builtins.getFlake "'"$FLAKE"'";
   lib   = flake.inputs.nixpkgs.lib;
   isDrv = x: (x.type or null) == "derivation";
   # IFD checks intentionally excluded (covered by validate-deployment):
