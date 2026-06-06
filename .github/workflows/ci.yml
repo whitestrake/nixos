@@ -355,7 +355,7 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/cachix-action@v17
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -395,7 +395,7 @@ jobs:
           cat "deploy-${{ matrix.host }}.json"
       - name: Upload Deploy Spec
         if: matrix.isCachixDeployTarget == true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deploy-spec-${{ matrix.host }}
           path: deploy-${{ matrix.host }}.json
@@ -421,7 +421,7 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.deploy_matrix) }}
     steps:
       - name: Download Deploy Spec
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: deploy-spec-${{ matrix.host }}
       # Determinate Nix Action is required here because the downstream cachix-action
@@ -432,7 +432,7 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/cachix-action@v17
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

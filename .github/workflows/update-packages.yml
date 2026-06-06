@@ -100,7 +100,7 @@ jobs:
           nix run nixpkgs#alejandra -- pkgs/
       - name: Create Pull Request
         if: steps.update.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: nix-update/${{ matrix.package }}
           title: "chore(pkgs): update ${{ matrix.package }}"
