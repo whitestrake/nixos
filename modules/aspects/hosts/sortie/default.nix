@@ -11,6 +11,7 @@
       den.aspects.user-mediaserver
       den.aspects.nix-tools
       den.aspects.vscode-server
+      den.aspects.cifs-client
     ];
 
     nixos = {
@@ -40,11 +41,11 @@
 
       # SMB mount configs
       sops.secrets."smbCredentials/sortie@tempus" = {};
-      fileSystems = let
+      storage.cifsMounts = let
         credentials = config.sops.secrets."smbCredentials/sortie@tempus".path;
         uid = config.users.users.mediaserver.uid;
       in {
-        "/mnt/media" = lib.mkCifs {
+        "/mnt/media" = {
           device = "//tempus.lab.whitestrake.net/Media";
           inherit uid credentials;
         };
