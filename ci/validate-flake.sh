@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI eval gate: force-evaluate every non-IFD flake output to a .drvPath.
+# CI flake validation: force-evaluate every non-IFD flake output to a .drvPath.
 #
 # This does NOT build anything and needs NO substituters/cachix — it only needs
 # the locked flake inputs. It therefore cannot race the jobs that push to
@@ -48,4 +48,4 @@ let
   ];
 in builtins.deepSeq parts "ok"
 '
-echo "eval-gate: ok"
+echo "validate-flake: ok"

@@ -294,7 +294,7 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - name: Force-evaluate all non-IFD flake outputs
-        run: ./ci/eval-gate.sh .
+        run: ./ci/validate-flake.sh .
   build:
     needs: [plan]
     if: ${{ needs.plan.outputs.build_matrix != '[]' && needs.plan.outputs.build_matrix != '' }}
@@ -443,15 +443,15 @@ jobs:
       - name: Check build and deployment status
         run: |
           if [[ "${{ needs.plan.result }}" != "success" ]]; then
-            echo "Evaluation stage failed or was not run."
+            echo "Plan stage failed or was not run."
             exit 1
           fi
           if [[ "${{ needs.validate-flake.result }}" != "success" ]]; then
-            echo "Eval gate failed."
+            echo "Flake validation failed."
             exit 1
           fi
           if [[ "${{ needs.validate-deploy.result }}" != "success" ]]; then
-            echo "Deployment validation failed."
+            echo "Deploy validation failed."
             exit 1
           fi
           if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
@@ -462,5 +462,5 @@ jobs:
             echo "Deployment stage failed or was cancelled."
             exit 1
           fi
-          echo "All builds and deployments succeeded or were skipped!"
+          echo "All validation, builds, and deployments succeeded or were skipped!"
           exit 0
