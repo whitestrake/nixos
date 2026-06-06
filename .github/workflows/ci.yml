@@ -26,8 +26,8 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  evaluate:
-    name: Evaluate
+  plan:
+    name: "Plan (build/deploy matrix)"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -283,16 +283,72 @@ jobs:
           echo "Skipped build count: $SKIPPED_BUILD_COUNT"
           echo "Deploy matrix count: $DEPLOY_COUNT"
           echo "::endgroup::"
+  validate-flake:
+    name: "Validate (flake eval)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - name: Force-evaluate all non-IFD flake outputs
+        shell: bash
+        # Force-evaluate every non-IFD flake output to a .drvPath. This builds
+        # nothing and needs NO substituters/cachix — only the locked flake inputs —
+        # so it cannot race the jobs that push to whitestrake.cachix.org, and fails
+        # fast (~1 min) if the flake does not evaluate. The IFD-backed deploy checks
+        # (deploy-schema, deploy-schema-fast, deploy-activate) are intentionally
+        # excluded: they are built and run natively per-system by validate-deploy.
+        # Reproduce locally with: nix eval --raw --impure --no-substitute --expr '...'
+        run: |
+          set -euo pipefail
+          # Resolve to an absolute path so getFlake accepts it (a bare "." is invalid in a Nix expr).
+          FLAKE="$(realpath .)"
+          nix eval --raw --impure --no-substitute --expr '
+          let
+            flake = builtins.getFlake "'"$FLAKE"'";
+            lib   = flake.inputs.nixpkgs.lib;
+            isDrv = x: (x.type or null) == "derivation";
+            # IFD checks intentionally excluded (covered by validate-deploy):
+            ifd   = [ "deploy-schema" "deploy-schema-fast" "deploy-activate" ];
+            force = d: builtins.seq d.drvPath d.drvPath;
+
+            forceConfigs = set:
+              lib.concatStringsSep "" (lib.mapAttrsToList
+                (_: cfg: force cfg.config.system.build.toplevel) set);
+
+            forceSysSet = set:                       # packages / devShells: { sys = { name = drv; } }
+              lib.concatStringsSep "" (lib.mapAttrsToList
+                (_: s: lib.concatStringsSep "" (lib.mapAttrsToList
+                  (_: force) (lib.filterAttrs (_: isDrv) s))) set);
+
+            forceChecks = set:                       # checks minus IFD names
+              lib.concatStringsSep "" (lib.mapAttrsToList
+                (_: cks: lib.concatStringsSep "" (lib.mapAttrsToList
+                  (_: force) (lib.filterAttrs (n: v: isDrv v && !(builtins.elem n ifd)) cks))) set);
+
+            parts = [
+              (forceConfigs (flake.outputs.nixosConfigurations  or {}))
+              (forceConfigs (flake.outputs.darwinConfigurations or {}))
+              (forceSysSet  (flake.outputs.packages   or {}))
+              (forceSysSet  (flake.outputs.devShells  or {}))
+              (forceChecks  (flake.outputs.checks     or {}))
+            ];
+          in builtins.deepSeq parts "ok"
+          '
+          echo "validate-flake: ok"
   build:
-    needs: evaluate
-    if: ${{ needs.evaluate.outputs.build_matrix != '[]' && needs.evaluate.outputs.build_matrix != '' }}
-    name: "Build ${{ matrix.name }}"
+    needs: [plan]
+    if: ${{ needs.plan.outputs.build_matrix != '[]' && needs.plan.outputs.build_matrix != '' }}
+    name: "Build · ${{ matrix.name }}"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.evaluate.outputs.build_matrix) }}
+        include: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
     steps:
       - uses: actions/checkout@v6
       - uses: DeterminateSystems/determinate-nix-action@v3
@@ -345,7 +401,7 @@ jobs:
           path: deploy-${{ matrix.host }}.json
           retention-days: 1
   deploy:
-    needs: [build, evaluate, validate-deployment]
+    needs: [build, plan, validate-deploy, validate-flake]
     # Execute only on workflow_dispatch or pushes to the default branch,
     # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
     if: >-
@@ -355,14 +411,14 @@ jobs:
 
           || (github.event_name == 'push'
               && github.ref_name == github.event.repository.default_branch))
-      && needs.evaluate.outputs.deploy_matrix != '[]' && needs.evaluate.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deployment.result == 'success'
-    name: "Deploy ${{ matrix.name }}"
+      && needs.plan.outputs.deploy_matrix != '[]' && needs.plan.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deploy.result == 'success' && needs.validate-flake.result == 'success'
+    name: "Deploy · ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.evaluate.outputs.deploy_matrix) }}
+        include: ${{ fromJSON(needs.plan.outputs.deploy_matrix) }}
     steps:
       - name: Download Deploy Spec
         uses: actions/download-artifact@v4
@@ -388,9 +444,9 @@ jobs:
           cat "deploy-${{ matrix.host }}.json"
           echo "Activating deployment for ${{ matrix.host }}..."
           cachix deploy activate "deploy-${{ matrix.host }}.json"
-  validate-deployment:
+  validate-deploy:
     # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
-    # hard-requires `needs.validate-deployment.result == 'success'`, and GitHub reports
+    # hard-requires `needs.validate-deploy.result == 'success'`, and GitHub reports
     # a non-matched/skipped matrix system as 'skipped' (not 'success'). Dynamically
     # scoping this matrix to only the systems present in the evaluated change set would
     # therefore risk turning a legitimate deploy into a blocked one, OR require
@@ -399,7 +455,7 @@ jobs:
     # zero-compromise-on-validation / preserve-gating constraints, this is deferred.
     # The schema/rollback checks here are cheap and fully cached, so the marginal cost
     # of validating both systems unconditionally is low.
-    name: "Validate Deployment (${{ matrix.system }})"
+    name: "Validate (deploy · ${{ matrix.system }})"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     strategy:
@@ -421,21 +477,25 @@ jobs:
       - name: Validate deploy health rollback script
         run: |
           nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
-  all-builds-passed:
-    name: "All Cachix CI/CD"
-    needs: [evaluate, build, deploy, validate-deployment]
+  complete:
+    name: "CI/CD complete"
+    needs: [plan, build, deploy, validate-deploy, validate-flake]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
     steps:
       - name: Check build and deployment status
         run: |
-          if [[ "${{ needs.evaluate.result }}" != "success" ]]; then
-            echo "Evaluation stage failed or was not run."
+          if [[ "${{ needs.plan.result }}" != "success" ]]; then
+            echo "Plan stage failed or was not run."
             exit 1
           fi
-          if [[ "${{ needs.validate-deployment.result }}" != "success" ]]; then
-            echo "Deployment validation failed."
+          if [[ "${{ needs.validate-flake.result }}" != "success" ]]; then
+            echo "Flake validation failed."
+            exit 1
+          fi
+          if [[ "${{ needs.validate-deploy.result }}" != "success" ]]; then
+            echo "Deploy validation failed."
             exit 1
           fi
           if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
@@ -446,5 +506,5 @@ jobs:
             echo "Deployment stage failed or was cancelled."
             exit 1
           fi
-          echo "All builds and deployments succeeded or were skipped!"
+          echo "All validation, builds, and deployments succeeded or were skipped!"
           exit 0
