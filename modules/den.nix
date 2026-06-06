@@ -2,6 +2,7 @@
   den,
   inputs,
   config,
+  lib,
   flakeRoot,
   ...
 }: let
@@ -9,7 +10,16 @@
 in {
   imports = [inputs.den.flakeModule];
 
+  options.network.tailnetSuffix = lib.mkOption {
+    type = lib.types.str;
+    default = "fell-monitor.ts.net";
+    description = "Tailnet DNS suffix appended to host names for tailnet-internal addressing";
+  };
+
   config = {
+    # Expose the tailnet suffix as a module argument for flake-parts modules
+    _module.args.tailnetSuffix = config.network.tailnetSuffix;
+
     # Supported systems
     systems = builtins.attrNames config.den.hosts;
 

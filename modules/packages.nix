@@ -1,8 +1,21 @@
 {
   inputs,
-  mkLocalPackages,
+  flakeRoot,
   ...
 }: let
+  # Single access path for the local package set. Both the perSystem packages
+  # output and the myPkgs overlay consume this, so the definition and its
+  # argument wiring live in exactly one place.
+  mkLocalPackages = {
+    pkgs,
+    unstablePkgs,
+  }:
+    import (flakeRoot + "/pkgs") {
+      inherit (pkgs) lib;
+      inherit pkgs unstablePkgs;
+      inherit (inputs) import-tree;
+    };
+
   localPackagesFor = pkgs: system:
     mkLocalPackages {
       inherit pkgs;
@@ -31,6 +44,8 @@
     && pos != null
     && lib.hasPrefix repoPath pos.file;
 in {
+  _module.args.mkLocalPackages = mkLocalPackages;
+
   perSystem = {
     pkgs,
     system,
