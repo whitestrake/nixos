@@ -355,7 +355,7 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/cachix-action@v17
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -432,7 +432,7 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
-      - uses: cachix/cachix-action@v15
+      - uses: cachix/cachix-action@v17
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
