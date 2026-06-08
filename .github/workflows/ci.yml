@@ -567,12 +567,22 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+      - uses: cachix/cachix-action@v17
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Validate deploy-rs schema
         run: |
           nix build ".#checks.${{ matrix.system }}.deploy-schema-fast" --no-link --accept-flake-config
       - name: Validate deploy health rollback script
         run: |
           nix build ".#checks.${{ matrix.system }}.validate-deploy-health-rollback-script" --no-link --accept-flake-config
+      - name: Push deploy health rollback script to Cachix
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          ROLLBACK_SCRIPT="$(nix build ".#packages.${{ matrix.system }}.deploy-health-rollback-script" --no-link --print-out-paths --accept-flake-config)"
+          cachix push whitestrake "$ROLLBACK_SCRIPT"
   complete:
     name: "CI/CD complete"
     needs: [plan, build, deploy, validate-deploy, validate-flake]
