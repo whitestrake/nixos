@@ -23,7 +23,7 @@
         ];
         requiredCommands = {
           dns = "${pkgs.dig}/bin/dig +short whitestrake.net";
-          tailscale = "${pkgs.tailscale}/bin/tailscale status --peers=false";
+          tailscale = "${config.services.tailscale.package}/bin/tailscale status --peers=false";
         };
       };
 
