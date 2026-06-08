@@ -75,6 +75,15 @@ in {
         ripgrep
         fd
       ];
+
+      environment.etc."nix/nix.custom.conf".text = let
+        substituters = map (c: c.url) (builtins.attrValues caches);
+        keys = map (c: c.key) (builtins.attrValues caches);
+      in ''
+        trusted-users = root @admin @staff whitestrake
+        extra-substituters = ${builtins.concatStringsSep " " substituters}
+        extra-trusted-public-keys = ${builtins.concatStringsSep " " keys}
+      '';
     };
   };
 
