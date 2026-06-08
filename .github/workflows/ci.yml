@@ -1,4 +1,17 @@
 name: "Cachix CI/CD"
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch'
+    && format(
+      'Manual Cachix CI/CD: {0} {1}',
+      inputs.mode,
+      inputs.host != '' && inputs.host || 'all hosts'
+    )
+    || github.event_name == 'pull_request'
+    && format('PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+    || github.event.head_commit.message
+    || github.workflow
+  }}
 on:
   push:
     # Docs-only changes cannot affect Nix evaluation, deploy scripts, modules,
@@ -20,16 +33,16 @@ on:
         required: false
         default: ""
         type: string
-      force_build:
-        description: "Force rebuild selected host(s), even if built state is current."
-        required: false
-        default: false
-        type: boolean
-      force_deploy:
-        description: "Force redeploy selected host(s), even if deployed state is current."
-        required: false
-        default: false
-        type: boolean
+      mode:
+        description: "Manual CI/CD mode."
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - build
+          - deploy
+          - build/deploy
 concurrency:
   group: cicd-${{ github.ref }}
   cancel-in-progress: false
@@ -55,8 +68,10 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_PERSONAL_TOKEN: ${{ secrets.CACHIX_PERSONAL_TOKEN }}
           IS_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
-          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_build || false }}
-          FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.force_deploy || false }}
+          MANUAL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'auto' }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'build' || inputs.mode == 'build/deploy') || false }}
+          FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'deploy' || inputs.mode == 'build/deploy') || false }}
+          ALLOW_DEPLOY: ${{ github.event_name != 'workflow_dispatch' || inputs.mode != 'build' }}
           TARGET_HOST: ${{ github.event_name == 'workflow_dispatch' && inputs.host || '' }}
         run: |
           # shellcheck disable=SC2016
@@ -137,9 +152,11 @@ jobs:
           )"
           phase_end # cachix_pin_fetch
 
-          # 3. Manual dispatch can independently force build and deploy decisions.
+          # 3. Manual dispatch mode maps to force/suppress behaviour.
+          MANUAL_MODE="${MANUAL_MODE:-auto}"
           FORCE_BUILD="${FORCE_BUILD:-false}"
           FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
+          ALLOW_DEPLOY="${ALLOW_DEPLOY:-true}"
           TARGET_HOST="${TARGET_HOST:-}"
 
           # 4. Probe Cachix deploy agents, but ONLY for hosts where a deployment could
@@ -147,7 +164,7 @@ jobs:
           #    vs. deployed pin OR forced). If no such candidate exists, skip probing entirely
           #    since no deployment can happen by construction.
           REGISTERED_HOSTS="[]"
-          if [[ "$IS_PRODUCTION" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
+          if [[ "$IS_PRODUCTION" == "true" && "$ALLOW_DEPLOY" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
             # Compute the deploy-candidate host set with the same predicate used by the
             # deploy matrix filter below (minus the registration check we are about to do).
             CANDIDATE_HOSTS=$(jq -r \
@@ -202,6 +219,8 @@ jobs:
             else
               echo "No deploy-capable host changed (or forced); skipping Cachix agent probing."
             fi
+          elif [[ "$ALLOW_DEPLOY" != "true" ]]; then
+            echo "Manual mode suppresses deployments; skipping Cachix agent probing."
           fi
 
           phase_start "matrix_construction"
@@ -303,7 +322,9 @@ jobs:
             fi
 
             is_deploy_target=$(echo "$item" | jq -r '.isCachixDeployTarget // false')
-            if jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
+            if [[ "$ALLOW_DEPLOY" != "true" ]]; then
+              echo "  - Deploy Decision: SKIP DEPLOY (Manual mode suppresses deploy)"
+            elif jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
               if [[ "$FORCE_DEPLOY" == "true" ]]; then
                 echo "  - Deploy Decision: QUEUE DEPLOY (Deploy forced)"
               elif [[ "$store_path" != "$effective_deployed_path" ]]; then
@@ -336,8 +357,10 @@ jobs:
 
           echo "::group::Evaluate Summary"
           echo "Branch/Ref evaluated: ${{ github.ref_name }}"
+          echo "Manual mode: $MANUAL_MODE"
           echo "Force build status: $FORCE_BUILD"
           echo "Force deploy status: $FORCE_DEPLOY"
+          echo "Allow deploy status: $ALLOW_DEPLOY"
           echo "Total hosts evaluated: $TOTAL_HOSTS"
           echo "Cachix pins fetched: $PINNED_COUNT"
           echo "Build matrix count: $BUILD_COUNT"
@@ -541,32 +564,40 @@ jobs:
     if: always()
     steps:
       - name: Check build and deployment status
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          VALIDATE_FLAKE_RESULT: ${{ needs.validate-flake.result }}
+          VALIDATE_DEPLOY_RESULT: ${{ needs.validate-deploy.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          BUILD_MATRIX: ${{ needs.plan.outputs.build_matrix }}
+          DEPLOY_MATRIX: ${{ needs.plan.outputs.deploy_matrix }}
         run: |
-          if [[ "${{ needs.plan.result }}" != "success" ]]; then
+          if [[ "$PLAN_RESULT" != "success" ]]; then
             echo "Plan stage failed or was not run."
             exit 1
           fi
-          if [[ "${{ needs.validate-flake.result }}" != "success" ]]; then
+          if [[ "$VALIDATE_FLAKE_RESULT" != "success" ]]; then
             echo "Flake validation failed."
             exit 1
           fi
-          if [[ "${{ needs.validate-deploy.result }}" != "success" ]]; then
+          if [[ "$VALIDATE_DEPLOY_RESULT" != "success" ]]; then
             echo "Deploy validation failed."
             exit 1
           fi
-          if [[ "${{ needs.build.result }}" == "failure" || "${{ needs.build.result }}" == "cancelled" ]]; then
+          if [[ "$BUILD_RESULT" == "failure" || "$BUILD_RESULT" == "cancelled" ]]; then
             echo "Build stage failed or was cancelled."
             exit 1
           fi
-          if [[ "${{ needs.build.result }}" == "skipped" && "${{ needs.plan.outputs.build_matrix }}" != "[]" && "${{ needs.plan.outputs.build_matrix }}" != "" ]]; then
+          if [[ "$BUILD_RESULT" == "skipped" && "$BUILD_MATRIX" != "[]" && "$BUILD_MATRIX" != "" ]]; then
             echo "Build stage was skipped even though builds were planned."
             exit 1
           fi
-          if [[ "${{ needs.deploy.result }}" == "failure" || "${{ needs.deploy.result }}" == "cancelled" ]]; then
+          if [[ "$DEPLOY_RESULT" == "failure" || "$DEPLOY_RESULT" == "cancelled" ]]; then
             echo "Deployment stage failed or was cancelled."
             exit 1
           fi
-          if [[ "${{ needs.deploy.result }}" == "skipped" && "${{ needs.plan.outputs.deploy_matrix }}" != "[]" && "${{ needs.plan.outputs.deploy_matrix }}" != "" ]]; then
+          if [[ "$DEPLOY_RESULT" == "skipped" && "$DEPLOY_MATRIX" != "[]" && "$DEPLOY_MATRIX" != "" ]]; then
             echo "Deployment stage was skipped even though deployments were planned."
             exit 1
           fi
