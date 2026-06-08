@@ -1,17 +1,15 @@
-{inputs, ...}: let
+{
+  inputs,
+  mkTooling,
+  ...
+}: let
   sharedPackages = {pkgs, ...}: {
-    environment.systemPackages = with pkgs; [
-      sops
-      age
-      deploy-rs
-      nix-update
-      nix-inspect
-      nil
-      alejandra
-      actionlint
-      yamlfmt
-      rbw
-    ];
+    environment.systemPackages =
+      (mkTooling {
+        inherit pkgs;
+        system = pkgs.stdenv.hostPlatform.system;
+      })
+      .operatorPackages;
     environment.shellAliases.deploy-rs-async = let
       deploy-rs-async = inputs.deploy-rs-async.packages.${pkgs.stdenv.hostPlatform.system}.deploy-rs;
     in "${deploy-rs-async}/bin/deploy --remote-build";
@@ -55,7 +53,6 @@
 
     darwin = {pkgs, ...}: {
       imports = [sharedPackages];
-      environment.systemPackages = with pkgs; [nixos-rebuild];
 
       home-manager.users.whitestrake = sharedHomeManager;
     };

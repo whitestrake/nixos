@@ -8,6 +8,40 @@
     experimental-features = ["nix-command" "flakes"];
     trusted-users = ["root" "@wheel" "@staff" "whitestrake"];
   };
+
+  commonPackages = pkgs:
+    with pkgs; [
+      fish
+      helix
+      nh
+
+      # File system tools
+      dua
+      tree
+      rclone
+
+      # Search tools
+      fd
+      ripgrep
+
+      # Data inspection
+      jq
+      fx
+
+      # Network clients
+      wget
+      curl
+      xh
+
+      # Troubleshooting
+      btop
+      mtr
+      tcpdump
+      dig
+      whois
+      rdap
+      iperf
+    ];
 in {
   den.aspects.common-base = {
     nixos = {
@@ -33,48 +67,12 @@ in {
         })
       ];
 
-      environment.systemPackages = with pkgs; [
-        btop
-        fish
-        helix
-        nh
-        dua
-        tree
-        rclone
-        wget
-        curl
-        xh
-        jq
-        fx
-        dig
-        whois
-        rdap
-        iperf
-      ];
+      environment.systemPackages = commonPackages pkgs;
     };
 
     darwin = {pkgs, ...}: {
       nix.settings = sharedNixSettings;
-      environment.systemPackages = with pkgs; [
-        btop
-        fish
-        helix
-        nh
-        dua
-        tree
-        rclone
-        wget
-        curl
-        xh
-        jq
-        fx
-        dig
-        whois
-        rdap
-        iperf
-        ripgrep
-        fd
-      ];
+      environment.systemPackages = commonPackages pkgs;
 
       environment.etc."nix/nix.custom.conf".text = let
         substituters = map (c: c.url) (builtins.attrValues caches);
@@ -127,6 +125,7 @@ in {
         iftop
         iotop
         ethtool
+        lsof
         pciutils
         usbutils
       ];
