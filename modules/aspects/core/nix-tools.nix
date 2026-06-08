@@ -34,8 +34,8 @@
       ".config/gh/hosts.yml".source = config.lib.file.mkOutOfStoreSymlink osConfig.sops.templates."gh-hosts".path;
     };
   };
-in {
-  den.aspects.nix-tools = {
+
+  nixTools = {
     nixos = {config, ...}: {
       imports = [sharedPackages];
 
@@ -60,4 +60,7 @@ in {
       home-manager.users.whitestrake = sharedHomeManager;
     };
   };
+in {
+  den.ful.whitestrake.nix-tools = nixTools;
+  den.aspects.nix-tools = nixTools;
 }

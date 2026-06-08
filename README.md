@@ -12,6 +12,8 @@ The repository is organized around Den/dendritic composition rather than a flat 
 
 Aspects describe capabilities, roles, and reusable behavior. Host-specific directories primarily compose those capabilities and hold local details such as hardware profiles, disk layout, or machine-specific overrides. This keeps most changes reviewable as shared configuration rather than isolated host mutations.
 
+The `whitestrake` Den namespace exports reusable personal aspects through `flake.denful.whitestrake`. Downstream Den flakes can import that namespace and opt into aspects such as `whitestrake.user` and `whitestrake.nix-tools` independently.
+
 ## Repository Structure
 
 The following paths are the main landmarks for navigating the repository:

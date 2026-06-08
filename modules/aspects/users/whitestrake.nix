@@ -2,8 +2,8 @@
   den,
   inputs,
   ...
-}: {
-  den.aspects.user-whitestrake = {
+}: let
+  user = {
     includes = [den.provides.define-user den.provides.primary-user (den.provides.user-shell "fish")];
 
     nixos = {
@@ -167,4 +167,7 @@
       programs.home-manager.enable = true;
     };
   };
+in {
+  den.ful.whitestrake.user = user;
+  den.aspects.user-whitestrake = user;
 }

@@ -8,7 +8,10 @@
 }: let
   flakeConfig = config;
 in {
-  imports = [inputs.den.flakeModule];
+  imports = [
+    inputs.den.flakeModule
+    (inputs.den.namespace "whitestrake" true)
+  ];
 
   options.network.tailnetSuffix = lib.mkOption {
     type = lib.types.str;
