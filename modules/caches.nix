@@ -1,15 +1,15 @@
 {lib, ...}: let
   caches = {
     garnix = {
-      url = "https://cache.garnix.io";
+      url = "https://cache.garnix.io?priority=50";
       key = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=";
     };
     nix-community = {
-      url = "https://nix-community.cachix.org";
+      url = "https://nix-community.cachix.org?priority=60";
       key = "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=";
     };
     whitestrake = {
-      url = "https://whitestrake.cachix.org";
+      url = "https://whitestrake.cachix.org?priority=10";
       key = "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=";
     };
   };
