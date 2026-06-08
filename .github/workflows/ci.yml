@@ -517,12 +517,29 @@ jobs:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
+          pin_deployed_state() {
+            local pin_name="$1"
+            local store_path="$2"
+            local payload
+
+            payload="$(jq -n \
+              --arg name "$pin_name" \
+              --arg storePath "$store_path" \
+              '{name: $name, storePath: $storePath, artifacts: [], keep: null}')"
+
+            curl -fsS \
+              -H "Authorization: Bearer ${CACHIX_AUTH_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "$payload" \
+              "https://app.cachix.org/api/v1/cache/whitestrake/pin"
+          }
+
           echo "deploy-${{ matrix.host }}.json content:"
           cat "deploy-${{ matrix.host }}.json"
           echo "Activating deployment for ${{ matrix.host }}..."
           cachix deploy activate "deploy-${{ matrix.host }}.json"
           echo "Pinning deployed state for ${{ matrix.host }} (${{ matrix.storePath }}) to Cachix..."
-          cachix pin whitestrake "deployed-host-${{ matrix.host }}" "${{ matrix.storePath }}"
+          pin_deployed_state "deployed-host-${{ matrix.host }}" "${{ matrix.storePath }}"
   validate-deploy:
     # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
     # hard-requires `needs.validate-deploy.result == 'success'`, and GitHub reports
