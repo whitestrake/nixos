@@ -20,6 +20,16 @@ on:
         required: false
         default: ""
         type: string
+      force_build:
+        description: "Force rebuild selected host(s), even if built state is current."
+        required: false
+        default: false
+        type: boolean
+      force_deploy:
+        description: "Force redeploy selected host(s), even if deployed state is current."
+        required: false
+        default: false
+        type: boolean
 concurrency:
   group: cicd-${{ github.ref }}
   cancel-in-progress: false
@@ -45,6 +55,9 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_PERSONAL_TOKEN: ${{ secrets.CACHIX_PERSONAL_TOKEN }}
           IS_PRODUCTION: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) }}
+          FORCE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_build || false }}
+          FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && inputs.force_deploy || false }}
+          TARGET_HOST: ${{ github.event_name == 'workflow_dispatch' && inputs.host || '' }}
         run: |
           # shellcheck disable=SC2016
           phase_start() {
@@ -124,17 +137,14 @@ jobs:
           )"
           phase_end # cachix_pin_fetch
 
-          # 3. Determine force flag (manual dispatch forces a full build/deploy run)
-          FORCE_RUN="false"
-          TARGET_HOST=""
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            FORCE_RUN="true"
-            TARGET_HOST="${{ inputs.host }}"
-          fi
+          # 3. Manual dispatch can independently force build and deploy decisions.
+          FORCE_BUILD="${FORCE_BUILD:-false}"
+          FORCE_DEPLOY="${FORCE_DEPLOY:-false}"
+          TARGET_HOST="${TARGET_HOST:-}"
 
           # 4. Probe Cachix deploy agents, but ONLY for hosts where a deployment could
           #    actually occur: deploy-capable (isCachixDeployTarget) AND (config changed
-          #    vs. pinned OR forced). If no such candidate exists, skip probing entirely
+          #    vs. deployed pin OR forced). If no such candidate exists, skip probing entirely
           #    since no deployment can happen by construction.
           REGISTERED_HOSTS="[]"
           if [[ "$IS_PRODUCTION" == "true" && -n "$CACHIX_PERSONAL_TOKEN" ]]; then
@@ -142,14 +152,20 @@ jobs:
             # deploy matrix filter below (minus the registration check we are about to do).
             CANDIDATE_HOSTS=$(jq -r \
               --argjson pins "$CURRENT_PINS" \
-              --arg force "$FORCE_RUN" \
+              --arg force "$FORCE_DEPLOY" \
               --arg target "$TARGET_HOST" \
-              '.[]
+              '
+                def pinPath($name):
+                  (($pins[] | select(.name == $name) | .lastRevision.storePath) // "");
+                def effectivePin($primary; $legacy):
+                  pinPath($primary) as $p | if $p != "" then $p else pinPath($legacy) end;
+
+                .[]
                  | select(.isCachixDeployTarget == true)
                  | select($target == "" or .host == $target)
                  | . as $item
-                 | (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned
-                 | select($force == "true" or $item.storePath != $pinned)
+                 | effectivePin("deployed-host-" + $item.host; "host-" + $item.host) as $deployed
+                 | select($force == "true" or $item.storePath != $deployed)
                  | .host' <<< "$ALL_HOSTS")
 
             if [[ -n "$CANDIDATE_HOSTS" ]]; then
@@ -189,29 +205,41 @@ jobs:
           fi
 
           phase_start "matrix_construction"
-          # 5. Filter build matrix dynamically (storePath changed OR force manual dispatch)
+          # 5. Filter build matrix dynamically (storePath differs from built state OR forced build).
           BUILD_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
-            --arg force "$FORCE_RUN" \
+            --arg force "$FORCE_BUILD" \
             --arg target "$TARGET_HOST" \
-            'map(
+            '
+              def pinPath($name):
+                (($pins[] | select(.name == $name) | .lastRevision.storePath) // "");
+              def effectivePin($primary; $legacy):
+                pinPath($primary) as $p | if $p != "" then $p else pinPath($legacy) end;
+
+              map(
               select($target == "" or .host == $target) |
               . as $item |
-              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
-              if ($force == "true" or $item.storePath != $pinned) then $item else empty end
+              effectivePin("built-host-" + $item.host; "host-" + $item.host) as $built |
+              if ($force == "true" or $item.storePath != $built) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
-          # 6. Filter deploy matrix dynamically (host is registered AND (storePath changed OR force))
+          # 6. Filter deploy matrix dynamically (host is registered AND deployed state differs OR forced deploy).
           DEPLOY_MATRIX=$(jq -c \
             --argjson pins "$CURRENT_PINS" \
-            --arg force "$FORCE_RUN" \
+            --arg force "$FORCE_DEPLOY" \
             --arg target "$TARGET_HOST" \
             --argjson registered "$REGISTERED_HOSTS" \
-            'map(
+            '
+              def pinPath($name):
+                (($pins[] | select(.name == $name) | .lastRevision.storePath) // "");
+              def effectivePin($primary; $legacy):
+                pinPath($primary) as $p | if $p != "" then $p else pinPath($legacy) end;
+
+              map(
               select($target == "" or .host == $target) |
               . as $item |
-              (($pins[] | select(.name == "host-" + $item.host) | .lastRevision.storePath) // "") as $pinned |
-              if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $pinned)) then $item else empty end
+              effectivePin("deployed-host-" + $item.host; "host-" + $item.host) as $deployed |
+              if (any($registered[]; . == $item.host) and ($force == "true" or $item.storePath != $deployed)) then $item else empty end
             )' <<< "$ALL_HOSTS")
 
           phase_end # matrix_construction
@@ -225,36 +253,68 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Detailed Filtering Trace"
+          pin_path() {
+            jq -r --arg name "$1" 'map(select(.name == $name))[0].lastRevision.storePath // ""' <<< "$CURRENT_PINS"
+          }
+
           for host in $(echo "$ALL_HOSTS" | jq -r '.[] | .host'); do
             item=$(echo "$ALL_HOSTS" | jq -r --arg h "$host" '.[] | select(.host == $h)')
             store_path=$(echo "$item" | jq -r '.storePath')
-            pinned_path=$(echo "$CURRENT_PINS" | jq -r --arg h "$host" '.[] | select(.name == "host-" + $h) | .lastRevision.storePath // ""')
+            legacy_path=$(pin_path "host-$host")
+            built_path=$(pin_path "built-host-$host")
+            deployed_path=$(pin_path "deployed-host-$host")
+            effective_built_path="$built_path"
+            effective_deployed_path="$deployed_path"
+            if [[ -z "$effective_built_path" ]]; then
+              effective_built_path="$legacy_path"
+            fi
+            if [[ -z "$effective_deployed_path" ]]; then
+              effective_deployed_path="$legacy_path"
+            fi
 
             echo "[$host]:"
             echo "  - Local System Store Path:  $store_path"
-            if [[ -n "$pinned_path" ]]; then
-              echo "  - Pinned Cachix Store Path: $pinned_path"
+            if [[ -n "$legacy_path" ]]; then
+              echo "  - Legacy Host Pin:          $legacy_path"
             else
-              echo "  - Pinned Cachix Store Path: [NOT FOUND]"
+              echo "  - Legacy Host Pin:          [NOT FOUND]"
+            fi
+            if [[ -n "$built_path" ]]; then
+              echo "  - Built Host Pin:           $built_path"
+            elif [[ -n "$legacy_path" ]]; then
+              echo "  - Built Host Pin:           [FALLBACK TO LEGACY]"
+            else
+              echo "  - Built Host Pin:           [NOT FOUND]"
+            fi
+            if [[ -n "$deployed_path" ]]; then
+              echo "  - Deployed Host Pin:        $deployed_path"
+            elif [[ -n "$legacy_path" ]]; then
+              echo "  - Deployed Host Pin:        [FALLBACK TO LEGACY]"
+            else
+              echo "  - Deployed Host Pin:        [NOT FOUND]"
             fi
 
-            if [[ "$store_path" != "$pinned_path" ]]; then
-              echo "  - Build Decision: QUEUE BUILD (Mismatch or not pinned)"
+            if [[ "$FORCE_BUILD" == "true" ]]; then
+              echo "  - Build Decision: QUEUE BUILD (Build forced)"
+            elif [[ "$store_path" != "$effective_built_path" ]]; then
+              echo "  - Build Decision: QUEUE BUILD (Mismatch or not built)"
             else
-              echo "  - Build Decision: SKIP BUILD (Identical)"
+              echo "  - Build Decision: SKIP BUILD (Built state identical)"
             fi
 
             is_deploy_target=$(echo "$item" | jq -r '.isCachixDeployTarget // false')
             if jq -e --arg h "$host" 'any(. == $h)' <<< "$REGISTERED_HOSTS" > /dev/null; then
-              if [[ "$FORCE_RUN" == "true" || "$store_path" != "$pinned_path" ]]; then
-                echo "  - Deploy Decision: QUEUE DEPLOY (Agent registered & config changed/forced)"
+              if [[ "$FORCE_DEPLOY" == "true" ]]; then
+                echo "  - Deploy Decision: QUEUE DEPLOY (Deploy forced)"
+              elif [[ "$store_path" != "$effective_deployed_path" ]]; then
+                echo "  - Deploy Decision: QUEUE DEPLOY (Agent registered & deployed state stale)"
               else
-                echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged)"
+                echo "  - Deploy Decision: SKIP DEPLOY (Deployed state identical)"
               fi
             elif [[ "$is_deploy_target" != "true" ]]; then
               echo "  - Deploy Decision: SKIP DEPLOY (Host is not a Cachix deploy target)"
-            elif [[ "$FORCE_RUN" != "true" && "$store_path" == "$pinned_path" ]]; then
-              echo "  - Deploy Decision: SKIP DEPLOY (Config unchanged; agent not probed)"
+            elif [[ "$FORCE_DEPLOY" != "true" && "$store_path" == "$effective_deployed_path" ]]; then
+              echo "  - Deploy Decision: SKIP DEPLOY (Deployed state identical; agent not probed)"
             else
               echo "  - Deploy Decision: SKIP DEPLOY (Cachix deploy agent not registered/reachable)"
             fi
@@ -276,7 +336,8 @@ jobs:
 
           echo "::group::Evaluate Summary"
           echo "Branch/Ref evaluated: ${{ github.ref_name }}"
-          echo "Force mode status: $FORCE_RUN"
+          echo "Force build status: $FORCE_BUILD"
+          echo "Force deploy status: $FORCE_DEPLOY"
           echo "Total hosts evaluated: $TOTAL_HOSTS"
           echo "Cachix pins fetched: $PINNED_COUNT"
           echo "Build matrix count: $BUILD_COUNT"
@@ -366,9 +427,9 @@ jobs:
             echo "Building rollback script..."
             nix build ".#packages.${{ matrix.system }}.deploy-health-rollback-script" --no-link --print-build-logs
           fi
-      - name: Pin System Toplevel to Cachix
+      - name: Push and Pin Built System to Cachix
         if: |
-          (github.ref_name == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           (startsWith(matrix.path, 'nixosConfigurations.') || startsWith(matrix.path, 'darwinConfigurations.'))
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -380,10 +441,33 @@ jobs:
             echo "Pushing rollback script ${{ matrix.rollbackScript }} to Cachix..."
             cachix push whitestrake "${{ matrix.rollbackScript }}"
           fi
-          echo "Pinning ${{ matrix.host }} ($STORE_PATH) to Cachix..."
-          cachix pin whitestrake "host-${{ matrix.host }}" "$STORE_PATH"
+          echo "Pinning built state for ${{ matrix.host }} ($STORE_PATH) to Cachix..."
+          cachix pin whitestrake "built-host-${{ matrix.host }}" "$STORE_PATH"
+  deploy:
+    needs: [build, plan, validate-deploy, validate-flake]
+    # Execute only on workflow_dispatch or pushes to the default branch,
+    # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
+    if: >-
+      always()
+      && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+              && github.ref_name == github.event.repository.default_branch))
+      && needs.plan.outputs.deploy_matrix != '[]'
+      && needs.plan.outputs.deploy_matrix != ''
+      && (needs.build.result == 'success'
+          || (needs.build.result == 'skipped'
+              && needs.plan.outputs.build_matrix == '[]'))
+      && needs.validate-deploy.result == 'success'
+      && needs.validate-flake.result == 'success'
+    name: "Deploy - ${{ matrix.host }} ${{ matrix.system }}: ${{ matrix.path }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.deploy_matrix) }}
+    steps:
       - name: Generate Deploy Spec
-        if: matrix.isCachixDeployTarget == true
         run: |
           jq -n \
             --arg agent "${{ matrix.host }}" \
@@ -393,37 +477,6 @@ jobs:
             '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' > "deploy-${{ matrix.host }}.json"
           echo "Generated deploy-${{ matrix.host }}.json:"
           cat "deploy-${{ matrix.host }}.json"
-      - name: Upload Deploy Spec
-        if: matrix.isCachixDeployTarget == true
-        uses: actions/upload-artifact@v7
-        with:
-          name: deploy-spec-${{ matrix.host }}
-          path: deploy-${{ matrix.host }}.json
-          retention-days: 1
-  deploy:
-    needs: [build, plan, validate-deploy, validate-flake]
-    # Execute only on workflow_dispatch or pushes to the default branch,
-    # and only if there are deployable hosts, builds did not fail/cancel, and validation succeeded.
-    if: >-
-      always() && (github.event_name == 'workflow_dispatch'
-
-
-
-          || (github.event_name == 'push'
-              && github.ref_name == github.event.repository.default_branch))
-      && needs.plan.outputs.deploy_matrix != '[]' && needs.plan.outputs.deploy_matrix != '' && !contains(needs.build.result, 'failure') && !contains(needs.build.result, 'cancelled') && needs.validate-deploy.result == 'success' && needs.validate-flake.result == 'success'
-    name: "Deploy - ${{ matrix.host }} ${{ matrix.system }}: ${{ matrix.path }}"
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.deploy_matrix) }}
-    steps:
-      - name: Download Deploy Spec
-        uses: actions/download-artifact@v8
-        with:
-          name: deploy-spec-${{ matrix.host }}
       # Determinate Nix Action is required here because the downstream cachix-action
       # requires a functional Nix installation on the runner to configure caching and
       # install/run the Cachix CLI, even though the deploy job itself performs no cold
@@ -439,11 +492,14 @@ jobs:
       - name: Deploy to Cachix Agent
         env:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           echo "deploy-${{ matrix.host }}.json content:"
           cat "deploy-${{ matrix.host }}.json"
           echo "Activating deployment for ${{ matrix.host }}..."
           cachix deploy activate "deploy-${{ matrix.host }}.json"
+          echo "Pinning deployed state for ${{ matrix.host }} (${{ matrix.storePath }}) to Cachix..."
+          cachix pin whitestrake "deployed-host-${{ matrix.host }}" "${{ matrix.storePath }}"
   validate-deploy:
     # NOTE (follow-up, Wave 2): this matrix is intentionally static. The deploy job
     # hard-requires `needs.validate-deploy.result == 'success'`, and GitHub reports
@@ -502,8 +558,16 @@ jobs:
             echo "Build stage failed or was cancelled."
             exit 1
           fi
+          if [[ "${{ needs.build.result }}" == "skipped" && "${{ needs.plan.outputs.build_matrix }}" != "[]" && "${{ needs.plan.outputs.build_matrix }}" != "" ]]; then
+            echo "Build stage was skipped even though builds were planned."
+            exit 1
+          fi
           if [[ "${{ needs.deploy.result }}" == "failure" || "${{ needs.deploy.result }}" == "cancelled" ]]; then
             echo "Deployment stage failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.deploy.result }}" == "skipped" && "${{ needs.plan.outputs.deploy_matrix }}" != "[]" && "${{ needs.plan.outputs.deploy_matrix }}" != "" ]]; then
+            echo "Deployment stage was skipped even though deployments were planned."
             exit 1
           fi
           echo "All validation, builds, and deployments succeeded or were skipped!"
