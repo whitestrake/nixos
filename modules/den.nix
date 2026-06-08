@@ -23,9 +23,6 @@ in {
     # Supported systems
     systems = builtins.attrNames config.den.hosts;
 
-    # Expose a lightweight host-to-system map for GitHub Actions
-    flake.ci = builtins.mapAttrs (sys: hosts: builtins.attrNames hosts) config.den.hosts;
-
     den = {
       schema.host = {config, ...}: {
         instantiate = args: let
