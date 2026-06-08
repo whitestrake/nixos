@@ -10,6 +10,7 @@
       alejandra
       actionlint
       yamlfmt
+      rbw
     ];
     environment.shellAliases.deploy-rs-async = let
       deploy-rs-async = inputs.deploy-rs-async.packages.${pkgs.stdenv.hostPlatform.system}.deploy-rs;
