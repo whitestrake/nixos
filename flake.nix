@@ -59,6 +59,9 @@
     # Den framework
     den.url = "github:vic/den";
 
+    # flake-file
+    flake-file.url = "github:denful/flake-file";
+
     # flake-parts
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
