@@ -9,6 +9,7 @@
     description = "Whitestrake's Dendritic Nix OS configuration";
 
     nixConfig = {
+      lazy-trees = true;
       extra-substituters = [
         "https://whitestrake.cachix.org?priority=10"
         "https://cache.garnix.io?priority=50"
