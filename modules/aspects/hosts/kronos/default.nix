@@ -1,7 +1,7 @@
 {den, ...}: {
   den.aspects.kronos = {
     includes = [
-      den.aspects.wsl-base
+      den.aspects.wsl
       den.aspects.vscode-server
       den.aspects.nix-tools
     ];

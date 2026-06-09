@@ -4,7 +4,7 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  den.aspects.wsl-base = {
+  den.aspects.wsl = {
     includes = [
       den.aspects.common
     ];
