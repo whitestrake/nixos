@@ -1,10 +1,6 @@
-{...}: {
+{tailnetSuffix, ...}: {
   den.aspects.rsyncd-docker-export = {
-    nixos = {
-      config,
-      tailnetSuffix,
-      ...
-    }: {
+    nixos = {config, ...}: {
       # Allow for NAS pulls of the entire /opt/docker directory via rsyncd
       services.rsyncd.enable = true;
       services.rsyncd.settings = {

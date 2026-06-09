@@ -1,9 +1,8 @@
-{...}: {
+{tailnetSuffix, ...}: {
   den.aspects.distributed-builds = {
     nixos = {
       config,
       lib,
-      tailnetSuffix,
       clusterHosts,
       ...
     }: let

@@ -27,7 +27,6 @@ in {
           specialArgs =
             (args.specialArgs or {})
             // {
-              inherit (flakeConfig.network) tailnetSuffix;
               clusterHosts = flakeConfig.den.hosts;
             };
         });
