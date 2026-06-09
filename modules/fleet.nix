@@ -53,5 +53,21 @@ in {
         inherit flakeRoot;
       })
     ];
+
+    den.quirks.nixBuilders = {
+      description = "Distributed Nix builder declarations";
+    };
+
+    den.policies.collect-nix-builders = _: let
+      inherit (den.lib.policy) pipe;
+    in [
+      (pipe.from "nixBuilders" [
+        (pipe.collectAll ({host, ...}: true))
+      ])
+    ];
+
+    den.schema.host.includes = [
+      den.policies.collect-nix-builders
+    ];
   };
 }
