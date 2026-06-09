@@ -14,11 +14,6 @@ in {
   # delete the override entirely so Den's built-in host instantiation is used.
   den.schema.host = {config, ...}: {
     instantiate = args: let
-      unstable = import inputs.nixpkgs-unstable {
-        inherit (config) system;
-        config.allowUnfree = true;
-      };
-
       builder =
         {
           nixos = inputs.nixpkgs.lib.nixosSystem;
@@ -32,7 +27,6 @@ in {
           specialArgs =
             (args.specialArgs or {})
             // {
-              inherit unstable;
               inherit (flakeConfig.network) tailnetSuffix;
               clusterHosts = flakeConfig.den.hosts;
             };
