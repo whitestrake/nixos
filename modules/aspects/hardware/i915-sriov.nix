@@ -1,4 +1,9 @@
 {inputs, ...}: {
+  flake-file.inputs.i915-sriov = {
+    url = "github:strongtz/i915-sriov-dkms/2026.03.05.2";
+    inputs.nixpkgs.follows = "nixpkgs-unstable";
+  };
+
   den.aspects.i915-sriov = {
     nixos = {pkgs, ...}: {
       imports = [inputs.i915-sriov.nixosModules.default];

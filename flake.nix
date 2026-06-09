@@ -1,5 +1,9 @@
+# DO-NOT-EDIT. This file was auto-generated using github:vic/flake-file.
+# Use `nix run .#write-flake` to regenerate it.
 {
   description = "Whitestrake's Dendritic Nix OS configuration";
+
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
 
   nixConfig = {
     extra-substituters = [
@@ -15,62 +19,51 @@
   };
 
   inputs = {
-    # Nix packages
+    darwin = {
+      url = "github:LnL7/nix-darwin/nix-darwin-25.11";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    den.url = "github:vic/den";
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
+    disko = {
+      url = "github:nix-community/disko/latest";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    flake-file.url = "github:denful/flake-file";
+    flake-parts = {
+      url = "github:hercules-ci/flake-parts";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
+    };
+    home-manager = {
+      url = "github:nix-community/home-manager/release-25.11";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    i915-sriov = {
+      url = "github:strongtz/i915-sriov-dkms/2026.03.05.2";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
+    import-tree.url = "github:vic/import-tree";
+    nixos-wsl = {
+      url = "github:nix-community/NixOS-WSL/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
-
-    # Home manager
-    home-manager.url = "github:nix-community/home-manager/release-25.11";
-    home-manager.inputs.nixpkgs.follows = "nixpkgs";
-
-    # macOS (nix-darwin)
-    nix-darwin.url = "github:LnL7/nix-darwin/nix-darwin-25.11";
-    nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
-
-    # NixOS WSL
-    nixos-wsl.url = "github:nix-community/NixOS-WSL/main";
-    nixos-wsl.inputs.nixpkgs.follows = "nixpkgs";
-
-    # Deployment
-    deploy-rs.url = "github:serokell/deploy-rs";
-    deploy-rs.inputs.nixpkgs.follows = "nixpkgs";
-    deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
-
-    # Secrets
-    sops-nix.url = "github:Mic92/sops-nix";
-    sops-nix.inputs.nixpkgs.follows = "nixpkgs";
-
-    # vscode-server
-    vscode-server.url = "github:nix-community/nixos-vscode-server";
-    vscode-server.inputs.nixpkgs.follows = "nixpkgs";
-
-    # disko
-    disko.url = "github:nix-community/disko/latest";
-    disko.inputs.nixpkgs.follows = "nixpkgs";
-
-    # Intel GPU SR-IOV
-    i915-sriov.url = "github:strongtz/i915-sriov-dkms/2026.03.05.2";
-    i915-sriov.inputs.nixpkgs.follows = "nixpkgs-unstable";
-
-    # User keys
-    whitestrake-github-keys.url = "https://github.com/whitestrake.keys";
-    whitestrake-github-keys.flake = false;
-
-    # Den framework
-    den.url = "github:vic/den";
-
-    # flake-parts
-    flake-parts.url = "github:hercules-ci/flake-parts";
-    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
-
-    # import-tree
-    import-tree.url = "github:vic/import-tree";
+    sops-nix = {
+      url = "github:Mic92/sops-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    vscode-server = {
+      url = "github:nix-community/nixos-vscode-server";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    whitestrake-github-keys = {
+      url = "https://github.com/whitestrake.keys";
+      flake = false;
+    };
   };
-
-  outputs = inputs:
-    inputs.flake-parts.lib.mkFlake {inherit inputs;}
-    ({...}: {
-      _module.args.flakeRoot = ./.;
-      imports = [(inputs.import-tree ./modules)];
-    });
 }

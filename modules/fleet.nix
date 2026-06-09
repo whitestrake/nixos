@@ -1,4 +1,10 @@
-{lib, ...}: let
+{
+  den,
+  flakeRoot,
+  lib,
+  config,
+  ...
+}: let
   caches = {
     garnix = {
       url = "https://cache.garnix.io?priority=50";
@@ -14,6 +20,12 @@
     };
   };
 in {
+  options.network.tailnetSuffix = lib.mkOption {
+    type = lib.types.str;
+    default = "fell-monitor.ts.net";
+    description = "Tailnet DNS suffix appended to host names for tailnet-internal addressing";
+  };
+
   options.caches = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
@@ -32,6 +44,30 @@ in {
 
   config = {
     caches = caches;
+    systems = builtins.attrNames config.den.hosts;
     _module.args.caches = caches;
+    _module.args.tailnetSuffix = config.network.tailnetSuffix;
+
+    den.policies.flake-root = _: [
+      (den.lib.policy.resolve {
+        inherit flakeRoot;
+      })
+    ];
+
+    den.quirks.nixBuilders = {
+      description = "Distributed Nix builder declarations";
+    };
+
+    den.policies.collect-nix-builders = _: let
+      inherit (den.lib.policy) pipe;
+    in [
+      (pipe.from "nixBuilders" [
+        (pipe.collectAll ({host, ...}: true))
+      ])
+    ];
+
+    den.schema.host.includes = [
+      den.policies.collect-nix-builders
+    ];
   };
 }

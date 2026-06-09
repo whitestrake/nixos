@@ -169,5 +169,10 @@
   };
 in {
   den.ful.whitestrake.user = user;
-  den.aspects.user-whitestrake = user;
+  den.aspects.whitestrake = user;
+
+  flake-file.inputs.whitestrake-github-keys = {
+    url = "https://github.com/whitestrake.keys";
+    flake = false;
+  };
 }

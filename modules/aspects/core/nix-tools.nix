@@ -58,6 +58,8 @@
     };
   };
 in {
+  flake-file.inputs.deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
+
   den.ful.whitestrake.nix-tools = nixTools;
   den.aspects.nix-tools = nixTools;
 }

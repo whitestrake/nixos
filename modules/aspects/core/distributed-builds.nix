@@ -1,25 +1,26 @@
-{...}: {
+{
+  lib,
+  tailnetSuffix,
+  ...
+}: {
   den.aspects.distributed-builds = {
+    nixBuilders = {host, ...}:
+      lib.optional (host.builder.enable or false) {
+        inherit (host) name system;
+        publicHostKey = host.builder.publicHostKey;
+      };
+
     nixos = {
       config,
+      host,
       lib,
-      tailnetSuffix,
-      clusterHosts,
+      nixBuilders,
       ...
     }: let
-      # den.hosts is nested as <system>.<hostname>. Flatten across systems,
-      # carrying `system` into each host record so we can populate buildMachines.
-      allHosts =
-        lib.concatMapAttrs (
-          system: hosts:
-            lib.mapAttrs (_name: cfg: cfg // {inherit system;}) hosts
-        )
-        clusterHosts;
-
-      thisHost = config.networking.hostName;
+      thisHost = host.name;
 
       # Is THIS host flagged as a builder? Drives the inline builder-user setup.
-      isThisHostBuilder = allHosts.${thisHost}.builder.enable or false;
+      isThisHostBuilder = host.builder.enable or false;
 
       # Shared builder defaults applied to every build machine entry.
       builderDefaults = {
@@ -35,18 +36,17 @@
 
       # All hosts flagged as builders, EXCLUDING this host (no self-build entry).
       builderHosts =
-        lib.filterAttrs
-        (name: cfg: (cfg.builder.enable or false) && name != thisHost)
-        allHosts;
+        builtins.filter
+        (builder: builder.name != thisHost)
+        nixBuilders;
 
       buildMachines =
-        lib.mapAttrsToList
-        (name: cfg:
+        map
+        (builder:
           builderDefaults
           // {
-            hostName = "${name}.${tailnetSuffix}";
-            inherit (cfg) system;
-            publicHostKey = cfg.builder.publicHostKey;
+            hostName = "${builder.name}.${tailnetSuffix}";
+            inherit (builder) system publicHostKey;
           })
         builderHosts;
     in {
