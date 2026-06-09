@@ -1,8 +1,4 @@
-{
-  den,
-  inputs,
-  ...
-}: {
+{den, ...}: {
   flake-file.inputs.nixos-wsl = {
     url = "github:nix-community/NixOS-WSL/main";
     inputs.nixpkgs.follows = "nixpkgs";
@@ -14,12 +10,6 @@
     ];
 
     nixos = {pkgs, ...}: {
-      imports = [
-        inputs.nixos-wsl.nixosModules.default
-      ];
-
-      wsl.enable = true;
-
       # Allow running non-Nix dynamic binaries
       programs.nix-ld.enable = true;
 
