@@ -9,7 +9,11 @@
     system,
     ...
   }: let
-    # Get all NixOS configurations on this system that have the Cachix Agent enabled
+    # Cachix Deploy runs this rollback script on the host after activation.
+    # Exiting non-zero marks the deployment failed and lets Cachix roll the host
+    # back to the previous generation. The script is generated per Nix system and
+    # dispatches at runtime by the host's kernel hostname.
+    # Get all NixOS configurations on this system that have the Cachix Agent enabled.
     nixosHostsOnSystem = lib.filterAttrs (
       name: cfg:
         cfg.pkgs.stdenv.hostPlatform.system
@@ -17,7 +21,9 @@
         && cfg.config.services.cachix-agent.enable or false
     ) (self.nixosConfigurations or {});
 
-    # Function to generate health check commands for a single host
+    # Generate health checks from the evaluated host configuration. Structured
+    # checks come from den.deploy.health; service-specific checks can also be
+    # synthesized from other evaluated options when that is less repetitive.
     mkHostChecks = name: let
       cfg = self.nixosConfigurations.${name}.config;
       healthCfg = cfg.den.deploy.health;
@@ -72,7 +78,9 @@
     mkHostCaseBranch = name: let
       cfg = self.nixosConfigurations.${name}.config;
       isCachixManaged = cfg.services.cachix-agent.enable or false;
-      # Safely access den.deploy.health options
+      # Cachix-managed hosts fail closed unless checks are enabled or the host
+      # explicitly opts out with allowUnprotected. Non-Cachix hosts pass with a
+      # notice because the rollback script can be shared by a whole system.
       healthCfg =
         cfg.den.deploy.health or {
           enable = false;
@@ -107,7 +115,9 @@
 
     hostsCaseStatements = lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _: mkHostCaseBranch name) nixosHostsOnSystem);
 
-    # Generate the rollback script text
+    # Generate the rollback script text. The settle and retry environment
+    # variables are intentionally runtime controls so deployments can be tuned
+    # without rebuilding the flake when a host needs more time to converge.
     rollbackScriptText = ''
       #!/usr/bin/env bash
       # Auto-generated deploy rollback script for system ${system}

@@ -4,8 +4,10 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  den.aspects.wsl-base = {
-    includes = [den.aspects.common-base];
+  den.aspects.wsl = {
+    includes = [
+      den.aspects.common
+    ];
 
     nixos = {pkgs, ...}: {
       # Allow running non-Nix dynamic binaries

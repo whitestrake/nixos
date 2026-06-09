@@ -70,9 +70,9 @@ jobs:
           # Set withPlugins hash to fakeHash to trigger a build with mismatch
           python3 -c '
           import re
-          content = open("pkgs/caddy.nix").read()
+          content = open("packages/caddy.nix").read()
           new_content = re.sub(r"      hash = \"sha256-[^\"]*\";", "      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", content)
-          open("pkgs/caddy.nix", "w").write(new_content)
+          open("packages/caddy.nix", "w").write(new_content)
           '
 
           # Attempt build — capture the correct hash from the error
@@ -90,14 +90,14 @@ jobs:
           # Patch the correct hash back in
           python3 -c '
           import sys, re
-          content = open("pkgs/caddy.nix").read()
+          content = open("packages/caddy.nix").read()
           new_content = re.sub(r"      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", f"      hash = \"{sys.argv[1]}\";", content)
-          open("pkgs/caddy.nix", "w").write(new_content)
+          open("packages/caddy.nix", "w").write(new_content)
           ' "$CORRECT_HASH"
       - name: Format with alejandra
         if: steps.update.outputs.changed == 'true'
         run: |
-          nix run nixpkgs#alejandra -- pkgs/
+          nix run nixpkgs#alejandra -- packages/
       - name: Create Pull Request
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8

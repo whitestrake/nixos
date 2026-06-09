@@ -6,7 +6,7 @@
     pkgs,
     unstablePkgs,
   }:
-    import (inputs.self + /pkgs) {
+    import (inputs.self + /packages) {
       inherit (pkgs) lib;
       inherit pkgs unstablePkgs;
       inherit (inputs) import-tree;

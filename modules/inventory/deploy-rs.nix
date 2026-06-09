@@ -25,7 +25,10 @@
     allHosts = lib.foldl' (acc: system: acc // config.den.hosts.${system}) {} (builtins.attrNames config.den.hosts);
 
     # Filter out non-NixOS systems and WSL hosts (which are not deployable via deploy-rs)
-    deployableNodes = lib.filterAttrs (name: host: host.class == "nixos" && !(host.wsl.enable or false)) allHosts;
+    deployableNodes = let
+      isWslNode = name: self.nixosConfigurations.${name}.config.wsl.enable or false;
+    in
+      lib.filterAttrs (name: host: host.class == "nixos" && !(isWslNode name)) allHosts;
 
     mkNode = name: host: {
       hostname = "${name}.${tailnetSuffix}";

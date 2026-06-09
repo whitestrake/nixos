@@ -4,12 +4,6 @@
   ...
 }: {
   den.aspects.distributed-builds = {
-    nixBuilders = {host, ...}:
-      lib.optional (host.builder.enable or false) {
-        inherit (host) name system;
-        publicHostKey = host.builder.publicHostKey;
-      };
-
     nixos = {
       config,
       host,
@@ -18,9 +12,6 @@
       ...
     }: let
       thisHost = host.name;
-
-      # Is THIS host flagged as a builder? Drives the inline builder-user setup.
-      isThisHostBuilder = host.builder.enable or false;
 
       # Shared builder defaults applied to every build machine entry.
       builderDefaults = {
@@ -38,6 +29,12 @@
       builderHosts =
         builtins.filter
         (builder: builder.name != thisHost)
+        nixBuilders;
+
+      # Is THIS host flagged as a builder? Drives the inline builder-user setup.
+      isThisHostBuilder =
+        builtins.any
+        (builder: builder.name == thisHost)
         nixBuilders;
 
       buildMachines =

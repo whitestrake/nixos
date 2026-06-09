@@ -16,7 +16,6 @@
       den.aspects.user-mediaserver
       den.aspects.nix-tools
       den.aspects.vscode-server
-      den.aspects.cifs-client
     ];
 
     nixos = {
