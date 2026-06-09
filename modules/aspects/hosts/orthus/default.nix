@@ -8,7 +8,7 @@
     ];
 
     includes = [
-      den.aspects.server-base
+      den.aspects.server
       den.aspects.docker
     ];
 

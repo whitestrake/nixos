@@ -10,7 +10,7 @@
 
   den.aspects.wsl-base = {
     includes = [
-      den.aspects.common-base
+      den.aspects.common
     ];
 
     nixos = {pkgs, ...}: {

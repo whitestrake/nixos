@@ -14,7 +14,7 @@ Configure host-specific checks in the host aspect or module under `den.deploy.he
 
 ```nix
 den.deploy.health = {
-  # Enable health checks for this host (defaults to false globally, enabled on server-base)
+  # Enable health checks for this host (defaults to false globally, enabled on server)
   enable = true;
 
   # Allow deployment to pass without checks if health checks are disabled.

@@ -44,7 +44,7 @@
       iperf
     ];
 in {
-  den.aspects.common-base = {
+  den.aspects.common = {
     nixos = {pkgs, ...}: {
       nix.settings =
         sharedNixSettings
@@ -89,7 +89,7 @@ in {
 
   den.aspects.linux-base = {
     includes = [
-      den.aspects.common-base
+      den.aspects.common
       den.aspects.distributed-builds
     ];
 

@@ -1,5 +1,5 @@
 {den, ...}: {
-  den.aspects.server-base = {
+  den.aspects.server = {
     includes = [
       den.aspects.linux-base
       den.aspects.monitoring
@@ -43,7 +43,7 @@
 
   den.aspects.lab-server = {
     includes = [
-      den.aspects.server-base
+      den.aspects.server
     ];
 
     nixos = {...}: {
