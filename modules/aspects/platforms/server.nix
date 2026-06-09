@@ -1,7 +1,7 @@
 {den, ...}: {
   den.aspects.server = {
     includes = [
-      den.aspects.linux-base
+      den.aspects.linux
       den.aspects.monitoring
       den.aspects.cachix-agent
       den.aspects.deploy-health
