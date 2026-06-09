@@ -37,7 +37,7 @@ in {
           builder =
             {
               nixos = inputs.nixpkgs.lib.nixosSystem;
-              darwin = inputs.nix-darwin.lib.darwinSystem;
+              darwin = inputs.darwin.lib.darwinSystem;
             }.${
               config.class
             };
