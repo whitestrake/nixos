@@ -26,7 +26,7 @@ The following paths are the main landmarks for navigating the repository:
 - **`modules/aspects/`**: The main reusable composition layer. Aspects describe thematic or capability-based configuration such as base system behavior, services, monitoring, deployment support, hardware roles, or host classes.
 - **`modules/aspects/hosts/`**: Host-specific composition. Each host directory composes reusable aspects and carries local machine details.
 - **Host-private files**: Files such as `_hardware.nix` or `_disko.nix`, where present, are local to a host and imported explicitly. They are not reusable aspects.
-- **`pkgs/`**: Custom packages, package definitions, and overrides that are not provided directly by Nixpkgs in the required form.
+- **`packages/`**: Custom packages, package definitions, and overrides that are not provided directly by Nixpkgs in the required form.
 - **`.github/workflows/`**: GitHub Actions workflows for validation, builds, deployment planning, dependency updates, and flake maintenance.
 - **`secrets/`**: [SOPS](https://github.com/getsops/sops)-encrypted secret material governed by `.sops.yaml`.
 
