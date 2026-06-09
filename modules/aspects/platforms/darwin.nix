@@ -1,7 +1,5 @@
 {den, ...}: {
   den.aspects.darwin = {
-    includes = [den.aspects.common];
-
     darwin = {pkgs, ...}: {
       # Fix broken fish signatures after stripping
       nixpkgs.overlays = [

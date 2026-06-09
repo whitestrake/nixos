@@ -1,4 +1,8 @@
-{caches, ...}: {
+{
+  caches,
+  lib,
+  ...
+}: {
   den.aspects.cachix-agent = {
     nixos = {config, ...}: {
       # Decrypt the shared agent token
@@ -12,7 +16,7 @@
 
       # Trust and use the whitestrake Cachix cache for deployment activation
       nix.settings.substituters = [caches.whitestrake.url];
-      nix.settings.trusted-public-keys = [caches.whitestrake.key];
+      nix.settings.trusted-public-keys = lib.mkAfter [caches.whitestrake.key];
     };
   };
 }

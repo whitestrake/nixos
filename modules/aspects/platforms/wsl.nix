@@ -5,10 +5,6 @@
   };
 
   den.aspects.wsl = {
-    includes = [
-      den.aspects.common
-    ];
-
     nixos = {pkgs, ...}: {
       # Allow running non-Nix dynamic binaries
       programs.nix-ld.enable = true;

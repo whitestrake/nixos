@@ -59,7 +59,7 @@
         isNormalUser = true;
         openssh.authorizedKeys.keys = [builderAuthorizedKey];
       };
-      nix.settings.trusted-users = lib.mkIf isThisHostBuilder ["builder"];
+      nix.settings.trusted-users = lib.mkIf isThisHostBuilder (lib.mkAfter ["builder"]);
     };
   };
 }

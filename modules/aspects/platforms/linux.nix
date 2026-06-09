@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.linux = {
     includes = [
-      den.aspects.common
       den.aspects.distributed-builds
     ];
 
