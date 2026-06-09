@@ -169,5 +169,5 @@
   };
 in {
   den.ful.whitestrake.user = user;
-  den.aspects.user-whitestrake = user;
+  den.aspects.whitestrake = user;
 }
