@@ -3,6 +3,11 @@
   inputs,
   ...
 }: {
+  flake-file.inputs.disko = {
+    url = "github:nix-community/disko/latest";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
   den.aspects.sortie = {
     includes = [
       den.aspects.lab-server

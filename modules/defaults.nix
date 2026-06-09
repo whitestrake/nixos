@@ -4,6 +4,11 @@
   lib,
   ...
 }: {
+  flake-file.inputs.sops-nix = {
+    url = "github:Mic92/sops-nix";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
   den.schema.user.classes = lib.mkDefault ["homeManager"];
 
   # Base overrides applied globally to classes
