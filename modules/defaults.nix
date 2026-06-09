@@ -10,6 +10,7 @@
   den.default = {
     includes = [
       den.provides.hostname
+      den.policies.flake-root
     ];
 
     nixos = {

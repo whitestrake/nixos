@@ -1,4 +1,6 @@
 {
+  den,
+  flakeRoot,
   lib,
   config,
   ...
@@ -45,5 +47,11 @@ in {
     systems = builtins.attrNames config.den.hosts;
     _module.args.caches = caches;
     _module.args.tailnetSuffix = config.network.tailnetSuffix;
+
+    den.policies.flake-root = _: [
+      (den.lib.policy.resolve {
+        inherit flakeRoot;
+      })
+    ];
   };
 }

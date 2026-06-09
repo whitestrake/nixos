@@ -1,7 +1,6 @@
 {
   inputs,
   config,
-  flakeRoot,
   ...
 }: let
   flakeConfig = config;
@@ -33,7 +32,7 @@ in {
           specialArgs =
             (args.specialArgs or {})
             // {
-              inherit inputs unstable flakeRoot;
+              inherit inputs unstable;
               inherit (flakeConfig) caches;
               inherit (flakeConfig.network) tailnetSuffix;
               clusterHosts = flakeConfig.den.hosts;
