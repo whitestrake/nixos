@@ -32,11 +32,9 @@ in {
           specialArgs =
             (args.specialArgs or {})
             // {
-              inherit inputs unstable;
-              inherit (flakeConfig) caches;
+              inherit unstable;
               inherit (flakeConfig.network) tailnetSuffix;
               clusterHosts = flakeConfig.den.hosts;
-              lib = inputs.nixpkgs.lib;
             };
         });
   };
