@@ -1,4 +1,8 @@
-{lib, ...}: let
+{
+  lib,
+  config,
+  ...
+}: let
   caches = {
     garnix = {
       url = "https://cache.garnix.io?priority=50";
@@ -14,6 +18,12 @@
     };
   };
 in {
+  options.network.tailnetSuffix = lib.mkOption {
+    type = lib.types.str;
+    default = "fell-monitor.ts.net";
+    description = "Tailnet DNS suffix appended to host names for tailnet-internal addressing";
+  };
+
   options.caches = lib.mkOption {
     type = lib.types.attrsOf (lib.types.submodule {
       options = {
@@ -32,6 +42,8 @@ in {
 
   config = {
     caches = caches;
+    systems = builtins.attrNames config.den.hosts;
     _module.args.caches = caches;
+    _module.args.tailnetSuffix = config.network.tailnetSuffix;
   };
 }
