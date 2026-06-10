@@ -1,4 +1,8 @@
-{...}: let
+{
+  inputs,
+  lib,
+  ...
+}: let
   mkTooling = {
     pkgs,
     system,
@@ -8,10 +12,10 @@
       nil
       actionlint
       yamlfmt
+      mdformat
     ];
   in {
     inherit repoPackages;
-    formatter = pkgs.alejandra;
     operatorPackages =
       repoPackages
       ++ (with pkgs; [
@@ -26,17 +30,55 @@
 in {
   _module.args.mkTooling = mkTooling;
 
+  flake-file.inputs.treefmt-nix = {
+    url = "github:numtide/treefmt-nix";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  imports = [
+    (inputs.treefmt-nix.flakeModule or {})
+  ];
+
   perSystem = {
+    config,
     pkgs,
     system,
     ...
   }: let
     tooling = mkTooling {inherit pkgs system;};
-  in {
-    formatter = tooling.formatter;
+  in
+    {
+      devShells.default = pkgs.mkShell {
+        packages =
+          tooling.repoPackages
+          ++ lib.optionals (inputs ? treefmt-nix) [
+            config.treefmt.build.wrapper
+          ];
+      };
+    }
+    // lib.optionalAttrs (inputs ? treefmt-nix) {
+      treefmt = {
+        programs = {
+          alejandra.enable = true;
+          yamlfmt = {
+            enable = true;
+            settings.formatter = {
+              type = "basic";
+              retain_line_breaks = true;
+              scan_folded_as_literal = true;
+              eof_newline = true;
+            };
+          };
+          mdformat = {
+            enable = true;
+            settings.wrap = "keep";
+          };
+        };
 
-    devShells.default = pkgs.mkShell {
-      packages = tooling.repoPackages;
+        settings.excludes = [
+          "flake.nix"
+          "secrets/secrets.yaml"
+        ];
+      };
     };
-  };
 }

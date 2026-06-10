@@ -45,8 +45,8 @@ The goal is to match the amount of review and deployment caution to the operatio
 
 The repository uses formatting and diagnostic tools to keep routine issues out of review:
 
-- **Nix files**: [alejandra](https://github.com/kamadorueda/alejandra) is used for formatting, and [nil](https://github.com/oxalica/nil) provides Nix language diagnostics.
-- **GitHub workflows**: [actionlint](https://github.com/rhysd/actionlint) validates workflow syntax, and [yamlfmt](https://github.com/google/yamlfmt) formats YAML files.
+- **Formatting**: [treefmt](https://github.com/numtide/treefmt) is the `nix fmt` entrypoint and routes files to [alejandra](https://github.com/kamadorueda/alejandra), [yamlfmt](https://github.com/google/yamlfmt), and [mdformat](https://github.com/hukkin/mdformat).
+- **Diagnostics**: [nil](https://github.com/oxalica/nil) provides Nix language diagnostics, and [actionlint](https://github.com/rhysd/actionlint) validates GitHub workflow syntax.
 
 These tools support consistency and fast feedback. They are not a substitute for evaluating the flake, checking generated outputs, or considering deployment safety.
 
