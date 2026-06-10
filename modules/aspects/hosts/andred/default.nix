@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.andred = {
     includes = [
-      den.aspects.darwin
       den.aspects.nix-tools
     ];
 
