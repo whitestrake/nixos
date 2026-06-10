@@ -1,10 +1,4 @@
-{
-  inputs,
-  lib,
-  ...
-}: {
-  _module.args.flakeRoot = lib.mkDefault ../.;
-
+{inputs, ...}: {
   flake-file = {
     description = "Whitestrake's Dendritic Nix OS configuration";
 

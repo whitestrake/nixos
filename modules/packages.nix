@@ -1,4 +1,8 @@
-{inputs, ...}: let
+{
+  den,
+  inputs,
+  ...
+}: let
   # Single access path for the local package set. Both the perSystem packages
   # output and the myPkgs overlay consume this, so the definition and its
   # argument wiring live in exactly one place.
@@ -40,7 +44,20 @@
     && pos != null
     && lib.hasPrefix repoPath pos.file;
 in {
-  _module.args.mkLocalPackages = mkLocalPackages;
+  den.default.nixos.nixpkgs.overlays = [
+    (final: prev: let
+      unstablePkgs = import inputs.nixpkgs-unstable {
+        system = prev.stdenv.hostPlatform.system;
+        config.allowUnfree = true;
+      };
+    in {
+      unstable = unstablePkgs;
+      myPkgs = mkLocalPackages {
+        pkgs = final;
+        unstablePkgs = unstablePkgs;
+      };
+    })
+  ];
 
   perSystem = {
     pkgs,
