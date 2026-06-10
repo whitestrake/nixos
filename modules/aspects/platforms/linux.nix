@@ -50,15 +50,6 @@
 
       config = {
         nix.settings.auto-optimise-store = true;
-        programs.nh = {
-          enable = true;
-          flake = "github:whitestrake/nixos";
-          clean = {
-            enable = true;
-            dates = "daily";
-            extraArgs = "--keep-since 7d --keep 5";
-          };
-        };
 
         nixpkgs.overlays = [
           (final: prev: {

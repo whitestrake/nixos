@@ -120,6 +120,15 @@ in {
       time.timeZone = lib.mkDefault "Australia/Brisbane";
       networking.domain = lib.mkDefault "whitestrake.net";
       documentation.nixos.enable = false;
+      programs.nh = {
+        enable = true;
+        flake = "github:whitestrake/nixos";
+        clean = {
+          enable = true;
+          dates = "daily";
+          extraArgs = "--keep-since 7d --keep 5";
+        };
+      };
       imports = [inputs.sops-nix.nixosModules.sops];
       sops = {
         # Default secret file

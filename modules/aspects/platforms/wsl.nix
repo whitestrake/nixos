@@ -9,17 +9,6 @@
       # Allow running non-Nix dynamic binaries
       programs.nix-ld.enable = true;
 
-      # nh CLI helper for NixOS
-      programs.nh = {
-        enable = true;
-        flake = "github:whitestrake/nixos";
-        clean = {
-          enable = true;
-          dates = "daily";
-          extraArgs = "--keep-since 7d --keep 5";
-        };
-      };
-
       # WSL packages
       environment.systemPackages = with pkgs; [
         powershell
