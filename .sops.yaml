@@ -9,7 +9,7 @@ keys:
   - &server_omnius age1jljlxfv5467pwlvwhcgtm8wmjzpvzgyqmz3ud6gzux5aylmsnyrqew63ar
   - &server_kronos age1gxjw8eat4z38t5yenm5jtdfg22kkgktvsjwrqfjsq4n66e80vqksk37xr2
 creation_rules:
-  - path_regex: secrets/secrets\.yaml$
+  - path_regex: modules/secrets/secrets\.yaml$
     key_groups:
       - age:
           - *whitestrake

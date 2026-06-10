@@ -22,13 +22,13 @@ The following paths are the main landmarks for navigating the repository:
 - **`modules/dendritic.nix`**: The main dendritic wiring module. It imports flake-file, Den, and the repository namespace, and declares the foundational generated-flake metadata and inputs.
 - **`modules/inventory/`**: Inventory, shared fleet data, and fleet-derived outputs. `hosts.nix` is the most direct inventory of declared machines and their Den user membership.
 - **`modules/defaults.nix`**: Global Den defaults for NixOS, nix-darwin, and Home Manager classes.
+- **`modules/secrets/`**: SOPS integration and encrypted secret material governed by `.sops.yaml`.
 - **`modules/`**: The primary module tree for flake, Den, host, deployment, package, and reusable configuration logic.
 - **`modules/aspects/`**: The main reusable composition layer. Aspects describe thematic or capability-based configuration such as base system behavior, services, monitoring, deployment support, hardware roles, or host classes.
 - **`modules/aspects/hosts/`**: Host-specific composition. Each host directory composes reusable aspects and carries local machine details.
 - **Host-private files**: Files such as `_hardware.nix` or `_disko.nix`, where present, are local to a host and imported explicitly. They are not reusable aspects.
 - **`packages/`**: Custom packages, package definitions, and overrides that are not provided directly by Nixpkgs in the required form.
 - **`.github/workflows/`**: GitHub Actions workflows for validation, builds, deployment planning, dependency updates, and flake maintenance.
-- **`secrets/`**: [SOPS](https://github.com/getsops/sops)-encrypted secret material governed by `.sops.yaml`.
 
 ## Maintenance Model
 
@@ -67,7 +67,7 @@ A successful CI build proves that the relevant configuration evaluates and build
 
 Secrets are encrypted with [SOPS](https://github.com/getsops/sops) and integrated through [sops-nix](https://github.com/Mic92/sops-nix). Access policy is defined by `age` recipients in `.sops.yaml`.
 
-Shared encrypted payloads live under `secrets/`. Host access is controlled by adding the appropriate recipient keys to the SOPS policy and updating encrypted files with the expected key set.
+Shared encrypted payloads live under `modules/secrets/secrets.yaml` alongside the SOPS module that wires them into NixOS defaults. Host access is controlled by adding the appropriate recipient keys to the SOPS policy and updating encrypted files with the expected key set.
 
 When introducing a new host, the bootstrap flow pre-creates the host SSH key locally. The corresponding `age` recipient is derived from that host key and added to `.sops.yaml` before the machine goes live. This allows `sops-nix` on the target host to derive the expected identity from the system SSH host key and decrypt the secrets required for its role.
 
