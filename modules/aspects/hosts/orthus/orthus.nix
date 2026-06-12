@@ -1,6 +1,6 @@
 {den, ...}: {
   den.aspects.orthus = {
-    nixBuilders = {host, ...}: [
+    nixBuilder = {host, ...}: [
       {
         inherit (host) name system;
         publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
