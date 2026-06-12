@@ -9,9 +9,7 @@
       pkgs,
       lib,
       ...
-    }: let
-      cifsMounts = config.storage.cifsMounts;
-    in {
+    }: {
       options.storage.cifsMounts = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule {
           options = {
@@ -125,7 +123,7 @@
               )}"
             ];
           })
-          cifsMounts;
+          config.storage.cifsMounts;
       };
     };
   };

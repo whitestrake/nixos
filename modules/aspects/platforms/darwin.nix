@@ -6,23 +6,6 @@
       pkgs,
       ...
     }: {
-      # Fix broken fish signatures after stripping
-      nixpkgs.overlays = [
-        (final: prev: {
-          fish = prev.fish.overrideAttrs (old: {
-            postFixup =
-              (old.postFixup or "")
-              + prev.lib.optionalString prev.stdenv.isDarwin ''
-                /usr/bin/codesign --force --sign - $out/bin/fish || true
-                /usr/bin/codesign --force --sign - $out/bin/fish_indent || true
-                /usr/bin/codesign --force --sign - $out/bin/fish_key_reader || true
-              '';
-            sandboxProfile = "";
-            __sandboxProfile = "";
-          });
-        })
-      ];
-
       # macOS System Settings
       security.pam.services.sudo_local.touchIdAuth = true;
       system.defaults.LaunchServices.LSQuarantine = false;
