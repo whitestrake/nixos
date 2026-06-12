@@ -1,65 +1,62 @@
 {
+  config,
   inputs,
-  mkTooling,
   ...
-}: let
-  sharedPackages = {pkgs, ...}: {
-    environment.systemPackages =
-      (mkTooling {
-        inherit pkgs;
+}: {
+  flake-file.inputs.deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
+
+  den.aspects.nix-tools = {
+    os = {pkgs, ...}: {
+      environment.systemPackages = with pkgs; [
+        alejandra
+        nil
+        actionlint
+        yamlfmt
+        mdformat
+        sops
+        age
+        deploy-rs
+        nixos-rebuild
+        nix-update
+      ];
+      environment.shellAliases.deploy-rs-async = let
         system = pkgs.stdenv.hostPlatform.system;
-      })
-      .operatorPackages;
-    environment.shellAliases.deploy-rs-async = let
-      deploy-rs-async = inputs.deploy-rs-async.packages.${pkgs.stdenv.hostPlatform.system}.deploy-rs;
-    in "${deploy-rs-async}/bin/deploy --remote-build";
-  };
-
-  sharedHomeManager = {
-    config,
-    lib,
-    osConfig ? {},
-    ...
-  }: {
-    programs.gh = {
-      enable = true;
-      gitCredentialHelper = {
-        enable = true;
-      };
+        deploy-rs-async = inputs.deploy-rs-async.packages.${system}.deploy-rs;
+      in "${deploy-rs-async}/bin/deploy --remote-build";
     };
 
-    home.file = lib.mkIf (osConfig ? sops) {
-      ".config/gh/hosts.yml".source = config.lib.file.mkOutOfStoreSymlink osConfig.sops.templates."gh-hosts".path;
-    };
-  };
-
-  nixTools = {
-    nixos = {config, ...}: {
-      imports = [sharedPackages];
-
+    provides.whitestrake.nixos = {config, ...}: {
       sops.secrets.githubToken = {};
       sops.templates."gh-hosts" = {
         content = ''
           github.com:
-            oauth_token: ''${config.sops.placeholder.githubToken}
+            oauth_token: ${config.sops.placeholder.githubToken}
             git_protocol: https
             user: whitestrake
         '';
         owner = "whitestrake";
       };
-
-      home-manager.users.whitestrake = sharedHomeManager;
     };
 
-    darwin = {pkgs, ...}: {
-      imports = [sharedPackages];
+    provides.whitestrake.homeManager = {
+      lib,
+      config,
+      osConfig ? {},
+      ...
+    }: {
+      programs.gh = {
+        enable = true;
+        gitCredentialHelper.enable = true;
+      };
 
-      home-manager.users.whitestrake = sharedHomeManager;
+      home.file = lib.mkIf (osConfig ? sops) {
+        ".config/gh/hosts.yml".source =
+          config.lib.file.mkOutOfStoreSymlink
+          osConfig.sops.templates."gh-hosts".path;
+      };
     };
   };
-in {
-  flake-file.inputs.deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
 
-  den.ful.whitestrake.nix-tools = nixTools;
-  den.aspects.nix-tools = nixTools;
+  # Export the aspect under a namespace
+  den.ful.whitestrake.nix-tools = config.den.aspects.nix-tools;
 }

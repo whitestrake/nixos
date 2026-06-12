@@ -3,18 +3,18 @@
 {
   description = "Whitestrake's Dendritic Nix OS configuration";
 
-  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+  outputs = inputs: inputs.flake-parts.lib.mkFlake {inherit inputs;} (inputs.import-tree ./modules);
 
   nixConfig = {
     extra-substituters = [
-      "https://whitestrake.cachix.org?priority=10"
-      "https://cache.garnix.io?priority=50"
-      "https://nix-community.cachix.org?priority=60"
+      "https://whitestrake.cachix.org?priority=50"
+      "https://cache.garnix.io?priority=51"
+      "https://nix-community.cachix.org?priority=41"
     ];
     extra-trusted-public-keys = [
+      "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8="
       "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
       "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-      "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8="
     ];
     lazy-trees = true;
   };

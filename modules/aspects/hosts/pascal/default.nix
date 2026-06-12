@@ -1,7 +1,7 @@
 {den, ...}: {
   den.aspects.pascal = {
     includes = [
-      den.aspects.lab-server
+      den.aspects.server.lab
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.vscode-server

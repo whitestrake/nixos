@@ -1,8 +1,14 @@
-{
-  lib,
-  tailnetSuffix,
-  ...
-}: {
+{...} @ flake: {
+  den.quirks.nixBuilders.description = "Distributed Nix builder declarations";
+  den.schema.host.includes = [flake.config.den.policies.collect-nix-builders];
+  den.policies.collect-nix-builders = _: let
+    inherit (flake.config.den.lib.policy) pipe;
+  in [
+    (pipe.from "nixBuilders" [
+      (pipe.collectAll ({host, ...}: true))
+    ])
+  ];
+
   den.aspects.distributed-builds = {
     nixos = {
       config,
@@ -42,7 +48,7 @@
         (builder:
           builderDefaults
           // {
-            hostName = "${builder.name}.${tailnetSuffix}";
+            hostName = "${builder.name}.${flake.config.network.tailnetSuffix}";
             inherit (builder) system publicHostKey;
           })
         builderHosts;

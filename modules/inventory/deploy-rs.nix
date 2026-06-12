@@ -10,7 +10,6 @@
   inputs,
   lib,
   config,
-  tailnetSuffix,
   ...
 }: {
   flake-file.inputs.deploy-rs = {
@@ -31,7 +30,7 @@
       lib.filterAttrs (name: host: host.class == "nixos" && !(isWslNode name)) allHosts;
 
     mkNode = name: host: {
-      hostname = "${name}.${tailnetSuffix}";
+      hostname = "${name}.${config.network.tailnetSuffix}";
       profiles.system.path = deploy-rs.lib.${host.system}.activate.nixos self.nixosConfigurations.${name};
     };
 

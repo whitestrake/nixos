@@ -1,9 +1,13 @@
 {den, ...}: {
+  # Server aspect wires in monitoring, deployment, health, and Tailscale networking
   den.aspects.server = {
     includes = [
       den.aspects.monitoring
       den.aspects.cachix-agent
     ];
+
+    # Don't need man pages on headless servers
+    os.documentation.enable = false;
 
     nixos = {
       config,
@@ -131,13 +135,9 @@
     };
   };
 
-  den.aspects.lab-server = {
-    includes = [
-      den.aspects.server
-    ];
-
-    nixos = {...}: {
-      networking.domain = "lab.whitestrake.net";
-    };
+  # Homelab servers have a subdomain for internal addressing
+  den.aspects.server.lab = {
+    includes = [den.aspects.server];
+    nixos.networking.domain = "lab.whitestrake.net";
   };
 }

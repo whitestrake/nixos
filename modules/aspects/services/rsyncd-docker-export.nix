@@ -1,17 +1,17 @@
-{tailnetSuffix, ...}: {
+{...} @ flake: {
   den.aspects.rsyncd-docker-export = {
-    nixos = {config, ...}: {
+    nixos = {host, ...}: {
       # Allow for NAS pulls of the entire /opt/docker directory via rsyncd
       services.rsyncd.enable = true;
-      services.rsyncd.settings = {
-        globalSection.address = "${config.networking.hostName}.${tailnetSuffix}";
+      services.rsyncd.settings = with flake.config.network; {
+        globalSection.address = "${host.name}.${tailnetSuffix}";
         sections = {
           docker = {
             path = "/opt/docker";
             uid = "root";
             gid = "root";
-            "hosts allow" = "triton.${tailnetSuffix},tempus.${tailnetSuffix}";
             "read only" = true;
+            "hosts allow" = "triton.${tailnetSuffix},tempus.${tailnetSuffix}";
           };
         };
       };

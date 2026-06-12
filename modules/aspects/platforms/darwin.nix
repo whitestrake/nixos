@@ -1,4 +1,4 @@
-{den, ...}: {
+{...}: {
   den.aspects.darwin = {
     darwin = {pkgs, ...}: {
       # Fix broken fish signatures after stripping
@@ -21,6 +21,7 @@
       # macOS System Settings
       security.pam.services.sudo_local.touchIdAuth = true;
       system.defaults.LaunchServices.LSQuarantine = false;
+      programs.zsh.enable = true;
 
       fonts.packages = with pkgs; [
         nerd-fonts.meslo-lg
@@ -46,8 +47,6 @@
       homebrew = {
         enable = true;
         onActivation = {
-          autoUpdate = true;
-          upgrade = true;
           cleanup = "zap";
           extraFlags = ["--force-cleanup"];
         };

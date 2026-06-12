@@ -43,10 +43,11 @@ The goal is to match the amount of review and deployment caution to the operatio
 
 ## Linting and Diagnostics
 
-The repository uses formatting and diagnostic tools to keep routine issues out of review:
+The repository uses formatting and diagnostic tools to keep routine issues out of review. All formatting and Nix diagnostics are unified under a single entrypoint:
 
-- **Formatting**: [treefmt](https://github.com/numtide/treefmt) is the `nix fmt` entrypoint and routes files to [alejandra](https://github.com/kamadorueda/alejandra), [yamlfmt](https://github.com/google/yamlfmt), and [mdformat](https://github.com/hukkin/mdformat).
-- **Diagnostics**: [nil](https://github.com/oxalica/nil) provides Nix language diagnostics, and [actionlint](https://github.com/rhysd/actionlint) validates GitHub workflow syntax.
+- **Unified Check & Format**: [treefmt](https://github.com/numtide/treefmt) serves as the `nix fmt` entrypoint for the entire project.
+- **Formatting**: It automatically routes files to [alejandra](https://github.com/kamadorueda/alejandra) (Nix), [yamlfmt](https://github.com/google/yamlfmt) (YAML), and [mdformat](https://github.com/hukkin/mdformat) (Markdown).
+- **Diagnostics**: It leverages `treefmt`'s "check-only" capability to run both [nil](https://github.com/oxalica/nil) diagnostics across all `.nix` files (failing on syntax errors or unused bindings) and [actionlint](https://github.com/rhysd/actionlint) to validate GitHub workflow syntax.
 
 These tools support consistency and fast feedback. They are not a substitute for evaluating the flake, checking generated outputs, or considering deployment safety.
 

@@ -1,67 +1,51 @@
 {
   den,
   inputs,
+  config,
   ...
-}: let
-  user = {
+}: {
+  flake-file.inputs.whitestrake-github-keys = {
+    url = "https://github.com/whitestrake.keys";
+    flake = false;
+  };
+
+  den.aspects.whitestrake = {
     includes = [
       den.provides.define-user
       den.provides.primary-user
       (den.provides.user-shell "fish")
     ];
 
-    nixos = {
-      config,
-      pkgs,
-      ...
-    }: {
+    provides.to-hosts.os.nix.settings.trusted-users = ["whitestrake"];
+
+    nixos = {config, ...}: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
-
       users.users.whitestrake = {
-        isNormalUser = true;
         hashedPasswordFile = config.sops.secrets.whitestrakePassword.path;
-        extraGroups = ["wheel" "docker" "www-data" "mediaserver"];
+        extraGroups = ["docker" "www-data" "mediaserver"];
         openssh.authorizedKeys.keyFiles = [inputs.whitestrake-github-keys.outPath];
-      };
-      programs.git.enable = true;
-    };
-
-    darwin = {pkgs, ...}: {
-      users.users.whitestrake = {
-        home = "/Users/whitestrake";
       };
     };
 
     homeManager = {
-      config,
       pkgs,
       lib,
-      osConfig ? {},
       ...
     }: {
       home.stateVersion = "23.11";
-      home.sessionVariables = lib.mkMerge [
-        {
-          COMPOSE_IGNORE_ORPHANS = "True";
-          EDITOR = lib.mkDefault "hx";
-          BAT_PAGING = "never";
-          BAT_THEME = "TwoDark";
-          CLICOLOR = "1";
-        }
-        (lib.mkIf pkgs.stdenv.isDarwin {EDITOR = "antigravity";})
-      ];
+      home.sessionVariables = {
+        COMPOSE_IGNORE_ORPHANS = "True";
+        EDITOR = lib.mkDefault "hx";
+        BAT_PAGING = "never";
+        BAT_THEME = "TwoDark";
+        CLICOLOR = "1";
+      };
 
-      home.shellAliases = lib.mkMerge [
-        {
-          l = "eza --long --git-ignore";
-          la = "eza --long --all --all --time-style=long-iso";
-          df = "df -h -xtmpfs -xoverlay";
-        }
-        (lib.mkIf pkgs.stdenv.isDarwin {
-          tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-          agy = "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity";
-        })
-      ];
+      home.shellAliases = {
+        l = "eza --long --git-ignore";
+        la = "eza --long --all --all --time-style=long-iso";
+        df = "df -h -xtmpfs -xoverlay";
+      };
 
       home.packages = with pkgs; [
         nix-search-cli
@@ -69,6 +53,7 @@
         ffmpeg
         yt-dlp
         bat
+        rbw
       ];
 
       # Autojump
@@ -170,13 +155,16 @@
 
       programs.home-manager.enable = true;
     };
-  };
-in {
-  den.ful.whitestrake.user = user;
-  den.aspects.whitestrake = user;
 
-  flake-file.inputs.whitestrake-github-keys = {
-    url = "https://github.com/whitestrake.keys";
-    flake = false;
+    darwin.home-manager.users.whitestrake = {
+      home.sessionVariables.EDITOR = "antigravity";
+      home.shellAliases = {
+        tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+        agy = "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity";
+      };
+    };
   };
+
+  # Export the user aspect under a namespace
+  den.ful.whitestrake.user = config.den.aspects.whitestrake;
 }

@@ -1,19 +1,15 @@
-{inputs, ...}: {
+{
+  inputs,
+  config,
+  ...
+}: {
   flake-file = {
     description = "Whitestrake's Dendritic Nix OS configuration";
 
-    nixConfig = {
+    nixConfig = with builtins; {
       lazy-trees = true;
-      extra-substituters = [
-        "https://whitestrake.cachix.org?priority=10"
-        "https://cache.garnix.io?priority=50"
-        "https://nix-community.cachix.org?priority=60"
-      ];
-      extra-trusted-public-keys = [
-        "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g="
-        "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8="
-      ];
+      extra-substituters = catAttrs "url" (attrValues config.caches);
+      extra-trusted-public-keys = catAttrs "key" (attrValues config.caches);
     };
 
     inputs = {
@@ -36,6 +32,8 @@
       };
     };
   };
+
+  systems = builtins.attrNames config.den.hosts;
 
   imports = [
     (inputs.flake-file.flakeModules.dendritic or {})
