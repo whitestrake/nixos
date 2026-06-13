@@ -108,8 +108,6 @@
               "soft"
               "nofail"
               "_netdev"
-              "x-systemd.requires=tailscaled.service"
-              "x-systemd.after=tailscaled.service"
               "timeo=50"
               "retrans=2"
               "x-systemd.automount"
