@@ -36,44 +36,68 @@
       cfg = self.nixosConfigurations.${name}.config;
       healthCfg = cfg.den.deploy.health;
 
-      # systemd unit checks (budget: 15 attempts, 2s delay)
+      unitCheckBudget = unit:
+        if unit == "tailscaled.service"
+        then {
+          attempts = "45";
+          delay = "2";
+        }
+        else {
+          attempts = "15";
+          delay = "2";
+        };
+
+      commandCheckBudget = cmdName:
+        if cmdName == "tailscale"
+        then {
+          attempts = "45";
+          delay = "2";
+        }
+        else {
+          attempts = "-";
+          delay = "-";
+        };
+
+      # systemd unit checks
       unitChecks =
-        map (unit: ''
-          check_with_retry "systemd-unit-${unit}" 15 2 check_systemd_unit "${unit}"
+        map (unit: let
+          budget = unitCheckBudget unit;
+        in ''
+          check_or_fail "systemd unit ${unit} failed health check" "systemd-unit-${unit}" ${budget.attempts} ${budget.delay} check_systemd_unit "${unit}"
         '')
         healthCfg.requiredSystemdUnits;
 
-      # custom command checks (budget: global default)
+      # custom command checks
       commandChecks =
-        lib.mapAttrsToList (cmdName: cmd: ''
-          check_with_retry "command-${cmdName}" - - check_command ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg cmd}
+        lib.mapAttrsToList (cmdName: cmd: let
+          budget = commandCheckBudget cmdName;
+        in ''
+          check_or_fail "command ${cmdName} failed health check" "command-${cmdName}" ${budget.attempts} ${budget.delay} check_command ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg cmd}
         '')
         healthCfg.requiredCommands;
 
       # HTTP endpoint checks (budget: 10 attempts, 3s delay)
       httpChecks =
         lib.mapAttrsToList (epName: ep: ''
-          check_with_retry "http-${epName}" 10 3 check_http_endpoint "${epName}" "${ep.url}" "${toString ep.expectStatus}"
+          check_or_fail "HTTP endpoint ${epName} failed health check" "http-${epName}" 10 3 check_http_endpoint "${epName}" "${ep.url}" "${toString ep.expectStatus}"
         '')
         healthCfg.requiredHttpEndpoints;
 
       # rsyncd checks (if enabled on this host)
-      # systemd service budget: 5 attempts, 1s delay
+      # systemd service budget: 15 attempts, 2s delay
       # socket check budget: 15 attempts, 2s delay
-      # NOTE: We intentionally check rsync.service instead of rsyncd.service because
-      # this repository uses the non-socket-activated rsyncd configuration in NixOS.
-      # This is driven by the rsyncd-docker-export aspect, which enables
-      # services.rsyncd on /opt/docker NAS-export hosts.
       rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
-        check_with_retry "systemd-unit-rsync.service" 15 2 check_systemd_unit "rsync.service"
-        check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${config.network.tailnetSuffix}/873'
+        check_or_fail "systemd unit rsync.service failed health check" "systemd-unit-rsync.service" 15 2 check_systemd_unit "rsync.service"
+        check_or_fail "rsyncd socket failed health check" "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${config.network.tailnetSuffix}/873'
       '';
 
       # extra check script
-      extraCheck = lib.optionalString (healthCfg.extraCheckScript != "") ''
+      extraCheck = lib.optionalString (healthCfg.extraCheckScript != "") (let
+        extraScript = pkgs.writeShellScript "deploy-health-extra-${name}" healthCfg.extraCheckScript;
+      in ''
         log "Running extra check script for ${name}..."
-        ${healthCfg.extraCheckScript}
-      '';
+        check_or_fail "extra check script failed for ${name}" "extra-${name}" - - check_command ${extraScript}
+      '');
     in ''
       ${lib.concatStringsSep "\n" unitChecks}
       ${lib.concatStringsSep "\n" commandChecks}
@@ -127,20 +151,100 @@
     # variables are intentionally runtime controls so deployments can be tuned
     # without rebuilding the flake when a host needs more time to converge.
     rollbackScriptText = ''
-      #!/usr/bin/env bash
       # Auto-generated deploy rollback script for system ${system}
       set -euo pipefail
 
+      deploy_start_epoch="$(${pkgs.coreutils}/bin/date +%s)"
+      diagnostics_collected=0
+
+      command_timeout_seconds="''${DEPLOY_HEALTH_COMMAND_TIMEOUT_SECONDS:-10}"
+      systemctl_timeout_seconds="''${DEPLOY_HEALTH_SYSTEMCTL_TIMEOUT_SECONDS:-5}"
+      diagnostic_timeout_seconds="''${DEPLOY_HEALTH_DIAGNOSTIC_TIMEOUT_SECONDS:-15}"
+      diagnostic_journal_lines="''${DEPLOY_HEALTH_DIAGNOSTIC_JOURNAL_LINES:-300}"
+
       log() { echo "deploy-health: $*" >&2; }
-      fail() { log "FAIL: $*"; exit 1; }
+      
+      run_diagnostic() {
+        local name="$1"
+        shift
+
+        log "diagnostic: BEGIN $name"
+        set +e
+        ${pkgs.coreutils}/bin/timeout \
+          --kill-after=5s \
+          "$diagnostic_timeout_seconds" \
+          "$@" >&2
+        local rc="$?"
+        set -e
+        if [ "$rc" -ne 0 ]; then
+          log "diagnostic: $name exited with $rc"
+        fi
+        log "diagnostic: END $name"
+      }
+
+      collect_diagnostics() {
+        if [ "$diagnostics_collected" -eq 1 ]; then
+          return 0
+        fi
+        diagnostics_collected=1
+
+        set +e
+        log "collecting failure diagnostics"
+
+        run_diagnostic "systemctl-failed" \
+          ${pkgs.systemd}/bin/systemctl --failed --no-pager --full
+
+        run_diagnostic "core-service-status" \
+          ${pkgs.systemd}/bin/systemctl status --no-pager --full \
+            cachix-agent.service \
+            tailscaled.service \
+            tailscaled-autoconnect.service \
+            dhcpcd.service
+
+        run_diagnostic "mount-status" \
+          ${pkgs.systemd}/bin/systemctl status --no-pager --full \
+            'mnt-*.mount' \
+            'mnt-*.automount'
+
+        run_diagnostic "recent-core-journal" \
+          ${pkgs.systemd}/bin/journalctl --no-pager --output=short-iso \
+            --since "@$deploy_start_epoch" \
+            --lines="$diagnostic_journal_lines" \
+            -u cachix-agent.service \
+            -u tailscaled.service \
+            -u tailscaled-autoconnect.service \
+            -u dhcpcd.service
+
+        set -e
+      }
+
+      fail() {
+        log "FAIL: $*"
+        collect_diagnostics || true
+        exit 1;
+      }
+
+      check_or_fail() {
+        local failure_message="$1"
+        shift
+        if ! check_with_retry "$@"; then
+          fail "$failure_message"
+        fi
+      }
 
       check_systemd_unit() {
         local unit="$1"
-        ${pkgs.systemd}/bin/systemctl is-active --quiet "$unit"
+        ${pkgs.coreutils}/bin/timeout \
+          --kill-after=5s \
+          "$systemctl_timeout_seconds" \
+          ${pkgs.systemd}/bin/systemctl is-active --quiet "$unit"
       }
 
       check_command() {
-        "$@"
+        ${pkgs.coreutils}/bin/timeout \
+          --kill-after=5s \
+          "$command_timeout_seconds" \
+          "$@"
       }
 
       check_http_endpoint() {
@@ -181,10 +285,20 @@
         local attempt=1
         log "Running check '$name' (max attempts: $max_attempts, delay: $delay s)..."
         while true; do
-          if "$@"; then
+          set +e
+          "$@"
+          local rc="$?"
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
             log "Check '$name' PASSED"
             return 0
           fi
+
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            log "Check '$name' attempt timed out with exit code $rc"
+          fi
+
           if [ "$attempt" -ge "$max_attempts" ]; then
             log "Check '$name' FAILED after $max_attempts attempts"
             return 1

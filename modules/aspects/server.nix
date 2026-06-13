@@ -105,7 +105,9 @@
         };
       };
 
-      config = {
+      config = let
+        tailscaleReadyCommand = "${config.services.tailscale.package}/bin/tailscale status --peers=false";
+      in {
         den.deploy.health = {
           enable = lib.mkDefault true;
           allowUnprotected = lib.mkDefault false;
@@ -116,7 +118,7 @@
           ];
           requiredCommands = {
             dns = "${pkgs.dig}/bin/dig +short whitestrake.net";
-            tailscale = "${config.services.tailscale.package}/bin/tailscale status --peers=false";
+            tailscale = tailscaleReadyCommand;
           };
         };
 
@@ -129,7 +131,7 @@
         };
 
         systemd.services.tailscaled.serviceConfig.ExecStartPost = ''
-          ${pkgs.coreutils}/bin/timeout 60s ${pkgs.bash}/bin/bash -c 'until ${config.services.tailscale.package}/bin/tailscale status --peers=false; do sleep 1; done'
+          ${pkgs.coreutils}/bin/timeout 60s ${pkgs.bash}/bin/bash -c 'until ${tailscaleReadyCommand}; do sleep 1; done'
         '';
       };
     };
