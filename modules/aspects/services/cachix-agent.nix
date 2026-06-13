@@ -163,7 +163,7 @@
       diagnostic_journal_lines="''${DEPLOY_HEALTH_DIAGNOSTIC_JOURNAL_LINES:-300}"
 
       log() { echo "deploy-health: $*" >&2; }
-      
+
       run_diagnostic() {
         local name="$1"
         shift
