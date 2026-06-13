@@ -108,8 +108,6 @@
               "soft"
               "nofail"
               "_netdev"
-              "timeo=50"
-              "retrans=2"
               "x-systemd.automount"
               "x-systemd.idle-timeout=60"
               "x-systemd.mount-timeout=5"
