@@ -25,6 +25,17 @@
       in "${deploy-rs-async}/bin/deploy --remote-build";
     };
 
+    nixos = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: {
+      environment.systemPackages = lib.optionals (config.wsl.enable or false) [
+        pkgs.bubblewrap
+      ];
+    };
+
     provides.whitestrake.nixos = {config, ...}: {
       sops.secrets.githubToken = {};
       sops.templates."gh-hosts" = {

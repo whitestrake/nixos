@@ -36,10 +36,10 @@
       cfg = self.nixosConfigurations.${name}.config;
       healthCfg = cfg.den.deploy.health;
 
-      # systemd unit checks (budget: 5 attempts, 1s delay)
+      # systemd unit checks (budget: 15 attempts, 2s delay)
       unitChecks =
         map (unit: ''
-          check_with_retry "systemd-unit-${unit}" 5 1 check_systemd_unit "${unit}"
+          check_with_retry "systemd-unit-${unit}" 15 2 check_systemd_unit "${unit}"
         '')
         healthCfg.requiredSystemdUnits;
 
@@ -65,7 +65,7 @@
       # This is driven by the rsyncd-docker-export aspect, which enables
       # services.rsyncd on /opt/docker NAS-export hosts.
       rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
-        check_with_retry "systemd-unit-rsync.service" 5 1 check_systemd_unit "rsync.service"
+        check_with_retry "systemd-unit-rsync.service" 15 2 check_systemd_unit "rsync.service"
         check_with_retry "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${config.network.tailnetSuffix}/873'
       '';
 
