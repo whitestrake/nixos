@@ -311,8 +311,8 @@
 
       host="$(${pkgs.coreutils}/bin/cat /proc/sys/kernel/hostname)"
 
-      log "Starting deploy health checks on $host (settling delay: ''${DEPLOY_HEALTH_SETTLE_SECONDS:-10}s)..."
-      sleep "''${DEPLOY_HEALTH_SETTLE_SECONDS:-10}"
+      log "Starting deploy health checks on $host..."
+
 
       case "$host" in
         ${hostsCaseStatements}
