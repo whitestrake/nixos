@@ -16,10 +16,10 @@
       # Use systemd-resolved for native, robust mDNS resolution
       services.resolved = {
         enable = true;
-        llmnr = "false";
-        extraConfig = ''
-          MulticastDNS=resolve
-        '';
+        settings.Resolve = {
+          LLMNR = "false";
+          MulticastDNS = "resolve";
+        };
       };
 
       # Enable envfs to automatically populate /bin and /usr/bin with binaries from PATH
