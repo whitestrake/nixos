@@ -14,6 +14,7 @@ in
       name = "komodo-${version}";
       hash = "sha256-b/AgQBmS1QfP+BOCT4xL8majVKobig5M2YJhGuXMToc=";
     };
+    patches = [];
     nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config];
     buildInputs = (oldAttrs.buildInputs or []) ++ [pkgs.openssl];
   })
