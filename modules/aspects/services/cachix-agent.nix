@@ -4,11 +4,85 @@
   config,
   ...
 }: {
-  den.aspects.cachix-agent.nixos = {config, ...}: {
+  den.aspects.cachix-agent.nixos = {
+    config,
+    pkgs,
+    ...
+  }: {
     sops.secrets.cachixAgentToken = {};
     services.cachix-agent = {
       enable = true;
       credentialsFile = config.sops.secrets.cachixAgentToken.path;
+    };
+
+    # Asynchronous restart changes:
+    # 1. Do not stop or restart the cachix-agent service during system switches,
+    # because stopping/restarting the agent that is running switch-to-configuration
+    # causes a deadlock that eventually SIGKILLs the agent and aborts/fails the deploy.
+    systemd.services.cachix-agent = {
+      stopIfChanged = false;
+      restartIfChanged = false;
+    };
+
+    # 2. Add an activation script to detect whether the switch was triggered by
+    # Cachix Deploy. When cachix-agent runs switch-to-configuration, the activation
+    # process inherits the agent's cgroup (0::/system.slice/cachix-agent.service).
+    # Manual switches run under a user session scope and won't match.
+    system.activationScripts.cachix-deploy-lock = {
+      text = ''
+        if grep -q "cachix-agent.service" /proc/self/cgroup 2>/dev/null; then
+          echo "cachix-deploy-lock: Cachix Deploy switch detected. Creating deployment lock."
+          touch /run/cachix-deploy-in-progress
+        fi
+      '';
+    };
+
+    # 3. Add a helper service that checks if the cachix-agent package has been updated,
+    # and restarts it if the binary changed, provided no Cachix Deploy is active.
+    systemd.services.restart-cachix-agent = {
+      description = "Check and restart Cachix Agent if binary changed (manual switch path)";
+      wantedBy = ["multi-user.target"];
+      after = ["cachix-agent.service"];
+      restartTriggers = [config.services.cachix-agent.package];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = false;
+      };
+      script = let
+        expected_bin = "${config.services.cachix-agent.package}/bin/cachix";
+      in ''
+        # If a Cachix Deploy is active, exit immediately and let the deploy
+        # health-check script handle the restart via systemd-run.
+        if [ -f /run/cachix-deploy-in-progress ]; then
+          current_time=$(${pkgs.coreutils}/bin/date +%s)
+          lock_time=$(${pkgs.coreutils}/bin/stat -c %Y /run/cachix-deploy-in-progress 2>/dev/null || echo 0)
+          age=$((current_time - lock_time))
+
+          if [ "$age" -gt 600 ]; then
+            echo "restart-cachix-agent: Stale deployment lock (age: ''${age}s). Removing."
+            rm -f /run/cachix-deploy-in-progress
+          else
+            echo "restart-cachix-agent: Cachix Deploy in progress (lock age: ''${age}s). Skipping."
+            exit 0
+          fi
+        fi
+
+        expected_bin_resolved="$(${pkgs.coreutils}/bin/readlink -f "${expected_bin}" 2>/dev/null || true)"
+        agent_pid="$(${pkgs.systemd}/bin/systemctl show -p MainPID --value cachix-agent.service 2>/dev/null || true)"
+
+        if [ -n "$agent_pid" ] && [ "$agent_pid" -ne 0 ] 2>/dev/null; then
+          running_bin="$(${pkgs.coreutils}/bin/readlink -f "/proc/$agent_pid/exe" 2>/dev/null || true)"
+
+          if [ -n "$running_bin" ] && [ -n "$expected_bin_resolved" ] && [ "$expected_bin_resolved" != "$running_bin" ]; then
+            echo "restart-cachix-agent: Binary changed from $running_bin to $expected_bin_resolved. Restarting."
+            ${pkgs.systemd}/bin/systemctl restart cachix-agent.service
+          else
+            echo "restart-cachix-agent: Binary is up-to-date ($running_bin)."
+          fi
+        else
+          echo "restart-cachix-agent: Agent is not running. No action needed."
+        fi
+      '';
     };
   };
 
@@ -98,12 +172,46 @@
         log "Running extra check script for ${name}..."
         check_or_fail "extra check script failed for ${name}" "extra-${name}" - - check_command ${extraScript}
       '');
+
+      agentRestartCheck = let
+        expected_bin = "${cfg.services.cachix-agent.package}/bin/cachix";
+      in ''
+        # Check if the Cachix Agent binary changed during this switch. If so,
+        # schedule a delayed asynchronous restart via systemd-run. The delay
+        # gives the agent time to finish reporting the successful deployment
+        # back to the Cachix Deploy service before it is restarted.
+        #
+        # This is best-effort: a failed systemd-run must not fail an otherwise
+        # healthy deployment.
+        agent_pid="$(${pkgs.systemd}/bin/systemctl show -p MainPID --value cachix-agent.service 2>/dev/null || true)"
+        if [ -n "$agent_pid" ] && [ "$agent_pid" -ne 0 ] 2>/dev/null; then
+          running_bin="$(${pkgs.coreutils}/bin/readlink -f "/proc/$agent_pid/exe" 2>/dev/null || true)"
+          expected_bin_resolved="$(${pkgs.coreutils}/bin/readlink -f "${expected_bin}" 2>/dev/null || true)"
+
+          if [ -n "$running_bin" ] && [ -n "$expected_bin_resolved" ] && [ "$expected_bin_resolved" != "$running_bin" ]; then
+            restart_delay_seconds="''${DEPLOY_HEALTH_AGENT_RESTART_DELAY_SECONDS:-30}"
+            log "Cachix Agent binary updated: $running_bin -> $expected_bin_resolved. Scheduling restart in ''${restart_delay_seconds}s..."
+            ${pkgs.systemd}/bin/systemd-run \
+              --unit=restart-cachix-agent-deferred \
+              --description="Deferred Cachix Agent restart after deploy" \
+              --collect \
+              --on-active="''${restart_delay_seconds}s" \
+              ${pkgs.systemd}/bin/systemctl restart cachix-agent.service \
+              || log "Warning: Failed to schedule asynchronous agent restart. Agent will continue running the old binary until next restart."
+          else
+            log "Cachix Agent binary is up-to-date ($running_bin)."
+          fi
+        else
+          log "Warning: Could not determine running Cachix Agent PID. Skipping agent restart check."
+        fi
+      '';
     in ''
       ${lib.concatStringsSep "\n" unitChecks}
       ${lib.concatStringsSep "\n" commandChecks}
       ${lib.concatStringsSep "\n" httpChecks}
       ${rsyncdChecks}
       ${extraCheck}
+      ${agentRestartCheck}
     '';
 
     # Generates a case branch for a given host
@@ -161,6 +269,14 @@
       systemctl_timeout_seconds="''${DEPLOY_HEALTH_SYSTEMCTL_TIMEOUT_SECONDS:-5}"
       diagnostic_timeout_seconds="''${DEPLOY_HEALTH_DIAGNOSTIC_TIMEOUT_SECONDS:-15}"
       diagnostic_journal_lines="''${DEPLOY_HEALTH_DIAGNOSTIC_JOURNAL_LINES:-300}"
+
+      # Cleanup deployment lock file on exit (including failure exits).
+      # This is intentional: if health checks fail and the deployment rolls back,
+      # the lock must still be removed so the manual-switch helper is not blocked.
+      cleanup_deploy_lock() {
+        rm -f /run/cachix-deploy-in-progress
+      }
+      trap cleanup_deploy_lock EXIT
 
       log() { echo "deploy-health: $*" >&2; }
 
