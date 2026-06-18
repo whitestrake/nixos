@@ -1,5 +1,5 @@
 {den, ...}: {
   den.aspects.andred = {
-    includes = [den.aspects.nix-tools];
+    includes = [den.aspects.dev-tools];
   };
 }

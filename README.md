@@ -12,7 +12,7 @@ The repository is organized around Den/dendritic composition rather than a flat 
 
 Aspects describe capabilities, roles, and reusable behavior. Host-specific directories primarily compose those capabilities and hold local details such as hardware profiles, disk layout, or machine-specific overrides. This keeps most changes reviewable as shared configuration rather than isolated host mutations.
 
-The `whitestrake` Den namespace exports reusable personal aspects through `flake.denful.whitestrake`. Downstream Den flakes can import that namespace and opt into aspects such as `whitestrake.user` and `whitestrake.nix-tools` independently.
+The `whitestrake` Den namespace exports reusable personal aspects through `flake.denful.whitestrake`. Downstream Den flakes can import that namespace and opt into aspects such as `whitestrake.user` and `whitestrake.dev-tools` independently.
 
 ## Repository Structure
 
@@ -69,7 +69,7 @@ A successful CI build proves that the relevant configuration evaluates and build
 
 Secrets are encrypted with [SOPS](https://github.com/getsops/sops) and integrated through [sops-nix](https://github.com/Mic92/sops-nix). Access policy is defined by `age` recipients in `.sops.yaml`.
 
-Shared encrypted payloads live under `modules/secrets/secrets.yaml` alongside the SOPS module that wires them into NixOS defaults. Host access is controlled by adding the appropriate recipient keys to the SOPS policy and updating encrypted files with the expected key set.
+Shared encrypted payloads live under `modules/secrets/secrets.yaml` alongside the SOPS module that wires them into the repository's NixOS and nix-darwin defaults. Host access is controlled by adding the appropriate recipient keys to the SOPS policy and updating encrypted files with the expected key set.
 
 When introducing a new host, the bootstrap flow pre-creates the host SSH key locally. The corresponding `age` recipient is derived from that host key and added to `.sops.yaml` before the machine goes live. This allows `sops-nix` on the target host to derive the expected identity from the system SSH host key and decrypt the secrets required for its role.
 

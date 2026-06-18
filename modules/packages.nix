@@ -40,7 +40,7 @@
     && pos != null
     && lib.hasPrefix repoPath pos.file;
 in {
-  den.default.nixos.nixpkgs.overlays = [
+  den.default.os.nixpkgs.overlays = [
     (final: prev: let
       unstablePkgs = import inputs.nixpkgs-unstable {
         system = prev.stdenv.hostPlatform.system;

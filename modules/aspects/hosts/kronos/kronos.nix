@@ -2,7 +2,7 @@
   den.aspects.kronos = {
     includes = [
       den.aspects.vscode-server
-      den.aspects.nix-tools
+      den.aspects.dev-tools
     ];
 
     nixos = {pkgs, ...}: {

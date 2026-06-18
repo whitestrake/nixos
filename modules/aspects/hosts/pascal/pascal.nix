@@ -6,7 +6,7 @@
       den.aspects.i915-sriov
       den.aspects.vscode-server
       den.aspects.user-mediaserver
-      den.aspects.nix-tools
+      den.aspects.dev-tools
     ];
 
     nixos = {

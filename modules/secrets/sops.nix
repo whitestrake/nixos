@@ -4,10 +4,10 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  den.default.nixos = {
-    imports = [inputs.sops-nix.nixosModules.sops];
-
-    sops = {
+  den.default = {
+    nixos.imports = [inputs.sops-nix.nixosModules.sops];
+    darwin.imports = [inputs.sops-nix.darwinModules.sops];
+    os.sops = {
       defaultSopsFile = ./secrets.yaml;
       age.sshKeyPaths = ["/etc/ssh/ssh_host_ed25519_key"];
       age.keyFile = "/var/lib/sops-nix/key.txt";
