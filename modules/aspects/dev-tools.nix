@@ -64,7 +64,7 @@
         '';
       };
 
-      environment.etc."codex/config.toml".source = "${config.users.users.${user.userName}.home}/.codex/mcp.config.toml";
+      environment.etc."codex/config.toml".source = "${config.users.users.${user.userName}.home}/.codex/whitestrake.config.toml";
     };
 
     provides.whitestrake.homeManager = {
@@ -148,10 +148,14 @@
           config.lib.file.mkOutOfStoreSymlink
           osConfig.sops.templates."gh-hosts".path;
 
-        ".codex/mcp.config.toml".source =
+        ".codex/whitestrake.config.toml".source =
           (pkgs.formats.toml {}).generate
-          "codex-mcp-config"
-          {mcp_servers = codexMcpServers;};
+          "codex-whitestrake-config" {
+            personality = "pragmatic";
+            approval_policy = "on-request";
+            approvals_reviewer = "auto_review";
+            mcp_servers = codexMcpServers;
+          };
       };
     };
   };
