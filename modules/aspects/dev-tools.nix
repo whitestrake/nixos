@@ -64,7 +64,9 @@
         '';
       };
 
-      environment.etc."codex/config.toml".source = "${config.users.users.${user.userName}.home}/.codex/whitestrake.config.toml";
+      environment.etc."codex/config.toml".source =
+        config.home-manager.users.${user.userName}
+        .home.file.".codex/whitestrake.config.toml".source;
     };
 
     provides.whitestrake.homeManager = {
@@ -132,8 +134,8 @@
         enableMcpIntegration = true;
       };
 
-      programs.antigravity = lib.mkIf (lib.systems.elaborate host.system).isDarwin {
-        enable = true;
+      programs.antigravity = {
+        enable = (lib.systems.elaborate host.system).isDarwin;
         package = null;
         profiles.default.enableMcpIntegration = true;
       };
