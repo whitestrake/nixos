@@ -156,6 +156,17 @@
             personality = "pragmatic";
             approval_policy = "on-request";
             approvals_reviewer = "auto_review";
+            tui = {
+              status_line = [
+                "model-with-reasoning"
+                "project-name"
+                "context-remaining"
+                "five-hour-limit"
+                "weekly-limit"
+                "task-progress"
+                "run-state"
+              ];
+            };
             mcp_servers = codexMcpServers;
           };
       };
