@@ -2,9 +2,8 @@
   lib,
   buildNpmPackage,
   fetchFromGitHub,
-  nodejs_22,
 }:
-(buildNpmPackage.override {nodejs = nodejs_22;}) rec {
+buildNpmPackage rec {
   pname = "komodo-mcp-server";
   version = "1.4.0";
 
