@@ -70,6 +70,18 @@ in
           content = re.sub(r'^  version = "[^"]*";', f'  version = "{new_version}";', content, flags=re.MULTILINE)
           write_file(content)
 
+          print("Fetching latest caddy-dns/cloudflare plugin version...")
+          url_plugin = "https://api.github.com/repos/caddy-dns/cloudflare/tags"
+          req_plugin = urllib.request.Request(url_plugin, headers={'User-Agent': 'nix-update'})
+          with urllib.request.urlopen(req_plugin) as response:
+              tags = json.loads(response.read().decode())
+              new_plugin_version = tags[0]['name']
+
+          print(f"Updating caddy-dns/cloudflare to version {new_plugin_version}...")
+          content = read_file()
+          content = re.sub('("github.com/caddy-dns/cloudflare@)' + '[^"]*(")', rf'\g<1>{new_plugin_version}\g<2>', content)
+          write_file(content)
+
           def update_hash(pattern, target_attr):
               content = read_file()
               # Replace the hash with fakeHash
