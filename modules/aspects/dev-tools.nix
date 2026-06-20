@@ -124,7 +124,7 @@
 
       programs.codex = {
         enable = true;
-        package = pkgs.unstable.codex;
+        package = pkgs.myPkgs.codex;
         enableMcpIntegration = false;
       };
 
