@@ -18,7 +18,7 @@ jobs:
       packages: ${{ steps.set-matrix.outputs.packages }}
       has_packages: ${{ steps.set-matrix.outputs.has_packages }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
       - id: set-matrix
         run: |
@@ -47,40 +47,57 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.detect-packages.outputs.packages) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
       - name: Run nix-update
         id: update
         run: |
+          OLD_VERSION=$(nix eval --raw ".#${{ matrix.package }}.version" --accept-flake-config)
+
           nix run nixpkgs#nix-update -- \
             --flake \
             --use-update-script \
             "${{ matrix.package }}"
 
+          NEW_VERSION=$(nix eval --raw ".#${{ matrix.package }}.version" --accept-flake-config)
+
+          echo "old_version=$OLD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+              echo "title_suffix= to $NEW_VERSION" >> "$GITHUB_OUTPUT"
+              echo "body_details=Bumps version from \`$OLD_VERSION\` to \`$NEW_VERSION\`." >> "$GITHUB_OUTPUT"
+            else
+              echo "title_suffix= (dependencies)" >> "$GITHUB_OUTPUT"
+              echo "body_details=Bumps internal dependencies or plugins (version remains at \`$NEW_VERSION\`)." >> "$GITHUB_OUTPUT"
+            fi
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Format with alejandra
+      - name: Format files
         if: steps.update.outputs.changed == 'true'
         run: |
-          nix run nixpkgs#alejandra -- packages/
+          nix fmt
       - name: Create Pull Request
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           branch: nix-update/${{ matrix.package }}
-          title: "chore(pkgs): update ${{ matrix.package }}"
+          title: "chore(pkgs): update ${{ matrix.package }}${{ steps.update.outputs.title_suffix }}"
           body: |
             Automated update of `${{ matrix.package }}` via `nix-update`.
+
+            ${{ steps.update.outputs.body_details }}
 
             ---
             _This PR was created automatically by the package update workflow._
           labels: |
             dependencies
             automated
-          commit-message: "chore(pkgs): update ${{ matrix.package }}"
+          commit-message: "chore(pkgs): update ${{ matrix.package }}${{ steps.update.outputs.title_suffix }}"
           delete-branch: true

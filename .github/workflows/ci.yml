@@ -57,7 +57,7 @@ jobs:
       build_matrix: ${{ steps.eval.outputs.build_matrix }}
       deploy_matrix: ${{ steps.eval.outputs.deploy_matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -372,7 +372,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -434,7 +434,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
@@ -562,7 +562,7 @@ jobs:
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
         with:
           extra-conf: |
