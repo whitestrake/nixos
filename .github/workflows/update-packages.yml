@@ -18,7 +18,7 @@ jobs:
       packages: ${{ steps.set-matrix.outputs.packages }}
       has_packages: ${{ steps.set-matrix.outputs.has_packages }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
       - id: set-matrix
         run: |
@@ -47,7 +47,7 @@ jobs:
       matrix:
         package: ${{ fromJson(needs.detect-packages.outputs.packages) }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: DeterminateSystems/determinate-nix-action@v3
       - name: Run nix-update
         id: update
