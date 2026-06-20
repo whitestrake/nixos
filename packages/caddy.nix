@@ -67,7 +67,7 @@ in
                   f.write(content)
 
           content = read_file()
-          content = re.sub(r'version = "[^"]*";', f'version = "{new_version}";', content)
+          content = re.sub(r'^  version = "[^"]*";', f'  version = "{new_version}";', content, flags=re.MULTILINE)
           write_file(content)
 
           def update_hash(pattern, target_attr):
