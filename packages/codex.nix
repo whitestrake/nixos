@@ -75,7 +75,7 @@ in
           echo "Updating codex to version $new_version..."
           file_path="packages/codex.nix"
 
-          sed -i "s/version = \".*\";/version = \"$new_version\";/" "$file_path"
+          sed -i "s/^  version = \".*\";/  version = \"$new_version\";/" "$file_path"
 
           echo "Prefetching hash for aarch64-darwin..."
           hash_darwin_arm=$(nix-prefetch-url "https://github.com/openai/codex/releases/download/rust-v$new_version/codex-aarch64-apple-darwin.tar.gz" --type sha256)
@@ -94,9 +94,9 @@ in
           with open('$file_path', 'r') as f:
               content = f.read()
 
-          content = re.sub(r'(\"aarch64-darwin\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_darwin_arm\g<2>', content)
-          content = re.sub(r'(\"x86_64-linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_intel\g<2>', content)
-          content = re.sub(r'(\"aarch64-linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_arm\g<2>', content)
+          content = re.sub(r'(\"aarch64-' + r'darwin\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_darwin_arm\g<2>', content)
+          content = re.sub(r'(\"x86_64-' + r'linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_intel\g<2>', content)
+          content = re.sub(r'(\"aarch64-' + r'linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_arm\g<2>', content)
 
           with open('$file_path', 'w') as f:
               f.write(content)

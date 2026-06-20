@@ -1,5 +1,6 @@
 {pkgs, ...}: let
   version = "2.11.4";
+  cloudflareDnsVersion = "0.2.4";
 
   src = pkgs.fetchFromGitHub {
     owner = "caddyserver";
@@ -18,8 +19,8 @@
     (pkgs.caddy.override {
       caddy = overriddenCaddy;
     }).withPlugins {
-      plugins = ["github.com/caddy-dns/cloudflare@v0.2.2"];
-      hash = "sha256-wHW0l15aLswe7gV9WioXo//abd0sJI82I7zIroRG3uU=";
+      plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
+      hash = "sha256-8yZDrejNKsaUnUaTUFYbarWNmxafqp2z2rWo+XRsxV8=";
     };
 in
   # Wrap in a transparent derivation so 'position' points to this file for nix-update
@@ -75,11 +76,11 @@ in
           req_plugin = urllib.request.Request(url_plugin, headers={'User-Agent': 'nix-update'})
           with urllib.request.urlopen(req_plugin) as response:
               tags = json.loads(response.read().decode())
-              new_plugin_version = tags[0]['name']
+              new_plugin_version = tags[0]['name'].lstrip('v')
 
           print(f"Updating caddy-dns/cloudflare to version {new_plugin_version}...")
           content = read_file()
-          content = re.sub('("github.com/caddy-dns/cloudflare@)' + '[^"]*(")', rf'\g<1>{new_plugin_version}\g<2>', content)
+          content = re.sub(r'^  cloudflareDnsVersion = "[^"]*";', f'  cloudflareDnsVersion = "{new_plugin_version}";', content, flags=re.MULTILINE)
           write_file(content)
 
           def update_hash(pattern, target_attr):
@@ -105,13 +106,13 @@ in
               write_file(content)
 
           # 1. Update source hash
-          update_hash(r'(fetchFromGitHub\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', "caddy")
+          update_hash(r'(fetchFrom' + r'GitHub\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', "caddy")
 
           # 2. Update vendorHash
-          update_hash(r'(vendorHash\s*=\s*\")[^\"]*(\";)', "caddy.goModules")
+          update_hash(r'(vendor' + r'Hash\s*=\s*\")[^\"]*(\";)', "caddy.goModules")
 
           # 3. Update plugin hash
-          update_hash(r'(plugins\s*=\s*\[[^\]]*\];\s*hash\s*=\s*\")[^\"]*(\";)', "caddy")
+          update_hash(r'(plugins\s*=\s*\[[^\]]*\];\s*ha' + r'sh\s*=\s*\")[^\"]*(\";)', "caddy")
           EOF
         '';
       };
