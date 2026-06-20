@@ -94,9 +94,9 @@ in
           with open('$file_path', 'r') as f:
               content = f.read()
 
-          content = re.sub(r'(\"aarch64-darwin\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_darwin_arm\g<2>', content)
-          content = re.sub(r'(\"x86_64-linux\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_intel\g<2>', content)
-          content = re.sub(r'(\"aarch64-linux\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_arm\g<2>', content)
+          content = re.sub(r'(\"aarch64-darwin\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_darwin_arm\g<2>', content)
+          content = re.sub(r'(\"x86_64-linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_intel\g<2>', content)
+          content = re.sub(r'(\"aarch64-linux\"\s*=\s*\{[\s\S]*?hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_arm\g<2>', content)
 
           with open('$file_path', 'w') as f:
               f.write(content)
