@@ -54,6 +54,7 @@ jobs:
         run: |
           nix run nixpkgs#nix-update -- \
             --flake \
+            --use-update-script \
             "${{ matrix.package }}"
 
           if git diff --quiet; then
@@ -63,37 +64,6 @@ jobs:
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fix caddy withPlugins hash
-        if: >-
-          steps.update.outputs.changed == 'true' && matrix.package == 'caddy'
-        run: |
-          # Set withPlugins hash to fakeHash to trigger a build with mismatch
-          python3 -c '
-          import re
-          content = open("packages/caddy.nix").read()
-          new_content = re.sub(r"      hash = \"sha256-[^\"]*\";", "      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", content)
-          open("packages/caddy.nix", "w").write(new_content)
-          '
-
-          # Attempt build — capture the correct hash from the error
-          BUILD_LOG=$(nix build .#caddy 2>&1 || true)
-          CORRECT_HASH=$(echo "$BUILD_LOG" | grep -oP 'got:\s+\Ksha256-[A-Za-z0-9+/=]+')
-
-          if [ -z "$CORRECT_HASH" ]; then
-            echo "::error::Failed to extract withPlugins hash from build output"
-            echo "$BUILD_LOG"
-            exit 1
-          fi
-
-          echo "Extracted withPlugins hash: $CORRECT_HASH"
-
-          # Patch the correct hash back in
-          python3 -c '
-          import sys, re
-          content = open("packages/caddy.nix").read()
-          new_content = re.sub(r"      hash = \"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\";", f"      hash = \"{sys.argv[1]}\";", content)
-          open("packages/caddy.nix", "w").write(new_content)
-          ' "$CORRECT_HASH"
       - name: Format with alejandra
         if: steps.update.outputs.changed == 'true'
         run: |

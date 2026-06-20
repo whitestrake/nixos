@@ -59,6 +59,50 @@ in
       meta = {
         mainProgram = "codex";
       };
+
+      passthru = {
+        updateScript = pkgs.writeShellScript "update-codex" ''
+          set -euo pipefail
+          PATH="${pkgs.lib.makeBinPath [pkgs.curl pkgs.jq pkgs.nix]}:$PATH"
+
+          if [ "$#" -gt 0 ]; then
+            new_version="$1"
+          else
+            latest_tag=$(curl -s https://api.github.com/repos/openai/codex/releases/latest | jq -r .tag_name)
+            new_version=''${latest_tag#rust-v}
+          fi
+
+          echo "Updating codex to version $new_version..."
+          file_path="packages/codex.nix"
+
+          sed -i "s/version = \".*\";/version = \"$new_version\";/" "$file_path"
+
+          echo "Prefetching hash for aarch64-darwin..."
+          hash_darwin_arm=$(nix-prefetch-url "https://github.com/openai/codex/releases/download/rust-v$new_version/codex-aarch64-apple-darwin.tar.gz" --type sha256)
+          sri_darwin_arm=$(nix hash convert --hash-algo sha256 "$hash_darwin_arm")
+
+          echo "Prefetching hash for x86_64-linux..."
+          hash_linux_intel=$(nix-prefetch-url "https://github.com/openai/codex/releases/download/rust-v$new_version/codex-x86_64-unknown-linux-musl.tar.gz" --type sha256)
+          sri_linux_intel=$(nix hash convert --hash-algo sha256 "$hash_linux_intel")
+
+          echo "Prefetching hash for aarch64-linux..."
+          hash_linux_arm=$(nix-prefetch-url "https://github.com/openai/codex/releases/download/rust-v$new_version/codex-aarch64-unknown-linux-musl.tar.gz" --type sha256)
+          sri_linux_arm=$(nix hash convert --hash-algo sha256 "$hash_linux_arm")
+
+          python3 -c "
+          import re
+          with open('$file_path', 'r') as f:
+              content = f.read()
+
+          content = re.sub(r'(\"aarch64-darwin\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_darwin_arm\g<2>', content)
+          content = re.sub(r'(\"x86_64-linux\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_intel\g<2>', content)
+          content = re.sub(r'(\"aarch64-linux\"\s*=\s*\{[^{}]*hash\s*=\s*\")[^\"]*(\";)', rf'\g<1>$sri_linux_arm\g<2>', content)
+
+          with open('$file_path', 'w') as f:
+              f.write(content)
+          "
+        '';
+      };
     }
   else
     unstablePkgs.codex.overrideAttrs (oldAttrs: let
