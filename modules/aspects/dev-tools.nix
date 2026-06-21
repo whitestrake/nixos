@@ -39,6 +39,13 @@
       environment.systemPackages = lib.optionals (config.wsl.enable or false) [
         pkgs.bubblewrap
       ];
+
+      # Codex currently assumes these FHS entrypoints exist when launching
+      # commands inside a WSL agent.
+      systemd.tmpfiles.rules = lib.optionals (config.wsl.enable or false) [
+        "L+ /usr/bin/bash - - - - /run/current-system/sw/bin/bash"
+        "L+ /usr/bin/env - - - - /run/current-system/sw/bin/env"
+      ];
     };
 
     provides.whitestrake.os = {
