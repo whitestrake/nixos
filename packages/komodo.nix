@@ -1,4 +1,9 @@
-{pkgs, ...}: let
+{
+  lib,
+  pkgs,
+  nix-update-script,
+  ...
+}: let
   version = "2.2.0";
   src = pkgs.fetchFromGitHub {
     owner = "moghtech";
@@ -14,7 +19,15 @@ in
       name = "komodo-${version}";
       hash = "sha256-b/AgQBmS1QfP+BOCT4xL8majVKobig5M2YJhGuXMToc=";
     };
+    passthru =
+      (oldAttrs.passthru or {})
+      // {
+        updateScript = nix-update-script {
+          extraArgs = ["--flake"];
+        };
+      };
+    # Local version is newer than nixpkgs; inherited upstream patches no longer apply.
     patches = [];
-    nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config];
-    buildInputs = (oldAttrs.buildInputs or []) ++ [pkgs.openssl];
+    nativeBuildInputs = lib.unique ((oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config]);
+    buildInputs = lib.unique ((oldAttrs.buildInputs or []) ++ [pkgs.openssl]);
   })
