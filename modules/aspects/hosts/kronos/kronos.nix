@@ -22,10 +22,6 @@
         };
       };
 
-      # Enable envfs to automatically populate /bin and /usr/bin with binaries from PATH
-      # This fixes issues with VS Code Server extensions, Codex, and other FHS-assuming tools
-      services.envfs.enable = true;
-
       system.stateVersion = "25.11";
     };
   };
