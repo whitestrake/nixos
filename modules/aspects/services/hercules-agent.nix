@@ -187,15 +187,20 @@
           EXISTING_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" || true)
           if [ -n "$EXISTING_ID" ]; then
             INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE" || true)"
-            SSH_HOST=""
-            if [ -n "$INGRESS_DOMAIN" ]; then
+            if [ -z "$INGRESS_DOMAIN" ]; then
+              echo "State file has no ingress_domain; direct SSH not possible." >&2
+            else
               REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-              SSH_HOST="ssh.$REGION.namespace.so"
-            fi
-            if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
-              echo "Reusing existing valid instance: $EXISTING_ID" >&2
-              date +%s > "$RUNDIR/last-used"
-              exit 0
+              if [ -z "$REGION" ]; then
+                echo "Could not derive Namespace region from state file ingress_domain: $INGRESS_DOMAIN" >&2
+              else
+                SSH_HOST="ssh.$REGION.namespace.so"
+                if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
+                  echo "Reusing existing valid instance: $EXISTING_ID" >&2
+                  date +%s > "$RUNDIR/last-used"
+                  exit 0
+                fi
+              fi
             fi
           fi
           # State file invalid or unreachable, continue
@@ -227,18 +232,25 @@
         if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
           nsc describe "$EXISTING_ID" -o json > "$STATE_FILE.candidate"
           INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
-          SSH_HOST=""
-          if [ -n "$INGRESS_DOMAIN" ]; then
+          if [ -z "$INGRESS_DOMAIN" ]; then
+            echo "Candidate Namespace instance $EXISTING_ID has no ingress_domain; direct SSH not possible." >&2
+            rm -f "$STATE_FILE.candidate"
+          else
             REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-            SSH_HOST="ssh.$REGION.namespace.so"
+            if [ -z "$REGION" ]; then
+              echo "Could not derive Namespace region from candidate ingress_domain: $INGRESS_DOMAIN" >&2
+              rm -f "$STATE_FILE.candidate"
+            else
+              SSH_HOST="ssh.$REGION.namespace.so"
+              if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
+                echo "Found running instance with matching labels: $EXISTING_ID" >&2
+                mv "$STATE_FILE.candidate" "$STATE_FILE"
+                date +%s > "$RUNDIR/last-used"
+                exit 0
+              fi
+              rm -f "$STATE_FILE.candidate"
+            fi
           fi
-          if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
-            echo "Found running instance with matching labels: $EXISTING_ID" >&2
-            mv "$STATE_FILE.candidate" "$STATE_FILE"
-            date +%s > "$RUNDIR/last-used"
-            exit 0
-          fi
-          rm -f "$STATE_FILE.candidate"
         fi
 
         echo "Creating macOS instance on Namespace.so..." >&2
@@ -259,11 +271,18 @@
         fi
 
         INGRESS_DOMAIN="$(echo "$INSTANCE_JSON" | jq -r '.ingress_domain // empty')"
-        SSH_HOST=""
-        if [ -n "$INGRESS_DOMAIN" ]; then
-          REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-          SSH_HOST="ssh.$REGION.namespace.so"
+        if [ -z "$INGRESS_DOMAIN" ]; then
+          echo "Created Namespace instance has no ingress_domain; direct SSH required for builder." >&2
+          exit 1
         fi
+
+        REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
+        if [ -z "$REGION" ]; then
+          echo "Could not derive Namespace region from created instance ingress_domain: $INGRESS_DOMAIN" >&2
+          exit 1
+        fi
+
+        SSH_HOST="ssh.$REGION.namespace.so"
 
         # Wait for SSH to be responsive
         echo "Waiting for SSH to become responsive..." >&2
@@ -334,7 +353,19 @@
 
         INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE")
         INGRESS_DOMAIN=$(jq -r '.ingress_domain // empty' < "$STATE_FILE")
+
+        if [ -z "$INGRESS_DOMAIN" ]; then
+          echo "Namespace instance has no ingress_domain; cannot establish direct SSH proxy." >&2
+          exit 1
+        fi
+
         REGION=$(echo "$INGRESS_DOMAIN" | cut -d. -f1)
+
+        if [ -z "$REGION" ]; then
+          echo "Could not derive Namespace region from ingress_domain: $INGRESS_DOMAIN" >&2
+          exit 1
+        fi
+
         SSH_HOST="ssh.$REGION.namespace.so"
 
         echo "Establishing SSH tunnel for Nix builder to $INSTANCE_ID ($SSH_HOST)..." >&2
