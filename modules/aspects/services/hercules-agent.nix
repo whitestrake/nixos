@@ -350,6 +350,10 @@
 
         SSH_HOST="ssh.$REGION.namespace.so"
 
+        # Save Namespace state immediately after create
+        echo "$INSTANCE_JSON" > "$STATE_FILE"
+        date +%s > "$RUNDIR/last-used"
+
         # Wait for SSH to be responsive
         echo "Waiting for SSH to become responsive..." >&2
         for i in $(seq 1 30); do
@@ -421,6 +425,7 @@
         jq
         openssh
         namespace-darwin-ensure
+        gawk
       ];
       text = ''
         RUNDIR="/run/namespace-darwin-builder"
@@ -429,7 +434,19 @@
 
         mkdir -p "$ACTIVE_DIR"
         MARKER="$ACTIVE_DIR/$$"
-        touch "$MARKER"
+
+        proc_start_time() {
+          awk '{print $22}' "/proc/$$/stat"
+        }
+
+        write_marker() {
+          phase="$1"
+          now="$(date +%s)"
+          proc_start="$(proc_start_time)"
+
+          printf 'pid=%s\nproc_start=%s\nstarted=%s\nphase=%s\n' "$$" "$proc_start" "$now" "$phase" > "$MARKER.tmp"
+          mv "$MARKER.tmp" "$MARKER"
+        }
 
         cleanup() {
           rm -f "$MARKER"
@@ -438,7 +455,9 @@
             chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
           fi
         }
-        trap cleanup EXIT
+
+        write_marker starting
+        trap cleanup EXIT HUP INT TERM
 
         namespace-darwin-ensure >&2
 
@@ -459,14 +478,25 @@
 
         SSH_HOST="ssh.$REGION.namespace.so"
 
-        echo "Establishing SSH tunnel for Nix builder to $INSTANCE_ID ($SSH_HOST)..." >&2
-        exec ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+        write_marker connected
+
+        # Close parent shell stderr to prevent log pipe deadlocks
+        exec 2>/dev/null
+
+        ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
           -o BatchMode=yes \
           -o IdentitiesOnly=yes \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
           -W localhost:2222 \
-          "$INSTANCE_ID@$SSH_HOST"
+          "$INSTANCE_ID@$SSH_HOST" <&0 >&1 &
+        SSH_PID=$!
+
+        # Close parent shell FDs to avoid pipe inheritance deadlocks
+        exec 0<&-
+        exec 1>&-
+
+        wait "$SSH_PID"
       '';
     };
 
@@ -477,6 +507,8 @@
         jq
         coreutils
         util-linux
+        gawk
+        procps
       ];
       text = ''
         export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
@@ -486,6 +518,9 @@
         ACTIVE_DIR="$RUNDIR/active"
         LAST_USED_FILE="$RUNDIR/last-used"
 
+        IDLE_LIMIT=20
+        STALE_MARKER_LIMIT=300
+
         adjust_permissions() {
           if [ "$(id -u)" -eq 0 ]; then
             chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
@@ -493,18 +528,88 @@
         }
         trap adjust_permissions EXIT
 
+        marker_field() {
+          key="$1"
+          marker="$2"
+          awk -F= -v k="$key" '$1 == k {print substr($0, length(k) + 2); exit}' "$marker"
+        }
+
+        same_process() {
+          pid="$1"
+          expected_start="$2"
+
+          [ -r "/proc/$pid/stat" ] || return 1
+
+          current_start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+          [ "$current_start" = "$expected_start" ]
+        }
+
+        kill_marker_process() {
+          pid="$1"
+
+          echo "Killing stale Namespace proxy process tree for pid $pid..." >&2
+          pkill -TERM -P "$pid" 2>/dev/null || true
+          kill -TERM "$pid" 2>/dev/null || true
+          sleep 2
+          pkill -KILL -P "$pid" 2>/dev/null || true
+          kill -KILL "$pid" 2>/dev/null || true
+        }
+
+        prune_markers() {
+          active=0
+          now="$(date +%s)"
+
+          mkdir -p "$ACTIVE_DIR"
+
+          for marker in "$ACTIVE_DIR"/*; do
+            [ -f "$marker" ] || continue
+
+            pid="$(marker_field pid "$marker" || true)"
+            proc_start="$(marker_field proc_start "$marker" || true)"
+            started="$(marker_field started "$marker" || true)"
+            phase="$(marker_field phase "$marker" || true)"
+
+            if [ -z "$pid" ] || [ -z "$proc_start" ] || [ -z "$started" ] || [ -z "$phase" ]; then
+              echo "Removing malformed marker: $marker" >&2
+              rm -f "$marker"
+              date +%s > "$LAST_USED_FILE"
+              continue
+            fi
+
+            if ! same_process "$pid" "$proc_start"; then
+              echo "Removing dead or PID-reused marker: $marker" >&2
+              rm -f "$marker"
+              date +%s > "$LAST_USED_FILE"
+              continue
+            fi
+
+            age=$((now - started))
+
+            if [ "$phase" = "starting" ] && [ "$age" -ge "$STALE_MARKER_LIMIT" ]; then
+              echo "Marker $marker stuck in starting phase for $age s." >&2
+              kill_marker_process "$pid"
+              rm -f "$marker"
+              date +%s > "$LAST_USED_FILE"
+              continue
+            fi
+
+            active=1
+          done
+        }
+
+        # Run before lock so a stuck ensure/proxy can be killed even if it holds the lock.
+        prune_markers
+
         if [ ! -f "$STATE_FILE" ]; then
           exit 0
         fi
 
-        # Use FD 200 for flock, wait up to 10 seconds to not hang indefinitely if ensure is running
         exec 200>"$RUNDIR/lock"
-        if ! flock -w 10 200; then
+        if ! flock -w 1 200; then
           echo "Could not acquire lock, skipping reap..." >&2
           exit 0
         fi
 
-        # Re-check state file under lock
         if [ ! -f "$STATE_FILE" ]; then
           exit 0
         fi
@@ -516,38 +621,23 @@
           exit 0
         fi
 
-        # Prune stale active markers
-        mkdir -p "$ACTIVE_DIR"
-        for marker in "$ACTIVE_DIR"/*; do
-          if [ -f "$marker" ]; then
-            pid=$(basename "$marker")
-            if ! kill -0 "$pid" 2>/dev/null; then
-              rm -f "$marker"
-            fi
-          fi
-        done
+        prune_markers
 
-        # Check if any active markers remain
-        if [ "$(ls -A "$ACTIVE_DIR" 2>/dev/null)" ]; then
-          echo "Active SSH sessions found. Extending TTL..." >&2
+        if [ "$active" -eq 1 ]; then
+          echo "Active Namespace proxy sessions found. Extending TTL..." >&2
           nsc extend "$INSTANCE_ID" --ensure_minimum 10m || true
           exit 0
         fi
 
-        # No active sessions, check last used time
-        if [ -f "$LAST_USED_FILE" ]; then
-          LAST_USED=$(cat "$LAST_USED_FILE")
-          NOW=$(date +%s)
-          DIFF=$(( NOW - LAST_USED ))
-          if [ "$DIFF" -gt 180 ]; then
-            echo "Instance $INSTANCE_ID idle for $DIFF seconds. Destroying..." >&2
-            nsc destroy "$INSTANCE_ID" --force || true
-            rm -f "$STATE_FILE" "$LAST_USED_FILE"
-            exit 0
-          fi
-        else
-          # Initialize last-used if missing
-          date +%s > "$LAST_USED_FILE"
+        now="$(date +%s)"
+        last_used="$(cat "$LAST_USED_FILE" 2>/dev/null || echo "$now")"
+        idle=$((now - last_used))
+
+        if [ "$idle" -ge "$IDLE_LIMIT" ]; then
+          echo "Instance $INSTANCE_ID idle for $idle s. Destroying..." >&2
+          nsc destroy "$INSTANCE_ID" --force || true
+          rm -f "$STATE_FILE" "$LAST_USED_FILE"
+          rm -f "$ACTIVE_DIR"/*
         fi
       '';
     };
@@ -587,9 +677,9 @@
       description = "Timer for Namespace macOS builder reaper";
       wantedBy = ["timers.target"];
       timerConfig = {
-        OnBootSec = "1min";
-        OnUnitActiveSec = "1min";
-        AccuracySec = "15s";
+        OnBootSec = "10s";
+        OnUnitActiveSec = "5s";
+        AccuracySec = "1s";
       };
     };
 
@@ -605,7 +695,7 @@
         {
           hostName = builderHost;
           system = "aarch64-darwin";
-          maxJobs = 4;
+          maxJobs = 1;
           supportedFeatures = ["big-parallel"];
           protocol = "ssh-ng";
         }
