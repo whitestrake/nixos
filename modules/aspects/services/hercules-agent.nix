@@ -73,6 +73,7 @@
     services.hercules-ci-agent = {
       enable = true;
       settings = {
+        concurrentTasks = 6;
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
