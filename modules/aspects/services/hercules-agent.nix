@@ -152,6 +152,7 @@
       ];
       text = ''
         export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
+        export HOME="/run/namespace-darwin-builder"
         RUNDIR="/run/namespace-darwin-builder"
         mkdir -p "$RUNDIR"
 
@@ -478,6 +479,7 @@
       ];
       text = ''
         export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
+        export HOME="/run/namespace-darwin-builder"
         RUNDIR="/run/namespace-darwin-builder"
         STATE_FILE="$RUNDIR/state.json"
         ACTIVE_DIR="$RUNDIR/active"
