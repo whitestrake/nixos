@@ -161,6 +161,13 @@
 
         STATE_FILE="$RUNDIR/state.json"
 
+        adjust_permissions() {
+          if [ "$(id -u)" -eq 0 ]; then
+            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
+          fi
+        }
+        trap adjust_permissions EXIT
+
         check_ssh() {
           local id="$1"
           local ssh_host="$2"
@@ -194,7 +201,7 @@
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             "$id@$host" \
-            "mkdir -p ~/.ssh && echo '${pubKey}' > ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo mkdir -p /var/root/.ssh && echo '${pubKey}' | sudo tee /var/root/.ssh/authorized_keys >/dev/null && sudo chmod 700 /var/root/.ssh && sudo chmod 600 /var/root/.ssh/authorized_keys"
+            "mkdir -p ~/.ssh && echo '${pubKey}' > ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo -n mkdir -p /var/root/.ssh && echo '${pubKey}' | sudo -n tee /var/root/.ssh/authorized_keys >/dev/null && sudo -n chmod 700 /var/root/.ssh && sudo -n chmod 600 /var/root/.ssh/authorized_keys"
 
           # Generate host keys if they do not exist
           ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
@@ -359,6 +366,14 @@
           exit 1
         fi
 
+        # Ensure root user shell is /bin/zsh so non-interactive SSH connections source /etc/zshenv
+        ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+          -o BatchMode=yes \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          "$INSTANCE_ID@$SSH_HOST" \
+          "sudo -n dscl . -create /Users/root UserShell /bin/zsh" >/dev/null 2>&1 || true
+
         # Install Nix on macOS if not present
         echo "Checking for Nix on instance..." >&2
         if ! ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
@@ -388,7 +403,7 @@
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
           "$INSTANCE_ID@$SSH_HOST" \
-          "sudo mkdir -p /usr/local/bin && sudo ln -sf /nix/var/nix/profiles/default/bin/nix* /usr/local/bin/" \
+          "sudo -n mkdir -p /usr/local/bin && sudo -n ln -sf /nix/var/nix/profiles/default/bin/nix* /usr/local/bin/" \
           >/dev/null 2>&1 || true
 
         # Save state
@@ -417,6 +432,9 @@
         cleanup() {
           rm -f "$MARKER"
           date +%s > "$RUNDIR/last-used"
+          if [ "$(id -u)" -eq 0 ]; then
+            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
+          fi
         }
         trap cleanup EXIT
 
@@ -464,6 +482,13 @@
         STATE_FILE="$RUNDIR/state.json"
         ACTIVE_DIR="$RUNDIR/active"
         LAST_USED_FILE="$RUNDIR/last-used"
+
+        adjust_permissions() {
+          if [ "$(id -u)" -eq 0 ]; then
+            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
+          fi
+        }
+        trap adjust_permissions EXIT
 
         if [ ! -f "$STATE_FILE" ]; then
           exit 0
