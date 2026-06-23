@@ -132,6 +132,8 @@
     lib,
     ...
   }: let
+    agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
+
     # Namespace builder public key
     pubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF3H1NMNRQI83JrofeftT90IgyGadDKKeVJ+xDDeyC3V namespace-builder";
 
@@ -163,24 +165,66 @@
           local id="$1"
           local ssh_host="$2"
           echo "Checking SSH for existing instance $id..." >&2
-          if nsc ssh "$id" --disable-pty -- echo "SSH check" >/dev/null 2>&1; then
-            if [ -n "$ssh_host" ]; then
-              echo "Checking direct SSH to $id@$ssh_host..." >&2
-              if ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+          if [ -n "$ssh_host" ]; then
+            echo "Checking direct SSH to $id@$ssh_host..." >&2
+            if ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=10 \
+              "$id@$ssh_host" \
+              'echo SSH check' >/dev/null 2>&1; then
+              return 0
+            else
+              echo "Direct SSH failed." >&2
+              return 1
+            fi
+          fi
+          return 1
+        }
+
+        ensure_sshd_2222() {
+          local id="$1"
+          local host="$2"
+          echo "Ensuring custom sshd is running on port 2222 for $id..." >&2
+
+          # Authorize the builder public key for root and runner users on macOS
+          ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$id@$host" \
+            "mkdir -p ~/.ssh && echo '${pubKey}' > ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo mkdir -p /var/root/.ssh && echo '${pubKey}' | sudo tee /var/root/.ssh/authorized_keys >/dev/null && sudo chmod 700 /var/root/.ssh && sudo chmod 600 /var/root/.ssh/authorized_keys"
+
+          # Generate host keys if they do not exist
+          ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$id@$host" \
+            "sudo -n ssh-keygen -A"
+
+          # Start custom sshd on port 2222 if not already running
+          ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$id@$host" \
+            "if ! sudo -n lsof -i tcp:2222 -sTCP:LISTEN -t >/dev/null 2>&1; then sudo -n /usr/sbin/sshd -p 2222 -o ListenAddress=127.0.0.1 -o PermitRootLogin=yes; fi"
+
+          for i in $(seq 1 10); do
+            if ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
                 -o BatchMode=yes \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null \
-                -o ConnectTimeout=10 \
-                "$id@$ssh_host" \
-                'echo SSH check' >/dev/null 2>&1; then
-                return 0
-              else
-                echo "Direct SSH failed." >&2
-                return 1
-              fi
+                "$id@$host" \
+                "nc -z localhost 2222" >/dev/null 2>&1; then
+              echo "Custom sshd is responsive!" >&2
+              return 0
             fi
-            return 0
-          fi
+            sleep 1
+          done
+          echo "Timed out waiting for custom sshd on port 2222" >&2
           return 1
         }
 
@@ -198,6 +242,9 @@
                 SSH_HOST="ssh.$REGION.namespace.so"
                 if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
                   echo "Reusing existing valid instance: $EXISTING_ID" >&2
+                  if ! ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
+                    exit 1
+                  fi
                   date +%s > "$RUNDIR/last-used"
                   exit 0
                 fi
@@ -233,7 +280,11 @@
         if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
           nsc describe "$EXISTING_ID" -o json > "$STATE_FILE.candidate"
           INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
-          if [ -z "$INGRESS_DOMAIN" ]; then
+          if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
+            nsc list -o json | jq --arg id "$EXISTING_ID" '.[]? | select(.instance_id == $id or .cluster_id == $id or .id == $id)' > "$STATE_FILE.candidate"
+            INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
+          fi
+          if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
             echo "Candidate Namespace instance $EXISTING_ID has no ingress_domain; direct SSH not possible." >&2
             rm -f "$STATE_FILE.candidate"
           else
@@ -245,6 +296,9 @@
               SSH_HOST="ssh.$REGION.namespace.so"
               if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
                 echo "Found running instance with matching labels: $EXISTING_ID" >&2
+                if ! ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
+                  exit 1
+                fi
                 mv "$STATE_FILE.candidate" "$STATE_FILE"
                 date +%s > "$RUNDIR/last-used"
                 exit 0
@@ -301,15 +355,25 @@
           sleep 2
         done
 
+        if ! ensure_sshd_2222 "$INSTANCE_ID" "$SSH_HOST"; then
+          exit 1
+        fi
+
         # Install Nix on macOS if not present
         echo "Checking for Nix on instance..." >&2
-        if ! nsc ssh "$INSTANCE_ID" --disable-pty -- command -v nix >/dev/null 2>&1; then
+        if ! ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$INSTANCE_ID@$SSH_HOST" \
+            "command -v nix" >/dev/null 2>&1; then
           echo "Nix not found. Installing Nix..." >&2
-          if ! nsc ssh "$INSTANCE_ID" --disable-pty -- \
-              sh -c '
-                curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
-                sh -s -- install --no-confirm
-              ' >&2; then
+          if ! ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              "$INSTANCE_ID@$SSH_HOST" \
+              "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm" >&2; then
             echo "Nix installation failed!" >&2
             exit 1
           fi
@@ -319,8 +383,12 @@
         fi
 
         # Ensure Nix binaries are available in standard PATH for non-interactive SSH
-        nsc ssh "$INSTANCE_ID" --disable-pty -- \
-          sh -c 'mkdir -p /usr/local/bin && ln -sf /nix/var/nix/profiles/default/bin/nix* /usr/local/bin/' \
+        ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+          -o BatchMode=yes \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          "$INSTANCE_ID@$SSH_HOST" \
+          "sudo mkdir -p /usr/local/bin && sudo ln -sf /nix/var/nix/profiles/default/bin/nix* /usr/local/bin/" \
           >/dev/null 2>&1 || true
 
         # Save state
@@ -352,7 +420,7 @@
         }
         trap cleanup EXIT
 
-        namespace-darwin-ensure
+        namespace-darwin-ensure >&2
 
         INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE")
         INGRESS_DOMAIN=$(jq -r '.ingress_domain // empty' < "$STATE_FILE")
@@ -372,10 +440,12 @@
         SSH_HOST="ssh.$REGION.namespace.so"
 
         echo "Establishing SSH tunnel for Nix builder to $INSTANCE_ID ($SSH_HOST)..." >&2
-        ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+        exec ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
-          -W localhost:22 \
+          -W localhost:2222 \
           "$INSTANCE_ID@$SSH_HOST"
       '';
     };
@@ -455,10 +525,13 @@
     };
   in {
     # Secrets configuration
-    sops.secrets.namespaceBuilderKey.owner =
-      config.systemd.services.hercules-ci-agent.serviceConfig.User;
-    sops.secrets.namespaceHciToken.owner =
-      config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    sops.secrets.namespaceBuilderKey.owner = agentUser;
+    sops.secrets.namespaceHciToken.owner = agentUser;
+
+    systemd.tmpfiles.rules = [
+      "d /run/namespace-darwin-builder 0700 ${agentUser} ${agentUser} -"
+      "d /run/namespace-darwin-builder/active 0700 ${agentUser} ${agentUser} -"
+    ];
 
     # SSH configuration mapping the builder host to the wrapper script
     programs.ssh.extraConfig = ''
@@ -467,6 +540,8 @@
         User root
         IdentityFile ${config.sops.secrets.namespaceBuilderKey.path}
         ProxyCommand ${namespace-darwin-proxy}/bin/namespace-darwin-proxy
+        BatchMode yes
+        IdentitiesOnly yes
         StrictHostKeyChecking no
         UserKnownHostsFile /dev/null
     '';
