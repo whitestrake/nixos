@@ -136,7 +136,7 @@
     ...
   }: let
     agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
-    enableBrokerDebug = false;
+    enableBrokerDebug = true;
 
     # Namespace builder public key
     pubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF3H1NMNRQI83JrofeftT90IgyGadDKKeVJ+xDDeyC3V namespace-builder";
