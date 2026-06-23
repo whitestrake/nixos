@@ -8,6 +8,7 @@ set -euo pipefail
 
 : "${NSC_TOKEN_FILE:?NSC_TOKEN_FILE is required}"
 : "${NAMESPACE_DARWIN_RUN_DIR:=/run/namespace-darwin-builder}"
+: "${NAMESPACE_DARWIN_BROKER_DEBUG:=false}"
 
 export NSC_TOKEN_FILE
 export HOME="$NAMESPACE_DARWIN_RUN_DIR"
@@ -16,9 +17,19 @@ RUNDIR="$NAMESPACE_DARWIN_RUN_DIR"
 TUNNEL_PID_FILE="$RUNDIR/tunnel.pid"
 STATE_FILE="$RUNDIR/state.json"
 LEASE_FILE="$RUNDIR/lease.json"
+DEBUG="${NAMESPACE_DARWIN_BROKER_DEBUG:-false}"
+
+log_debug() {
+  case "$DEBUG" in
+    1|true|TRUE|True|yes|YES|on|ON)
+      printf '%s\n' "[darwin-broker-cleanup] $*" >&2
+      ;;
+  esac
+}
 
 # Kill the tunnel process if it exists
 if [ -f "$TUNNEL_PID_FILE" ]; then
+  log_debug "found tunnel pid file $TUNNEL_PID_FILE"
   TUNNEL_PID=$(cat "$TUNNEL_PID_FILE" 2>/dev/null || true)
   if [ -n "${TUNNEL_PID:-}" ]; then
     echo "Killing SSH tunnel PID $TUNNEL_PID..." >&2
@@ -29,6 +40,7 @@ fi
 
 # Destroy the Namespace instance if state exists
 if [ -f "$STATE_FILE" ]; then
+  log_debug "found state file $STATE_FILE"
   INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" 2>/dev/null || true)
   if [ -n "$INSTANCE_ID" ]; then
     echo "Destroying Namespace instance $INSTANCE_ID..." >&2

@@ -18,6 +18,7 @@ set -euo pipefail
 : "${NAMESPACE_DARWIN_BROKER_PUBLIC_KEY:?NAMESPACE_DARWIN_BROKER_PUBLIC_KEY is required}"
 : "${NAMESPACE_DARWIN_BROKER_NAME:?NAMESPACE_DARWIN_BROKER_NAME is required}"
 : "${NAMESPACE_DARWIN_RUN_DIR:=/run/namespace-darwin-builder}"
+: "${NAMESPACE_DARWIN_BROKER_DEBUG:=false}"
 
 export NSC_TOKEN_FILE
 export HOME="$NAMESPACE_DARWIN_RUN_DIR"
@@ -25,6 +26,15 @@ export HOME="$NAMESPACE_DARWIN_RUN_DIR"
 RUNDIR="$NAMESPACE_DARWIN_RUN_DIR"
 mkdir -p "$RUNDIR"
 STATE_FILE="$RUNDIR/state.json"
+DEBUG="${NAMESPACE_DARWIN_BROKER_DEBUG:-false}"
+
+log_debug() {
+  case "$DEBUG" in
+    1|true|TRUE|True|yes|YES|on|ON)
+      printf '%s\n' "[darwin-broker-ensure-instance] $*" >&2
+      ;;
+  esac
+}
 
 SSH_OPTS=(
   -n
@@ -37,23 +47,24 @@ SSH_OPTS=(
 check_ssh() {
   local id="$1"
   local ssh_host="$2"
-  echo "Checking SSH for existing instance $id..." >&2
+  log_debug "checking SSH for instance $id on $ssh_host"
   if [ -n "$ssh_host" ]; then
-    echo "Checking direct SSH to $id@$ssh_host..." >&2
     if ssh "${SSH_OPTS[@]}" "$id@$ssh_host" 'echo SSH check' >/dev/null 2>&1; then
+      log_debug "direct SSH succeeded for $id@$ssh_host"
       return 0
     else
-      echo "Direct SSH failed." >&2
+      log_debug "direct SSH failed for $id@$ssh_host"
       return 1
     fi
   fi
+  log_debug "ssh_host empty; skipping SSH check"
   return 1
 }
 
 ensure_sshd_2222() {
   local id="$1"
   local host="$2"
-  echo "Ensuring custom sshd is running on port 2222 for $id..." >&2
+  log_debug "ensuring sshd on $host for $id"
 
   printf '%s\n' "$NAMESPACE_DARWIN_BROKER_PUBLIC_KEY" \
     | ssh "${SSH_OPTS[@]}" "$id@$host" \
@@ -69,7 +80,8 @@ ensure_sshd_2222() {
   ssh "${SSH_OPTS[@]}" "$id@$host" \
     "if ! sudo -n lsof -i tcp:2222 -sTCP:LISTEN -t >/dev/null 2>&1; then sudo -n /usr/sbin/sshd -p 2222 -o ListenAddress=127.0.0.1 -o PermitRootLogin=yes; fi"
 
-  for _ in $(seq 1 10); do
+  for attempt in $(seq 1 10); do
+    log_debug "probe attempt $attempt for sshd on $host"
     if ssh "${SSH_OPTS[@]}" "$id@$host" "nc -z localhost 2222" >/dev/null 2>&1; then
       echo "Custom sshd is responsive!" >&2
       return 0
@@ -83,10 +95,12 @@ ensure_sshd_2222() {
 
 # Reuse existing valid instance from state file if possible
 if [ -f "$STATE_FILE" ]; then
+  log_debug "found existing state file $STATE_FILE"
   EXISTING_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" || true)
   INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE" || true)"
   if [ -n "$EXISTING_ID" ] && [ -n "$INGRESS_DOMAIN" ] && [ "$INGRESS_DOMAIN" != "null" ]; then
     REGION="$(printf '%s\n' "$INGRESS_DOMAIN" | cut -d. -f1)"
+    log_debug "checking existing state instance=$EXISTING_ID region=$REGION"
     SSH_HOST="ssh.$REGION.namespace.so"
     if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
       echo "Reusing existing valid instance: $EXISTING_ID" >&2
@@ -121,6 +135,7 @@ EXISTING_ID=$(
 )
 
 if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
+  log_debug "evaluating labeled existing instance $EXISTING_ID"
   nsc describe "$EXISTING_ID" -o json > "$STATE_FILE.candidate"
   INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
   if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
@@ -143,6 +158,7 @@ if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
 fi
 
 echo "Creating macOS instance on Namespace.so..." >&2
+log_debug "no reusable instance found; creating new instance"
 INSTANCE_JSON=$(nsc create \
   --machine_type macos/arm64:6x14 \
   --bare \
@@ -182,6 +198,7 @@ date +%s > "$RUNDIR/last-used"
 # Wait for SSH to be responsive
 echo "Waiting for SSH to become responsive..." >&2
 for i in $(seq 1 30); do
+  log_debug "SSH readiness wait attempt $i for $INSTANCE_ID on $SSH_HOST"
   if check_ssh "$INSTANCE_ID" "$SSH_HOST"; then
     echo "SSH is responsive!" >&2
     break

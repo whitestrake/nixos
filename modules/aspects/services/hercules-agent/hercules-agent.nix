@@ -11,7 +11,9 @@
     lib,
     host,
     ...
-  }: {
+  }: let
+    herculesCiConcurrentTasks = 2;
+  in {
     # Secrets configuration
     sops.secrets = {
       cachixPushToken = {};
@@ -73,7 +75,7 @@
     services.hercules-ci-agent = {
       enable = true;
       settings = {
-        concurrentTasks = 6;
+        concurrentTasks = herculesCiConcurrentTasks;
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
@@ -134,6 +136,7 @@
     ...
   }: let
     agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    enableBrokerDebug = false;
 
     # Namespace builder public key
     pubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF3H1NMNRQI83JrofeftT90IgyGadDKKeVJ+xDDeyC3V namespace-builder";
@@ -235,6 +238,7 @@
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
+          "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
           "SYSTEMD_SOCKET_PROXYD=${config.systemd.package}/lib/systemd/systemd-socket-proxyd"
         ];
         ExecStart = "${darwin-broker-socket-proxy}/bin/darwin-broker-socket-proxy";

@@ -9,6 +9,7 @@ set -euo pipefail
 : "${NSC_TOKEN_FILE:?NSC_TOKEN_FILE is required}"
 : "${NAMESPACE_DARWIN_RUN_DIR:=/run/namespace-darwin-builder}"
 : "${NAMESPACE_DARWIN_LEASE_TTL_SECONDS:=120}"
+: "${NAMESPACE_DARWIN_BROKER_DEBUG:=false}"
 
 export NSC_TOKEN_FILE
 export HOME="$NAMESPACE_DARWIN_RUN_DIR"
@@ -16,6 +17,15 @@ export HOME="$NAMESPACE_DARWIN_RUN_DIR"
 RUNDIR="$NAMESPACE_DARWIN_RUN_DIR"
 STATE_FILE="$RUNDIR/state.json"
 LEASE_FILE="$RUNDIR/lease.json"
+DEBUG="${NAMESPACE_DARWIN_BROKER_DEBUG:-false}"
+
+log_debug() {
+  case "$DEBUG" in
+    1|true|TRUE|True|yes|YES|on|ON)
+      printf '%s\n' "[darwin-broker-reaper] $*" >&2
+      ;;
+  esac
+}
 
 is_lease_stale() {
   local last_seen="$1"
@@ -32,6 +42,7 @@ is_lease_stale() {
 }
 
 if ! systemctl is-active -q namespace-mac.service; then
+  log_debug "namespace-mac.service inactive; evaluating fallback cleanup"
   if [ -f "$STATE_FILE" ]; then
     instance_id=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" 2>/dev/null || true)
 

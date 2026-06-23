@@ -12,6 +12,7 @@ set -euo pipefail
 : "${SYSTEMD_SOCKET_PROXYD:?SYSTEMD_SOCKET_PROXYD is required}"
 : "${NAMESPACE_DARWIN_RUN_DIR:=/run/namespace-darwin-builder}"
 : "${NAMESPACE_DARWIN_LEASE_TTL_SECONDS:=120}"
+: "${NAMESPACE_DARWIN_BROKER_DEBUG:=false}"
 
 export NSC_TOKEN_FILE
 export HOME="$NAMESPACE_DARWIN_RUN_DIR"
@@ -23,8 +24,18 @@ STATE_FILE="$RUNDIR/state.json"
 LEASE_FILE="$RUNDIR/lease.json"
 TUNNEL_PID_FILE="$RUNDIR/tunnel.pid"
 UPSTREAM_PORT=22023
+DEBUG="${NAMESPACE_DARWIN_BROKER_DEBUG:-false}"
+
+log_debug() {
+  case "$DEBUG" in
+    1|true|TRUE|True|yes|YES|on|ON)
+      printf '%s\n' "[darwin-broker-socket-proxy] $*" >&2
+      ;;
+  esac
+}
 
 cleanup_on_failure() {
+  log_debug "running cleanup_on_failure"
   darwin-broker-cleanup >&2 || true
 }
 trap cleanup_on_failure ERR
@@ -35,6 +46,7 @@ write_lease() {
   local state="$1"
   local now
   now="$(date +%s)"
+  log_debug "writing lease state=$state instance=$instance_id pid=$$ started_at=$started_at"
   cat > "$LEASE_FILE" <<EOF
 {
   "lease_id": "${STATE_UUID}",
@@ -48,10 +60,12 @@ EOF
 }
 
 # Provision instance (run with fd 3 closed to avoid inheriting socket FD)
+log_debug "ensuring namespace instance"
 if ! darwin-broker-ensure-instance 3<&- >&2; then
   echo "Failed to provision namespace instance." >&2
   exit 1
 fi
+log_debug "namespace instance ensured"
 
 if [ ! -s "$STATE_FILE" ]; then
   echo "Namespace state file missing or empty after ensure: $STATE_FILE" >&2
@@ -75,6 +89,7 @@ started_at="$(date +%s)"
 write_lease "starting"
 
 # Start local SSH tunnel
+log_debug "starting tunnel to $ssh_host -> 127.0.0.1:$UPSTREAM_PORT"
 ssh -nNT \
   -i "$NAMESPACE_BUILDER_KEY_PATH" \
   -o BatchMode=yes \
@@ -91,6 +106,7 @@ echo "$TUNNEL_PID" > "$TUNNEL_PID_FILE"
 
 # Wait until local tunnel port is responsive
 for _ in $(seq 1 100); do
+  log_debug "waiting for tunnel readiness (${_}/100)"
   if nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
     break
   fi
@@ -105,6 +121,7 @@ if ! nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
 fi
 
 write_lease "proxy-running"
+log_debug "starting socket-proxyd to 127.0.0.1:$UPSTREAM_PORT"
 
 # Exec systemd-socket-proxyd
 exec "$SYSTEMD_SOCKET_PROXYD" \
