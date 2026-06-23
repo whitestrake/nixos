@@ -149,26 +149,15 @@
         coreutils
         curl
         openssh
-        util-linux
       ];
       text = ''
+        set -euo pipefail
+
         export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
         export HOME="/run/namespace-darwin-builder"
         RUNDIR="/run/namespace-darwin-builder"
         mkdir -p "$RUNDIR"
-
-        # Use FD 200 for flock
-        exec 200>"$RUNDIR/lock"
-        flock 200
-
         STATE_FILE="$RUNDIR/state.json"
-
-        adjust_permissions() {
-          if [ "$(id -u)" -eq 0 ]; then
-            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
-          fi
-        }
-        trap adjust_permissions EXIT
 
         check_ssh() {
           local id="$1"
@@ -221,7 +210,7 @@
             "$id@$host" \
             "if ! sudo -n lsof -i tcp:2222 -sTCP:LISTEN -t >/dev/null 2>&1; then sudo -n /usr/sbin/sshd -p 2222 -o ListenAddress=127.0.0.1 -o PermitRootLogin=yes; fi"
 
-          for i in $(seq 1 10); do
+          for _ in $(seq 1 10); do
             if ssh -n -i "${config.sops.secrets.namespaceBuilderKey.path}" \
                 -o BatchMode=yes \
                 -o StrictHostKeyChecking=no \
@@ -237,30 +226,21 @@
           return 1
         }
 
+        # Reuse existing valid instance from state file if possible
         if [ -f "$STATE_FILE" ]; then
           EXISTING_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" || true)
-          if [ -n "$EXISTING_ID" ]; then
-            INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE" || true)"
-            if [ -z "$INGRESS_DOMAIN" ]; then
-              echo "State file has no ingress_domain; direct SSH not possible." >&2
-            else
-              REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-              if [ -z "$REGION" ]; then
-                echo "Could not derive Namespace region from state file ingress_domain: $INGRESS_DOMAIN" >&2
-              else
-                SSH_HOST="ssh.$REGION.namespace.so"
-                if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
-                  echo "Reusing existing valid instance: $EXISTING_ID" >&2
-                  if ! ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
-                    exit 1
-                  fi
-                  date +%s > "$RUNDIR/last-used"
-                  exit 0
-                fi
+          INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE" || true)"
+          if [ -n "$EXISTING_ID" ] && [ -n "$INGRESS_DOMAIN" ] && [ "$INGRESS_DOMAIN" != "null" ]; then
+            REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
+            SSH_HOST="ssh.$REGION.namespace.so"
+            if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
+              echo "Reusing existing valid instance: $EXISTING_ID" >&2
+              if ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
+                date +%s > "$RUNDIR/last-used"
+                exit 0
               fi
             fi
           fi
-          # State file invalid or unreachable, continue
         fi
 
         # Find existing instance with labels
@@ -293,28 +273,19 @@
             nsc list -o json | jq --arg id "$EXISTING_ID" '.[]? | select(.instance_id == $id or .cluster_id == $id or .id == $id)' > "$STATE_FILE.candidate"
             INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
           fi
-          if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
-            echo "Candidate Namespace instance $EXISTING_ID has no ingress_domain; direct SSH not possible." >&2
-            rm -f "$STATE_FILE.candidate"
-          else
+          if [ -n "$INGRESS_DOMAIN" ] && [ "$INGRESS_DOMAIN" != "null" ]; then
             REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-            if [ -z "$REGION" ]; then
-              echo "Could not derive Namespace region from candidate ingress_domain: $INGRESS_DOMAIN" >&2
-              rm -f "$STATE_FILE.candidate"
-            else
-              SSH_HOST="ssh.$REGION.namespace.so"
-              if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
-                echo "Found running instance with matching labels: $EXISTING_ID" >&2
-                if ! ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
-                  exit 1
-                fi
+            SSH_HOST="ssh.$REGION.namespace.so"
+            if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
+              echo "Found running instance with matching labels: $EXISTING_ID" >&2
+              if ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
                 mv "$STATE_FILE.candidate" "$STATE_FILE"
                 date +%s > "$RUNDIR/last-used"
                 exit 0
               fi
-              rm -f "$STATE_FILE.candidate"
             fi
           fi
+          rm -f "$STATE_FILE.candidate"
         fi
 
         echo "Creating macOS instance on Namespace.so..." >&2
@@ -335,14 +306,14 @@
         fi
 
         INGRESS_DOMAIN="$(echo "$INSTANCE_JSON" | jq -r '.ingress_domain // empty')"
-        if [ -z "$INGRESS_DOMAIN" ]; then
+        if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
           echo "Created Namespace instance has no ingress_domain; direct SSH required for builder." >&2
           nsc destroy "$INSTANCE_ID" --force || true
           exit 1
         fi
 
         REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
-        if [ -z "$REGION" ]; then
+        if [ -z "$REGION" ] || [ "$REGION" = "null" ]; then
           echo "Could not derive Namespace region from created instance ingress_domain: $INGRESS_DOMAIN" >&2
           nsc destroy "$INSTANCE_ID" --force || true
           exit 1
@@ -418,85 +389,122 @@
       '';
     };
 
-    namespace-darwin-proxy = pkgs.writeShellApplication {
-      name = "namespace-darwin-proxy";
+    namespace-darwin-cleanup = pkgs.writeShellApplication {
+      name = "namespace-darwin-cleanup";
       runtimeInputs = with pkgs; [
         coreutils
         jq
         openssh
-        namespace-darwin-ensure
-        gawk
+        namespace-cli
       ];
       text = ''
+        export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
+        export HOME="/run/namespace-darwin-builder"
         RUNDIR="/run/namespace-darwin-builder"
+        TUNNEL_PID_FILE="$RUNDIR/tunnel.pid"
         STATE_FILE="$RUNDIR/state.json"
-        ACTIVE_DIR="$RUNDIR/active"
 
-        mkdir -p "$ACTIVE_DIR"
-        MARKER="$ACTIVE_DIR/$$"
-
-        proc_start_time() {
-          awk '{print $22}' "/proc/$$/stat"
-        }
-
-        write_marker() {
-          phase="$1"
-          now="$(date +%s)"
-          proc_start="$(proc_start_time)"
-
-          printf 'pid=%s\nproc_start=%s\nstarted=%s\nphase=%s\n' "$$" "$proc_start" "$now" "$phase" > "$MARKER.tmp"
-          mv "$MARKER.tmp" "$MARKER"
-        }
-
-        cleanup() {
-          rm -f "$MARKER"
-          date +%s > "$RUNDIR/last-used"
-          if [ "$(id -u)" -eq 0 ]; then
-            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
+        # Kill the tunnel process if it exists
+        if [ -f "$TUNNEL_PID_FILE" ]; then
+          TUNNEL_PID=$(cat "$TUNNEL_PID_FILE" 2>/dev/null || true)
+          if [ -n "$TUNNEL_PID" ]; then
+            echo "Killing SSH tunnel PID $TUNNEL_PID..." >&2
+            kill "$TUNNEL_PID" 2>/dev/null || true
+            wait "$TUNNEL_PID" 2>/dev/null || true
           fi
-        }
+        fi
 
-        write_marker starting
-        trap cleanup EXIT HUP INT TERM
+        # Destroy the Namespace instance if state exists
+        if [ -f "$STATE_FILE" ]; then
+          INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" 2>/dev/null || true)
+          if [ -n "$INSTANCE_ID" ]; then
+            echo "Destroying Namespace instance $INSTANCE_ID..." >&2
+            nsc destroy "$INSTANCE_ID" --force || true
+          fi
+        fi
 
-        namespace-darwin-ensure >&2
+        # Clean up files
+        rm -f "$STATE_FILE" "$TUNNEL_PID_FILE" "$RUNDIR/last-used"
+      '';
+    };
 
-        INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE")
-        INGRESS_DOMAIN=$(jq -r '.ingress_domain // empty' < "$STATE_FILE")
+    namespace-darwin-socket-proxy = pkgs.writeShellApplication {
+      name = "namespace-darwin-socket-proxy";
+      runtimeInputs = with pkgs; [
+        coreutils
+        jq
+        openssh
+        netcat
+        namespace-cli
+        namespace-darwin-ensure
+      ];
+      text = ''
+        set -euo pipefail
 
-        if [ -z "$INGRESS_DOMAIN" ]; then
-          echo "Namespace instance has no ingress_domain; cannot establish direct SSH proxy." >&2
+        export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
+        export HOME="/run/namespace-darwin-builder"
+        RUNDIR="/run/namespace-darwin-builder"
+        mkdir -p "$RUNDIR"
+
+        STATE_FILE="$RUNDIR/state.json"
+        UPSTREAM_PORT=22023
+
+        # Run provisioning with fd 3 closed
+        if ! namespace-darwin-ensure 3<&- >&2; then
+          echo "Failed to provision namespace instance." >&2
           exit 1
         fi
 
-        REGION=$(echo "$INGRESS_DOMAIN" | cut -d. -f1)
-
-        if [ -z "$REGION" ]; then
-          echo "Could not derive Namespace region from ingress_domain: $INGRESS_DOMAIN" >&2
+        if [ ! -s "$STATE_FILE" ]; then
+          echo "Namespace state file missing or empty after ensure: $STATE_FILE" >&2
           exit 1
         fi
 
-        SSH_HOST="ssh.$REGION.namespace.so"
+        instance_id=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE")
+        ingress_domain=$(jq -r '.ingress_domain // empty' < "$STATE_FILE")
+        region=$(printf '%s\n' "$ingress_domain" | cut -d. -f1)
+        if [ -z "$instance_id" ] || [ "$instance_id" = "null" ] || [ -z "$region" ] || [ "$region" = "null" ]; then
+          echo "Invalid namespace state; missing instance_id or region." >&2
+          echo "state=$(cat "$STATE_FILE")" >&2
+          exit 1
+        fi
 
-        write_marker connected
+        ssh_host="ssh.$region.namespace.so"
 
-        # Close parent shell stderr to prevent log pipe deadlocks
-        exec 2>/dev/null
-
-        ssh -i "${config.sops.secrets.namespaceBuilderKey.path}" \
+        # Start local SSH tunnel and write its PID
+        ssh -nNT \
+          -i "${config.sops.secrets.namespaceBuilderKey.path}" \
           -o BatchMode=yes \
           -o IdentitiesOnly=yes \
           -o StrictHostKeyChecking=no \
           -o UserKnownHostsFile=/dev/null \
-          -W localhost:2222 \
-          "$INSTANCE_ID@$SSH_HOST" <&0 >&1 &
-        SSH_PID=$!
+          -o ServerAliveInterval=10 \
+          -o ServerAliveCountMax=3 \
+          -L "127.0.0.1:$UPSTREAM_PORT:localhost:2222" \
+          "$instance_id@$ssh_host" \
+          3<&- &
+        TUNNEL_PID=$!
+        echo "$TUNNEL_PID" > "$RUNDIR/tunnel.pid"
 
-        # Close parent shell FDs to avoid pipe inheritance deadlocks
-        exec 0<&-
-        exec 1>&-
+        # Wait until local tunnel port is responsive
+        for _ in $(seq 1 100); do
+          if nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
+            break
+          fi
+          sleep 0.1
+        done
+        if ! nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
+          echo "Timed out waiting for Namespace SSH tunnel on local port $UPSTREAM_PORT" >&2
+          kill "$TUNNEL_PID" 2>/dev/null || true
+          wait "$TUNNEL_PID" 2>/dev/null || true
+          exit 1
+        fi
 
-        wait "$SSH_PID"
+        # Exec systemd-socket-proxyd
+        exec ${config.systemd.package}/lib/systemd/systemd-socket-proxyd \
+          --connections-max=64 \
+          --exit-idle-time=20s \
+          "127.0.0.1:$UPSTREAM_PORT"
       '';
     };
 
@@ -506,138 +514,23 @@
         namespace-cli
         jq
         coreutils
-        util-linux
-        gawk
-        procps
+        systemd
       ];
       text = ''
         export NSC_TOKEN_FILE="${config.sops.secrets.namespaceHciToken.path}"
         export HOME="/run/namespace-darwin-builder"
         RUNDIR="/run/namespace-darwin-builder"
         STATE_FILE="$RUNDIR/state.json"
-        ACTIVE_DIR="$RUNDIR/active"
-        LAST_USED_FILE="$RUNDIR/last-used"
 
-        IDLE_LIMIT=20
-        STALE_MARKER_LIMIT=300
-
-        adjust_permissions() {
-          if [ "$(id -u)" -eq 0 ]; then
-            chown -R ${agentUser}:${agentUser} "$RUNDIR" || true
+        if ! systemctl is-active -q namespace-mac.service; then
+          if [ -f "$STATE_FILE" ]; then
+            instance_id=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" 2>/dev/null || true)
+            if [ -n "$instance_id" ]; then
+              echo "Service is inactive but state file exists. Destroying leaked instance $instance_id..." >&2
+              nsc destroy "$instance_id" --force || true
+            fi
+            rm -f "$STATE_FILE" "$RUNDIR/tunnel.pid" "$RUNDIR/last-used"
           fi
-        }
-        trap adjust_permissions EXIT
-
-        marker_field() {
-          key="$1"
-          marker="$2"
-          awk -F= -v k="$key" '$1 == k {print substr($0, length(k) + 2); exit}' "$marker"
-        }
-
-        same_process() {
-          pid="$1"
-          expected_start="$2"
-
-          [ -r "/proc/$pid/stat" ] || return 1
-
-          current_start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
-          [ "$current_start" = "$expected_start" ]
-        }
-
-        kill_marker_process() {
-          pid="$1"
-
-          echo "Killing stale Namespace proxy process tree for pid $pid..." >&2
-          pkill -TERM -P "$pid" 2>/dev/null || true
-          kill -TERM "$pid" 2>/dev/null || true
-          sleep 2
-          pkill -KILL -P "$pid" 2>/dev/null || true
-          kill -KILL "$pid" 2>/dev/null || true
-        }
-
-        prune_markers() {
-          active=0
-          now="$(date +%s)"
-
-          mkdir -p "$ACTIVE_DIR"
-
-          for marker in "$ACTIVE_DIR"/*; do
-            [ -f "$marker" ] || continue
-
-            pid="$(marker_field pid "$marker" || true)"
-            proc_start="$(marker_field proc_start "$marker" || true)"
-            started="$(marker_field started "$marker" || true)"
-            phase="$(marker_field phase "$marker" || true)"
-
-            if [ -z "$pid" ] || [ -z "$proc_start" ] || [ -z "$started" ] || [ -z "$phase" ]; then
-              echo "Removing malformed marker: $marker" >&2
-              rm -f "$marker"
-              date +%s > "$LAST_USED_FILE"
-              continue
-            fi
-
-            if ! same_process "$pid" "$proc_start"; then
-              echo "Removing dead or PID-reused marker: $marker" >&2
-              rm -f "$marker"
-              date +%s > "$LAST_USED_FILE"
-              continue
-            fi
-
-            age=$((now - started))
-
-            if [ "$phase" = "starting" ] && [ "$age" -ge "$STALE_MARKER_LIMIT" ]; then
-              echo "Marker $marker stuck in starting phase for $age s." >&2
-              kill_marker_process "$pid"
-              rm -f "$marker"
-              date +%s > "$LAST_USED_FILE"
-              continue
-            fi
-
-            active=1
-          done
-        }
-
-        # Run before lock so a stuck ensure/proxy can be killed even if it holds the lock.
-        prune_markers
-
-        if [ ! -f "$STATE_FILE" ]; then
-          exit 0
-        fi
-
-        exec 200>"$RUNDIR/lock"
-        if ! flock -w 1 200; then
-          echo "Could not acquire lock, skipping reap..." >&2
-          exit 0
-        fi
-
-        if [ ! -f "$STATE_FILE" ]; then
-          exit 0
-        fi
-
-        INSTANCE_ID=$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" || true)
-        if [ -z "$INSTANCE_ID" ]; then
-          echo "No parseable instance ID in state file, removing..." >&2
-          rm -f "$STATE_FILE"
-          exit 0
-        fi
-
-        prune_markers
-
-        if [ "$active" -eq 1 ]; then
-          echo "Active Namespace proxy sessions found. Extending TTL..." >&2
-          nsc extend "$INSTANCE_ID" --ensure_minimum 10m || true
-          exit 0
-        fi
-
-        now="$(date +%s)"
-        last_used="$(cat "$LAST_USED_FILE" 2>/dev/null || echo "$now")"
-        idle=$((now - last_used))
-
-        if [ "$idle" -ge "$IDLE_LIMIT" ]; then
-          echo "Instance $INSTANCE_ID idle for $idle s. Destroying..." >&2
-          nsc destroy "$INSTANCE_ID" --force || true
-          rm -f "$STATE_FILE" "$LAST_USED_FILE"
-          rm -f "$ACTIVE_DIR"/*
         fi
       '';
     };
@@ -648,28 +541,57 @@
 
     systemd.tmpfiles.rules = [
       "d /run/namespace-darwin-builder 0700 ${agentUser} ${agentUser} -"
-      "d /run/namespace-darwin-builder/active 0700 ${agentUser} ${agentUser} -"
     ];
 
-    # SSH configuration mapping the builder host to the wrapper script
+    # SSH configuration mapping the builder host to the local socket proxy
     programs.ssh.extraConfig = ''
       Host ${builderHost}
-        HostName ${builderHost}
+        HostName 127.0.0.1
+        Port 22022
         User root
         IdentityFile ${config.sops.secrets.namespaceBuilderKey.path}
-        ProxyCommand ${namespace-darwin-proxy}/bin/namespace-darwin-proxy
         BatchMode yes
         IdentitiesOnly yes
         StrictHostKeyChecking no
         UserKnownHostsFile /dev/null
     '';
 
+    systemd.sockets.namespace-mac = {
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream = "127.0.0.1:22022";
+        Backlog = 128;
+        Accept = false;
+        NoDelay = true;
+      };
+    };
+
+    systemd.services.namespace-mac = {
+      description = "Namespace macOS SSH socket proxy";
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
+
+      serviceConfig = {
+        Type = "simple";
+        User = agentUser;
+        ExecStart = "${namespace-darwin-socket-proxy}/bin/namespace-darwin-socket-proxy";
+        ExecStopPost = "${namespace-darwin-cleanup}/bin/namespace-darwin-cleanup";
+        TimeoutStartSec = "10min";
+        TimeoutStopSec = "30s";
+        KillMode = "mixed";
+        Restart = "on-failure";
+        RestartSec = "2s";
+        StartLimitBurst = 12;
+        StartLimitIntervalSec = "2min";
+      };
+    };
+
     systemd.services.namespace-darwin-builder-reaper = {
       description = "Reap idle Namespace macOS builder instances";
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${namespace-darwin-reaper}/bin/namespace-darwin-reaper";
-        User = "root";
+        User = agentUser;
       };
     };
 
@@ -677,9 +599,9 @@
       description = "Timer for Namespace macOS builder reaper";
       wantedBy = ["timers.target"];
       timerConfig = {
-        OnBootSec = "10s";
-        OnUnitActiveSec = "5s";
-        AccuracySec = "1s";
+        OnBootSec = "1min";
+        OnUnitActiveSec = "1min";
+        AccuracySec = "5s";
       };
     };
 
