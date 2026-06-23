@@ -15,7 +15,8 @@
   }: let
     # Configuration
     configuredHciMode = "dry"; # "suppressed" | "dry" | "production"
-    suppressedBranches = ["feat/hercules-hci-migration"]; # override HciMode
+    # suppressedBranches = ["feat/hercules-hci-migration"]; # override HciMode
+    suppressedBranches = [];
     ciSystems = [
       # CI systems intentionally evaluated by Hercules CI.
       # To disable evaluating Darwin builds, remove "aarch64-darwin" here.

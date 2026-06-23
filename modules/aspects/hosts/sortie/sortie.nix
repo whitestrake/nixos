@@ -16,6 +16,7 @@
       den.aspects.user-mediaserver
       den.aspects.dev-tools
       den.aspects.vscode-server
+      den.aspects.hercules
     ];
 
     nixos = {

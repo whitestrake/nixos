@@ -1,4 +1,4 @@
-{den, ...}: {
+{den, ...} @ flake: {
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
     den.aspects.hercules.namespace-darwin-broker
@@ -28,7 +28,7 @@
         whitestrake = {
           kind = "CachixCache";
           authToken = config.sops.placeholder.cachixAgentToken;
-          publicKeys = [config.caches.cachix.key];
+          publicKeys = [flake.config.caches.cachix.key];
           signingKeys = [];
         };
       };
