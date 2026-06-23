@@ -13,12 +13,31 @@
     lib,
     ...
   }: let
-    # Temporary branch suppression
-    suppressedBranches = ["feat/hercules-hci-migration"];
-    isSuppressedBranch =
+    # Configuration
+    configuredHciMode = "dry"; # "suppressed" | "dry" | "production"
+    suppressedBranches = ["feat/hercules-hci-migration"]; # override HciMode
+    ciSystems = [
+      # CI systems intentionally evaluated by Hercules CI.
+      # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
+      # The agent may still advertise Darwin, but HCI will not generate Darwin
+      # outputs if Darwin is not present in ciSystems.
+      "x86_64-linux"
+      "aarch64-linux"
+      "aarch64-darwin"
+    ];
+
+    isHciSuppressed =
       config.repo.branch
       != null
       && builtins.elem config.repo.branch suppressedBranches;
+
+    effectiveHciMode =
+      if isHciSuppressed
+      then "suppressed"
+      else configuredHciMode;
+
+    isProductionBranch = config.repo.branch == "master";
+    deploymentEnabled = (effectiveHciMode == "production") && isProductionBranch;
 
     # We want to build all nixosConfigurations and darwinConfigurations
     pinnableNixosConfigurations = self.nixosConfigurations or {};
@@ -56,27 +75,17 @@
       rollbackScript = toString rollbackScript;
     };
 
-    isProductionBranch = builtins.elem config.repo.branch ["master"];
-
     buildItems = lib.mapAttrsToList mkBuildItem pinnableConfigurations;
     deployItems = lib.mapAttrsToList mkDeployItem deployableConfigurations;
 
     buildItemsJson = builtins.toJSON buildItems;
     deployItemsJson = builtins.toJSON deployItems;
   in {
-    # CI systems intentionally evaluated by Hercules CI.
-    # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
-    # The agent may still advertise Darwin, but HCI will not generate Darwin
-    # outputs if Darwin is not present in ciSystems.
-    ciSystems = [
-      "x86_64-linux"
-      "aarch64-linux"
-      "aarch64-darwin"
-    ];
+    inherit ciSystems;
 
     # Configure the deployment effect using Cachix Deploy
     onPush =
-      if isSuppressedBranch
+      if isHciSuppressed
       then lib.mkForce {}
       else {
         default.outputs = withSystem "x86_64-linux" ({
@@ -84,16 +93,30 @@
           hci-effects,
           ...
         }: let
+          dependencies = with pkgs; [
+            bash
+            coreutils
+            curl
+            jq
+            nix
+            cachix
+          ];
+
           deployScript = pkgs.writeShellApplication {
             name = "cachix-deploy-script";
-            runtimeInputs = with pkgs; [bash coreutils curl jq cachix];
+            runtimeInputs = dependencies;
             text = ''
               set -euo pipefail
 
               cache_name="''${CACHIX_CACHE_NAME:-}"
-              is_production_branch="''${IS_PRODUCTION_BRANCH:-false}"
+              hci_mode="''${HCI_MODE:-dry}"
+              deployment_enabled="''${DEPLOYMENT_ENABLED:-false}"
               build_items="''${BUILD_ITEMS_JSON:-[]}"
               deploy_items="''${DEPLOY_ITEMS_JSON:-[]}"
+
+              is_dry_run() {
+                [ "$hci_mode" = "dry" ]
+              }
 
               with_retry() {
                 local n=1 max=3 delay=2
@@ -216,6 +239,25 @@
                 echo "  deployed: ''${deployed:-[none]}"
                 echo "  current:  $store_path"
 
+                deploy_spec="$tmpdir/deploy-$host.json"
+
+                jq -n \
+                  --arg agent "$host" \
+                  --arg path "$store_path" \
+                  --arg sys "$system" \
+                  --arg rollback "$rollback" \
+                  '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' \
+                  > "$deploy_spec"
+
+                if is_dry_run; then
+                  echo "[dry-run] would push rollback script for $host: $rollback"
+                  echo "[dry-run] would probe Cachix Deploy agent for $host: skipped in dry mode"
+                  echo "[dry-run] would activate Cachix Deploy for $host with spec:"
+                  cat "$deploy_spec"
+                  echo "[dry-run] would pin deployed state: $deploy_pin -> $store_path"
+                  return 0
+                fi
+
                 echo "Ensuring rollback script is present in Cachix..."
                 if ! with_retry cachix push "$cache_name" "$rollback"; then
                   echo "Failed to push rollback script for $host to Cachix." >&2
@@ -226,16 +268,6 @@
                   echo "Deployment failed for $host because its Cachix Deploy agent is unavailable." >&2
                   return 1
                 fi
-
-                deploy_spec="$tmpdir/deploy-$host.json"
-
-                jq -n \
-                  --arg agent "$host" \
-                  --arg path "$store_path" \
-                  --arg sys "$system" \
-                  --arg rollback "$rollback" \
-                  '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' \
-                  > "$deploy_spec"
 
                 echo "Generated deploy spec for $host:"
                 cat "$deploy_spec"
@@ -275,7 +307,6 @@
 
               while read -r item; do
                 host="$(jq -r '.host' <<< "$item")"
-                system="$(jq -r '.system' <<< "$item")"
                 store_path="$(jq -r '.storePath' <<< "$item")"
                 build_pin="$(jq -r '.buildPin' <<< "$item")"
 
@@ -302,25 +333,30 @@
                   echo "  previous: ''${previous_built:-[none]}"
                   echo "  current:  $store_path"
 
-                  echo "Ensuring system closure is present in Cachix..."
-                  if ! with_retry cachix push "$cache_name" "$store_path"; then
-                    echo "Failed to push $host to cachix." >&2
-                    phase_a_errors=$((phase_a_errors + 1))
-                    continue
-                  fi
+                  if is_dry_run; then
+                    echo "[dry-run] would push system closure for $host: $store_path"
+                    echo "[dry-run] would pin built state: $build_pin -> $store_path"
+                  else
+                    echo "Ensuring system closure is present in Cachix..."
+                    if ! with_retry cachix push "$cache_name" "$store_path"; then
+                      echo "Failed to push $host to cachix." >&2
+                      phase_a_errors=$((phase_a_errors + 1))
+                      continue
+                    fi
 
-                  echo "Pinning built state: $build_pin -> $store_path"
-                  if ! with_retry cachix pin "$cache_name" "$build_pin" "$store_path"; then
-                    echo "Failed to pin $host to cachix." >&2
-                    phase_a_errors=$((phase_a_errors + 1))
-                    continue
-                  fi
+                    echo "Pinning built state: $build_pin -> $store_path"
+                    if ! with_retry cachix pin "$cache_name" "$build_pin" "$store_path"; then
+                      echo "Failed to pin $host to cachix." >&2
+                      phase_a_errors=$((phase_a_errors + 1))
+                      continue
+                    fi
 
-                  pins="$(fetch_pins)" || {
-                    echo "Failed to fetch pins after pinning $host." >&2
-                    phase_a_errors=$((phase_a_errors + 1))
-                    continue
-                  }
+                    pins="$(fetch_pins)" || {
+                      echo "Failed to fetch pins after pinning $host." >&2
+                      phase_a_errors=$((phase_a_errors + 1))
+                      continue
+                    }
+                  fi
                 fi
               done < <(printf '%s\n' "$build_items" | jq -c '.[]')
 
@@ -329,9 +365,13 @@
                 exit 1
               fi
 
-              if [ "$is_production_branch" != "true" ]; then
-                echo "Not a production branch; deployment skipped after built-state pins."
-                exit 0
+              if [ "$deployment_enabled" != "true" ]; then
+                if is_dry_run; then
+                  echo "HCI dry mode: deployment mutations disabled. Evaluating deploy candidates for logging only."
+                else
+                  echo "Deployment disabled for this branch/mode; deployment skipped after built-state pins."
+                  exit 0
+                fi
               fi
 
               if printf '%s\n' "$deploy_items" | jq -e 'type == "array" and length == 0' >/dev/null; then
@@ -397,38 +437,30 @@
             )
             deployableConfigurations;
 
-          effects.cachix-state-and-deploy = hci-effects.mkEffect {
-            inputs = with pkgs; [
-              bash
-              coreutils
-              curl
-              jq
-              nix
-              cachix
-            ];
+          effects.pin-and-deploy = hci-effects.mkEffect {
+            inputs = dependencies;
 
             secretsMap =
-              {
-                cachix = "cachix-write";
-              }
-              // lib.optionalAttrs isProductionBranch {
-                cachixDeploy = "cachix-deploy-activate";
-                cachixPersonal = "cachix-personal";
-              };
+              lib.genAttrs (
+                ["cachixPush"]
+                ++ lib.optionals deploymentEnabled [
+                  "cachixDeploy"
+                  "cachixPersonal"
+                ]
+              )
+              lib.id;
 
-            effectScript = ''
+            effectScript = with lib; ''
+              export HCI_MODE=${escapeShellArg effectiveHciMode}
+              export DEPLOYMENT_ENABLED="${boolToString deploymentEnabled}"
+
               export CACHIX_CACHE_NAME="whitestrake"
-              export IS_PRODUCTION_BRANCH="${
-                if isProductionBranch
-                then "true"
-                else "false"
-              }"
-              export BUILD_ITEMS_JSON=${lib.escapeShellArg buildItemsJson}
-              export DEPLOY_ITEMS_JSON=${lib.escapeShellArg deployItemsJson}
+              export BUILD_ITEMS_JSON=${escapeShellArg buildItemsJson}
+              export DEPLOY_ITEMS_JSON=${escapeShellArg deployItemsJson}
 
-              export CACHIX_AUTH_TOKEN="$(readSecretString cachix .token)"
+              export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
-              if [ "$IS_PRODUCTION_BRANCH" = "true" ]; then
+              if [ "$DEPLOYMENT_ENABLED" = "true" ]; then
                 export CACHIX_ACTIVATE_TOKEN="$(readSecretString cachixDeploy .token)"
                 export CACHIX_PERSONAL_TOKEN="$(readSecretString cachixPersonal .token)"
               else

@@ -50,17 +50,17 @@
     in {
       owner = config.systemd.services.hercules-ci-agent.serviceConfig.User;
       content = builtins.toJSON {
-        "cachix-write" = {
+        "cachixPush" = {
           kind = "Secret";
           data = {token = config.sops.placeholder.cachixAgentToken;};
           condition = repoCondition;
         };
-        "cachix-deploy-activate" = {
+        "cachixDeploy" = {
           kind = "Secret";
           data = {token = config.sops.placeholder.cachixDeployActivateToken;};
           condition = productionBranchCondition;
         };
-        "cachix-personal" = {
+        "cachixPersonal" = {
           kind = "Secret";
           data = {token = config.sops.placeholder.cachixPersonalToken;};
           condition = productionBranchCondition;
