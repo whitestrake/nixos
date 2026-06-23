@@ -87,7 +87,8 @@
     host,
     ...
   }: {
-    sops.secrets.nixbuildBuilderKey = {};
+    sops.secrets.nixbuildBuilderKey.owner =
+      config.systemd.services.hercules-ci-agent.serviceConfig.User;
 
     programs.ssh.extraConfig = ''
       Host eu.nixbuild.net
@@ -454,8 +455,10 @@
     };
   in {
     # Secrets configuration
-    sops.secrets.namespaceBuilderKey = {};
-    sops.secrets.namespaceHciToken = {};
+    sops.secrets.namespaceBuilderKey.owner =
+      config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    sops.secrets.namespaceHciToken.owner =
+      config.systemd.services.hercules-ci-agent.serviceConfig.User;
 
     # SSH configuration mapping the builder host to the wrapper script
     programs.ssh.extraConfig = ''
