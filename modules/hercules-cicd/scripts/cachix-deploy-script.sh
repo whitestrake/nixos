@@ -40,7 +40,9 @@ is_dry_run() {
 with_retry() {
   local n=1 max=3 delay=2
   while true; do
-    "$@" && break || {
+    if "$@"; then
+      break
+    else
       if [[ $n -lt $max ]]; then
         ((n++))
         echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
@@ -50,7 +52,7 @@ with_retry() {
         echo "Command failed after $n attempts." >&2
         return 1
       fi
-    }
+    fi
   done
 }
 
