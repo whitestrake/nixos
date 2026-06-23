@@ -13,11 +13,13 @@
     ...
   }: {
     # Secrets configuration
-    sops.secrets.cachixAgentToken = {};
-    sops.secrets.cachixDeployActivateToken = {}; # TODO: missing from secrets.yaml
-    sops.secrets.cachixPersonalToken = {}; # TODO: missing from secrets.yaml
-    sops.secrets.herculesClusterJoinToken.owner =
-      config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    sops.secrets = {
+      cachixAgentToken = {};
+      cachixDeployToken = {};
+      cachixPersonalToken = {};
+      herculesClusterJoinToken.owner =
+        config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    };
 
     # JSON binary caches configuration template for hercules-ci-agent
     sops.templates."binary-caches.json" = {
@@ -39,7 +41,6 @@
           {isRepo = "nixos";}
         ];
       };
-
       productionBranchCondition = {
         and = [
           {isOwner = "whitestrake";}
@@ -57,7 +58,7 @@
         };
         "cachixDeploy" = {
           kind = "Secret";
-          data = {token = config.sops.placeholder.cachixDeployActivateToken;};
+          data = {token = config.sops.placeholder.cachixDeployToken;};
           condition = productionBranchCondition;
         };
         "cachixPersonal" = {
@@ -108,22 +109,18 @@
       "aarch64-linux"
     ];
 
-    nix.distributedBuilds = true;
-    nix.settings.builders-use-substitutes = true;
-    nix.buildMachines = [
-      {
-        hostName = "eu.nixbuild.net";
-        system = "x86_64-linux";
-        maxJobs = 100;
-        supportedFeatures = ["benchmark" "big-parallel"];
-      }
-      {
-        hostName = "eu.nixbuild.net";
-        system = "aarch64-linux";
-        maxJobs = 100;
-        supportedFeatures = ["benchmark" "big-parallel"];
-      }
-    ];
+    nix = {
+      distributedBuilds = true;
+      settings.builders-use-substitutes = true;
+      buildMachines = [
+        {
+          hostName = "eu.nixbuild.net";
+          systems = ["x86_64-linux" "aarch64-linux"];
+          maxJobs = 100;
+          supportedFeatures = ["benchmark" "big-parallel"];
+        }
+      ];
+    };
   };
 
   # Subaspect for inclusion on a single host ONLY to manage namespace macos instance lifecycle
@@ -423,9 +420,6 @@
       '';
     };
   in {
-    # Add namespace-cli to system packages for ease of use/debugging
-    environment.systemPackages = [pkgs.namespace-cli];
-
     # Secrets configuration
     sops.secrets.namespaceBuilderKey = {};
     sops.secrets.namespaceHciToken = {};
@@ -465,18 +459,20 @@
     ];
 
     # Register the builder for distributed builds
-    nix.distributedBuilds = true;
-    nix.settings.builders-use-substitutes = true;
-    nix.buildMachines = [
-      {
-        hostName = builderHost;
-        system = "aarch64-darwin";
-        maxJobs = 4;
-        supportedFeatures = ["big-parallel"];
-        sshUser = "root";
-        sshKey = config.sops.secrets.namespaceBuilderKey.path;
-        protocol = "ssh-ng";
-      }
-    ];
+    nix = {
+      distributedBuilds = true;
+      settings.builders-use-substitutes = true;
+      buildMachines = [
+        {
+          hostName = builderHost;
+          system = "aarch64-darwin";
+          maxJobs = 4;
+          supportedFeatures = ["big-parallel"];
+          sshUser = "root";
+          sshKey = config.sops.secrets.namespaceBuilderKey.path;
+          protocol = "ssh-ng";
+        }
+      ];
+    };
   };
 }
