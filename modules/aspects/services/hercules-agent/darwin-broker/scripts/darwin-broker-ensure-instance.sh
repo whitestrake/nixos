@@ -55,8 +55,13 @@ ensure_sshd_2222() {
   local host="$2"
   echo "Ensuring custom sshd is running on port 2222 for $id..." >&2
 
-  ssh "${SSH_OPTS[@]}" "$id@$host" \
-    "mkdir -p ~/.ssh && echo '${NAMESPACE_DARWIN_BROKER_PUBLIC_KEY}' > ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && sudo -n mkdir -p /var/root/.ssh && echo '${NAMESPACE_DARWIN_BROKER_PUBLIC_KEY}' | sudo -n tee /var/root/.ssh/authorized_keys >/dev/null && sudo -n chmod 700 /var/root/.ssh && sudo -n chmod 600 /var/root/.ssh/authorized_keys"
+  printf '%s\n' "$NAMESPACE_DARWIN_BROKER_PUBLIC_KEY" \
+    | ssh "${SSH_OPTS[@]}" "$id@$host" \
+      'mkdir -p ~/.ssh /var/root/.ssh &&
+       chmod 700 ~/.ssh /var/root/.ssh &&
+       tee ~/.ssh/authorized_keys >/dev/null | sudo -n tee /var/root/.ssh/authorized_keys >/dev/null &&
+       chmod 600 ~/.ssh/authorized_keys &&
+       sudo -n chmod 600 /var/root/.ssh/authorized_keys'
 
   ssh "${SSH_OPTS[@]}" "$id@$host" \
     "sudo -n ssh-keygen -A"
