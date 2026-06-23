@@ -285,7 +285,7 @@
           echo "Nix not found. Installing Nix..." >&2
           if ! nsc ssh "$INSTANCE_ID" --disable-pty -- \
               sh -c '
-                curl --proto =https --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
+                curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
                 sh -s -- install --no-confirm
               ' >&2; then
             echo "Nix installation failed!" >&2
@@ -468,8 +468,6 @@
           system = "aarch64-darwin";
           maxJobs = 4;
           supportedFeatures = ["big-parallel"];
-          sshUser = "root";
-          sshKey = config.sops.secrets.namespaceBuilderKey.path;
           protocol = "ssh-ng";
         }
       ];
