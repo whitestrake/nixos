@@ -242,7 +242,7 @@
         TimeoutStartSec = "10min";
         TimeoutStopSec = "30s";
         KillMode = "mixed";
-        Sockets = [ "namespace-mac.socket" ];
+        Sockets = ["namespace-mac.socket"];
         Restart = "on-failure";
         RestartSec = "2s";
         RestartSteps = 8;
