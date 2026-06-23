@@ -273,12 +273,14 @@
         INGRESS_DOMAIN="$(echo "$INSTANCE_JSON" | jq -r '.ingress_domain // empty')"
         if [ -z "$INGRESS_DOMAIN" ]; then
           echo "Created Namespace instance has no ingress_domain; direct SSH required for builder." >&2
+          nsc destroy "$INSTANCE_ID" --force || true
           exit 1
         fi
 
         REGION="$(echo "$INGRESS_DOMAIN" | cut -d. -f1)"
         if [ -z "$REGION" ]; then
           echo "Could not derive Namespace region from created instance ingress_domain: $INGRESS_DOMAIN" >&2
+          nsc destroy "$INSTANCE_ID" --force || true
           exit 1
         fi
 

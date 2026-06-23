@@ -36,7 +36,6 @@
       then "suppressed"
       else configuredHciMode;
 
-    isHciDry = effectiveHciMode == "dry";
     isHciSuppressed = effectiveHciMode == "suppressed";
     isHciProduction = effectiveHciMode == "production";
 
@@ -87,7 +86,7 @@
   in
     assert lib.assertMsg
     (builtins.elem configuredHciMode ["suppressed" "dry" "production"])
-    "configuredHciMode must be one of: suppressed, dry, production (isHciDry: ${lib.boolToString isHciDry})"; {
+    "configuredHciMode must be one of: suppressed, dry, production"; {
       inherit ciSystems;
 
       # Configure the deployment effect using Cachix Deploy
@@ -490,7 +489,11 @@
               effectScript = with lib; ''
                 export HCI_MODE=${escapeShellArg effectiveHciMode}
                 export DEPLOYMENT_ENABLED="${boolToString deploymentEnabled}"
-                export HCI_BRANCH=${escapeShellArg (config.repo.branch or "")}
+                export HCI_BRANCH=${escapeShellArg (
+                  if config.repo.branch == null
+                  then ""
+                  else config.repo.branch
+                )}
 
                 export CACHIX_CACHE_NAME="whitestrake"
                 export BUILD_ITEMS_JSON=${escapeShellArg buildItemsJson}
