@@ -14,7 +14,7 @@
   }: {
     # Secrets configuration
     sops.secrets = {
-      cachixAgentToken = {};
+      cachixPushToken = {};
       cachixDeployToken = {};
       cachixPersonalToken = {};
       herculesClusterJoinToken.owner =
@@ -27,7 +27,7 @@
       content = builtins.toJSON {
         whitestrake = {
           kind = "CachixCache";
-          authToken = config.sops.placeholder.cachixAgentToken;
+          authToken = config.sops.placeholder.cachixPushToken;
           publicKeys = [flake.config.caches.cachix.key];
           signingKeys = [];
         };
@@ -53,7 +53,7 @@
       content = builtins.toJSON {
         "cachixPush" = {
           kind = "Secret";
-          data = {token = config.sops.placeholder.cachixAgentToken;};
+          data = {token = config.sops.placeholder.cachixPushToken;};
           condition = repoCondition;
         };
         "cachixDeploy" = {
