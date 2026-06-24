@@ -43,6 +43,13 @@
       boot.kernel.sysctl = {
         "vm.swappiness" = 10;
       };
+      swapDevices = lib.mkForce [];
+      zramSwap = {
+        enable = true;
+        algorithm = "zstd";
+        memoryPercent = 50;
+        priority = 100;
+      };
 
       # Network hostname properties
       networking.hostId = "bffd5e86";
