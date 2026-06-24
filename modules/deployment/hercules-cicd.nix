@@ -15,6 +15,7 @@
   }: let
     # Configuration
     dryRun = false;
+    effectRunnerFeature = "hci-effect-runner";
     ciSystems = [
       # CI systems intentionally evaluated by Hercules CI.
       # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
@@ -131,6 +132,7 @@
 
         effects.pin-and-deploy = hci-effects.mkEffect {
           inputs = dependencies;
+          requiredSystemFeatures = [effectRunnerFeature];
 
           secretsMap =
             lib.genAttrs (
