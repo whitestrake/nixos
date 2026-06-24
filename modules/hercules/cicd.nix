@@ -115,6 +115,10 @@
               text = builtins.readFile ./scripts/cachix-deploy-script.sh;
             };
           in {
+            checks = lib.mkForce {
+              inherit (self.checks) x86_64-linux aarch64-linux;
+            };
+
             effects.pin-and-deploy = hci-effects.mkEffect {
               inputs = dependencies;
 
