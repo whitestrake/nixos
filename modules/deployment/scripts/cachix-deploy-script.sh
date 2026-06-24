@@ -8,6 +8,7 @@ build_items="${BUILD_ITEMS_JSON:-[]}"
 deploy_items="${DEPLOY_ITEMS_JSON:-[]}"
 deploy_spec_path="${DEPLOY_SPEC_PATH:-}"
 deploy_spec_pin="${DEPLOY_SPEC_PIN:-built-deploy-spec}"
+binary_cache_url="${CACHIX_BINARY_CACHE_URL:-https://$cache_name.cachix.org}"
 
 # Mode validation
 case "$hci_mode" in
@@ -168,17 +169,64 @@ pin_deployed_state() {
     >/dev/null
 }
 
-require_store_path() {
+path_available_in_cache() {
+  local store_path="$1"
+
+  nix path-info --store "$binary_cache_url" "$store_path" >/dev/null 2>&1
+}
+
+path_available_locally() {
+  local store_path="$1"
+
+  nix path-info "$store_path" >/dev/null 2>&1
+}
+
+path_available_in_cache_with_retry() {
+  local store_path="$1"
+  local n=1 max=3 delay=2
+
+  while true; do
+    if path_available_in_cache "$store_path"; then
+      return 0
+    fi
+
+    if [[ $n -lt $max ]]; then
+      n=$((n + 1))
+      sleep "$delay"
+      delay=$((delay * 2))
+    else
+      return 1
+    fi
+  done
+}
+
+ensure_cached_path() {
   local host="$1"
   local description="$2"
   local store_path="$3"
 
-  if nix path-info "$store_path" >/dev/null 2>&1; then
+  if path_available_in_cache "$store_path"; then
+    echo "Cachix already has $description for $host: $store_path"
     return 0
   fi
 
-  echo "ERROR: expected $description for $host is not available to the effect runner: $store_path" >&2
-  echo "HCI should build selected host outputs before production deployment effects run." >&2
+  if path_available_locally "$store_path"; then
+    echo "Pushing $description for $host to Cachix: $store_path"
+    if with_retry cachix push "$cache_name" "$store_path"; then
+      return 0
+    fi
+
+    echo "ERROR: failed to push $description for $host to Cachix: $store_path" >&2
+    return 1
+  fi
+
+  if path_available_in_cache_with_retry "$store_path"; then
+    echo "Cachix now has $description for $host: $store_path"
+    return 0
+  fi
+
+  echo "ERROR: expected $description for $host is neither in Cachix nor local to the effect runner: $store_path" >&2
+  echo "HCI should build selected host outputs and upload them to Cachix before production deployment effects run." >&2
   return 1
 }
 
@@ -210,22 +258,10 @@ pin_built_deploy_spec() {
   while IFS= read -r rollback; do
     [ -n "$rollback" ] || continue
 
-    require_store_path "manual deploy spec" "rollback script" "$rollback" || return 1
-
-    echo "Ensuring rollback script is present in Cachix for manual deploys: $rollback"
-    if ! with_retry cachix push "$cache_name" "$rollback"; then
-      echo "Failed to push rollback script for manual deploy spec to cachix: $rollback" >&2
-      return 1
-    fi
+    ensure_cached_path "manual deploy spec" "rollback script" "$rollback" || return 1
   done < <(printf '%s\n' "$deploy_items" | jq -r '[.[].rollbackScript] | unique[]')
 
-  require_store_path "deploy spec" "deploy spec" "$deploy_spec_path" || return 1
-
-  echo "Ensuring deploy spec is present in Cachix..."
-  if ! with_retry cachix push "$cache_name" "$deploy_spec_path"; then
-    echo "Failed to push deploy spec to cachix." >&2
-    return 1
-  fi
+  ensure_cached_path "deploy spec" "deploy spec" "$deploy_spec_path" || return 1
 
   echo "Pinning built deploy spec: $deploy_spec_pin -> $deploy_spec_path"
   if ! with_retry cachix pin "$cache_name" "$deploy_spec_pin" "$deploy_spec_path"; then
@@ -327,14 +363,8 @@ deploy_one() {
     return 0
   fi
 
-  require_store_path "$host" "system closure" "$store_path" || return 1
-  require_store_path "$host" "rollback script" "$rollback" || return 1
-
-  echo "Ensuring rollback script is present in Cachix..."
-  if ! with_retry cachix push "$cache_name" "$rollback"; then
-    echo "Failed to push rollback script for $host to Cachix." >&2
-    return 1
-  fi
+  ensure_cached_path "$host" "system closure" "$store_path" || return 1
+  ensure_cached_path "$host" "rollback script" "$rollback" || return 1
 
   if ! probe_cachix_agent "$host"; then
     echo "Deployment failed for $host because its Cachix Deploy agent is unavailable." >&2
@@ -410,13 +440,7 @@ while read -r item; do
       echo "[dry-run] would pin built state: $build_pin -> $store_path"
     else
       echo "Ensuring system closure is present in Cachix..."
-      if ! require_store_path "$host" "system closure" "$store_path"; then
-        phase_a_errors=$((phase_a_errors + 1))
-        continue
-      fi
-
-      if ! with_retry cachix push "$cache_name" "$store_path"; then
-        echo "Failed to push $host to cachix." >&2
+      if ! ensure_cached_path "$host" "system closure" "$store_path"; then
         phase_a_errors=$((phase_a_errors + 1))
         continue
       fi
