@@ -14,7 +14,7 @@
     ...
   }: let
     # Configuration
-    dryRun = true;
+    dryRun = false;
     ciSystems = [
       # CI systems intentionally evaluated by Hercules CI.
       # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
