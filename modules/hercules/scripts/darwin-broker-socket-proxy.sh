@@ -147,5 +147,5 @@ fi
 
 exec "$SYSTEMD_SOCKET_PROXYD" \
   --connections-max=64 \
-  --exit-idle-time=20s \
+  --exit-idle-time="${NAMESPACE_DARWIN_LEASE_TTL_SECONDS}s" \
   "127.0.0.1:$UPSTREAM_PORT"

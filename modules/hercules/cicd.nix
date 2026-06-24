@@ -115,20 +115,6 @@
               text = builtins.readFile ./scripts/cachix-deploy-script.sh;
             };
           in {
-            # HCI builds these before running the effect.
-            systems = lib.mapAttrs' (name: cfg:
-              lib.nameValuePair name cfg.config.system.build.toplevel)
-            pinnableConfigurations;
-
-            rollbackScriptChecks =
-              lib.mapAttrs' (
-                name: cfg: let
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                in
-                  lib.nameValuePair name self.checks.${system}.validate-deploy-health-rollback-script
-              )
-              deployableConfigurations;
-
             effects.pin-and-deploy = hci-effects.mkEffect {
               inputs = dependencies;
 
