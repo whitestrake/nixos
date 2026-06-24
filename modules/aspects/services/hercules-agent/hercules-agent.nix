@@ -138,9 +138,6 @@
     agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
     enableBrokerDebug = true;
 
-    # Namespace builder public key
-    pubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF3H1NMNRQI83JrofeftT90IgyGadDKKeVJ+xDDeyC3V namespace-builder";
-
     builderHost = "namespace-mac";
     brokerName = host.name;
 
@@ -234,7 +231,6 @@
         Environment = [
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
           "NAMESPACE_BUILDER_KEY_PATH=${config.sops.secrets.namespaceBuilderKey.path}"
-          "NAMESPACE_DARWIN_BROKER_PUBLIC_KEY=${pubKey}"
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"

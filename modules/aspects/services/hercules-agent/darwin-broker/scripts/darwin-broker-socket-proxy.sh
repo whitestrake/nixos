@@ -104,19 +104,38 @@ ssh -nNT \
 TUNNEL_PID=$!
 echo "$TUNNEL_PID" > "$TUNNEL_PID_FILE"
 
-# Wait until local tunnel port is responsive
-for _ in $(seq 1 100); do
-  log_debug "waiting for tunnel readiness (${_}/100)"
-  if nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
+probe_tunnel() {
+  ssh -n \
+    -i "$NAMESPACE_BUILDER_KEY_PATH" \
+    -p "$UPSTREAM_PORT" \
+    -o HostName=127.0.0.1 \
+    -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=5 \
+    root@127.0.0.1 \
+    'echo tunnel-ready' >/dev/null 2>&1
+}
+
+for i in $(seq 1 60); do
+  log_debug "waiting for full tunnel SSH readiness (${i}/60)"
+
+  if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+    echo "Namespace SSH tunnel process exited before readiness." >&2
+    exit 1
+  fi
+
+  if probe_tunnel; then
     break
   fi
-  sleep 0.1
+
+  sleep 1
 done
 
-if ! nc -z 127.0.0.1 "$UPSTREAM_PORT"; then
-  echo "Timed out waiting for Namespace SSH tunnel on local port $UPSTREAM_PORT" >&2
+if ! probe_tunnel; then
+  echo "Timed out waiting for full Namespace SSH tunnel readiness on 127.0.0.1:$UPSTREAM_PORT" >&2
   kill "$TUNNEL_PID" 2>/dev/null || true
-  wait "$TUNNEL_PID" 2>/dev/null || true
   exit 1
 fi
 

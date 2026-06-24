@@ -34,8 +34,21 @@ if [ -f "$TUNNEL_PID_FILE" ]; then
   if [ -n "${TUNNEL_PID:-}" ]; then
     echo "Killing SSH tunnel PID $TUNNEL_PID..." >&2
     kill "$TUNNEL_PID" 2>/dev/null || true
-    wait "$TUNNEL_PID" 2>/dev/null || true
+
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+
+    if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+      echo "SSH tunnel PID $TUNNEL_PID did not exit after TERM; killing." >&2
+      kill -KILL "$TUNNEL_PID" 2>/dev/null || true
+    fi
   fi
+
+  rm -f "$TUNNEL_PID_FILE"
 fi
 
 # Destroy the Namespace instance if state exists
