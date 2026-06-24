@@ -136,11 +136,14 @@
     ...
   }: let
     agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
-    enableBrokerDebug = true;
+    enableBrokerDebug = false;
 
     builderHost = "namespace-mac";
     brokerName = host.name;
     runtimeKeyPath = "/run/namespace-darwin-builder/id_ed25519";
+
+    darwin-broker-common = pkgs.writeText "darwin-broker-common.sh" (builtins.readFile ./scripts/darwin-broker-common.sh);
+    darwin-guest-bootstrap = pkgs.writeText "darwin-guest-bootstrap.sh" (builtins.readFile ./scripts/darwin-guest-bootstrap.sh);
 
     darwin-broker-init = pkgs.writeShellApplication {
       name = "darwin-broker-init";
@@ -160,7 +163,6 @@
         namespace-cli
         jq
         coreutils
-        curl
         openssh
       ];
       text = builtins.readFile ./scripts/darwin-broker-ensure-instance.sh;
@@ -171,7 +173,6 @@
       runtimeInputs = with pkgs; [
         coreutils
         jq
-        openssh
         namespace-cli
       ];
       text = builtins.readFile ./scripts/darwin-broker-cleanup.sh;
@@ -183,7 +184,6 @@
         coreutils
         jq
         openssh
-        netcat
         namespace-cli
         darwin-broker-cleanup
         darwin-broker-ensure-instance
@@ -223,7 +223,7 @@
     '';
 
     systemd.sockets.namespace-mac = {
-      wantedBy = ["sockets.target"];
+      wantedBy = ["multi-user.target"];
       requires = ["namespace-darwin-builder-init.service"];
       after = ["namespace-darwin-builder-init.service"];
       socketConfig = {
@@ -247,8 +247,11 @@
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
           "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
+          "NAMESPACE_DARWIN_GUEST_BOOTSTRAP=${darwin-guest-bootstrap}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
+          "NAMESPACE_DARWIN_TUNNEL_PORT=22023"
           "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
           "SYSTEMD_SOCKET_PROXYD=${config.systemd.package}/lib/systemd/systemd-socket-proxyd"
         ];
@@ -262,9 +265,9 @@
         RestartSec = "2s";
         RestartSteps = 8;
         RestartMaxDelaySec = "45s";
-        StartLimitBurst = 12;
-        StartLimitIntervalSec = "2min";
       };
+      startLimitBurst = 12;
+      startLimitIntervalSec = 120;
     };
 
     systemd.services.namespace-darwin-builder-init = {
@@ -281,6 +284,7 @@
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
           "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
         ];
@@ -295,9 +299,11 @@
         Environment = [
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
           "NAMESPACE_DARWIN_FAILURE_LOOKBACK_SECONDS=300"
+          "NAMESPACE_DARWIN_TUNNEL_PORT=22023"
           "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
         ];
         ExecStart = "${darwin-broker-reaper}/bin/darwin-broker-reaper";
@@ -327,7 +333,7 @@
         {
           hostName = builderHost;
           system = "aarch64-darwin";
-          maxJobs = 1;
+          maxJobs = 3;
           supportedFeatures = ["big-parallel"];
           protocol = "ssh-ng";
         }

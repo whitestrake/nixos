@@ -27,6 +27,80 @@ if [ -z "$cache_name" ]; then
   exit 1
 fi
 
+if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+  echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
+  exit 1
+fi
+
+validate_json_array() {
+  local var_name="$1"
+  local value="$2"
+
+  if ! printf '%s\n' "$value" | jq -e 'type == "array"' >/dev/null; then
+    echo "ERROR: $var_name must be a JSON array." >&2
+    exit 1
+  fi
+}
+
+validate_required_field() {
+  local kind="$1"
+  local index="$2"
+  local field="$3"
+  local value="$4"
+
+  if [ -z "$value" ] || [ "$value" = "null" ]; then
+    echo "ERROR: malformed $kind item at index $index has no $field." >&2
+    return 1
+  fi
+}
+
+validate_build_items() {
+  local index=0 errors=0 item host store_path build_pin
+
+  while IFS= read -r item; do
+    host="$(jq -r '.host // empty' <<< "$item")"
+    store_path="$(jq -r '.storePath // empty' <<< "$item")"
+    build_pin="$(jq -r '.buildPin // empty' <<< "$item")"
+
+    validate_required_field "build" "$index" "host" "$host" || errors=$((errors + 1))
+    validate_required_field "build" "$index" "storePath" "$store_path" || errors=$((errors + 1))
+    validate_required_field "build" "$index" "buildPin" "$build_pin" || errors=$((errors + 1))
+    index=$((index + 1))
+  done < <(printf '%s\n' "$build_items" | jq -c '.[]')
+
+  if [ "$errors" -gt 0 ]; then
+    exit 1
+  fi
+}
+
+validate_deploy_items() {
+  local index=0 errors=0 item host system store_path deploy_pin rollback
+
+  while IFS= read -r item; do
+    host="$(jq -r '.host // empty' <<< "$item")"
+    system="$(jq -r '.system // empty' <<< "$item")"
+    store_path="$(jq -r '.storePath // empty' <<< "$item")"
+    deploy_pin="$(jq -r '.deployPin // empty' <<< "$item")"
+    rollback="$(jq -r '.rollbackScript // empty' <<< "$item")"
+
+    validate_required_field "deploy" "$index" "host" "$host" || errors=$((errors + 1))
+    validate_required_field "deploy" "$index" "system" "$system" || errors=$((errors + 1))
+    validate_required_field "deploy" "$index" "storePath" "$store_path" || errors=$((errors + 1))
+    validate_required_field "deploy" "$index" "deployPin" "$deploy_pin" || errors=$((errors + 1))
+    validate_required_field "deploy" "$index" "rollbackScript" "$rollback" || errors=$((errors + 1))
+    index=$((index + 1))
+  done < <(printf '%s\n' "$deploy_items" | jq -c '.[]')
+
+  if [ "$errors" -gt 0 ]; then
+    exit 1
+  fi
+}
+
+validate_json_array BUILD_ITEMS_JSON "$build_items"
+validate_json_array DEPLOY_ITEMS_JSON "$deploy_items"
+validate_build_items
+validate_deploy_items
+
 # Context logging
 echo "HCI mode: $hci_mode"
 echo "Deployment enabled: $deployment_enabled"
