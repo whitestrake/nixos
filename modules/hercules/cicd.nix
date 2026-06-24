@@ -84,6 +84,17 @@
 
     buildItemsJson = builtins.toJSON buildItems;
     deployItemsJson = builtins.toJSON deployItems;
+
+    # Dry effects are telemetry only. Do not make HCI realize every host
+    # closure before running a non-mutating report.
+    effectBuildItemsJson =
+      if effectiveHciMode == "dry"
+      then builtins.unsafeDiscardStringContext buildItemsJson
+      else buildItemsJson;
+    effectDeployItemsJson =
+      if effectiveHciMode == "dry"
+      then builtins.unsafeDiscardStringContext deployItemsJson
+      else deployItemsJson;
   in
     assert lib.assertMsg
     (builtins.elem configuredHciMode ["suppressed" "dry" "production"])
@@ -142,8 +153,8 @@
                 )}
 
                 export CACHIX_CACHE_NAME="whitestrake"
-                export BUILD_ITEMS_JSON=${escapeShellArg buildItemsJson}
-                export DEPLOY_ITEMS_JSON=${escapeShellArg deployItemsJson}
+                export BUILD_ITEMS_JSON=${escapeShellArg effectBuildItemsJson}
+                export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
 
                 export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
