@@ -1,4 +1,4 @@
-name: "Cachix Deploy: manual canary"
+name: "Cachix Deploy"
 run-name: >-
   ${{
     inputs.hosts == ''
