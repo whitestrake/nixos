@@ -11,10 +11,6 @@ deploy_items="${DEPLOY_ITEMS_JSON:-[]}"
 case "$hci_mode" in
   dry|production)
     ;;
-  suppressed)
-    echo "ERROR: HCI_MODE=suppressed reached the effect script; onPush suppression failed." >&2
-    exit 1
-    ;;
   *)
     echo "ERROR: invalid HCI_MODE: $hci_mode" >&2
     exit 1
