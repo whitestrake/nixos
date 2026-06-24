@@ -80,11 +80,12 @@
 
     # checks for CI matrix builds
     checks = lib.genAttrs config.systems (
-      system:
-        if deploy-rs.lib ? ${system}
+      system: let
+        sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
+      in
+        if deploy-rs.lib ? ${system} && sysDeployableNodes != {}
         then let
           pkgs = inputs.nixpkgs.legacyPackages.${system};
-          sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
           upstreamDeployChecks = deploy-rs.lib.${system}.deployChecks (mkDeploy sysDeployableNodes);
         in
           upstreamDeployChecks

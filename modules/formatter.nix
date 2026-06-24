@@ -11,6 +11,7 @@
       programs = {
         alejandra.enable = true;
         actionlint.enable = true;
+        shellcheck.enable = true;
         yamlfmt = {
           enable = true;
           settings.formatter = {

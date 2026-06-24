@@ -16,6 +16,7 @@
       den.aspects.user-mediaserver
       den.aspects.dev-tools
       den.aspects.vscode-server
+      den.aspects.hercules
     ];
 
     nixos = {
@@ -39,6 +40,9 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
+      boot.kernel.sysctl = {
+        "vm.swappiness" = 10;
+      };
 
       # Network hostname properties
       networking.hostId = "bffd5e86";
