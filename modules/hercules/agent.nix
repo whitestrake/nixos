@@ -11,9 +11,7 @@
     lib,
     host,
     ...
-  }: let
-    herculesCiConcurrentTasks = 2;
-  in {
+  }: {
     # Secrets configuration
     sops.secrets = {
       cachixPushToken = {};
@@ -75,12 +73,15 @@
     services.hercules-ci-agent = {
       enable = true;
       settings = {
-        concurrentTasks = herculesCiConcurrentTasks;
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
       };
     };
+
+    # GHC reserves 1T of virtual address space by default on 64-bit platforms.
+    # Keep worker forks from tripping Linux overcommit accounting.
+    systemd.services.hercules-ci-agent.environment.GHCRTS = "-xr128G";
   };
 
   den.aspects.hercules.nixbuild-linux-broker.nixos = {
