@@ -1,19 +1,4 @@
 {den, ...} @ flake: {
-  perSystem = {pkgs, ...}: {
-    checks.darwin-broker-ssh-stdin =
-      pkgs.runCommand "darwin-broker-ssh-stdin" {} ''
-        script=${./scripts/darwin-broker-ensure-instance.sh}
-
-        echo "Checking that stdin-fed SSH calls do not include -n..."
-        if grep -n '| ssh "''${SSH_OPTS\[@\]}" "\$id@\$host"' "$script"; then
-          echo "ERROR: authorized_keys install uses SSH_OPTS, whose -n option discards stdin." >&2
-          exit 1
-        fi
-
-        touch "$out"
-      '';
-  };
-
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
     den.aspects.hercules.namespace-darwin-broker
@@ -155,6 +140,19 @@
 
     builderHost = "namespace-mac";
     brokerName = host.name;
+    runtimeKeyPath = "/run/namespace-darwin-builder/id_ed25519";
+
+    darwin-broker-init = pkgs.writeShellApplication {
+      name = "darwin-broker-init";
+      runtimeInputs = with pkgs; [
+        namespace-cli
+        jq
+        coreutils
+        openssh
+        systemd
+      ];
+      text = builtins.readFile ./scripts/darwin-broker-init.sh;
+    };
 
     darwin-broker-ensure-instance = pkgs.writeShellApplication {
       name = "darwin-broker-ensure-instance";
@@ -205,7 +203,6 @@
     };
   in {
     # Secrets configuration
-    sops.secrets.namespaceBuilderKey.owner = agentUser;
     sops.secrets.namespaceHciToken.owner = agentUser;
 
     systemd.tmpfiles.rules = [
@@ -218,7 +215,7 @@
         HostName 127.0.0.1
         Port 22022
         User root
-        IdentityFile ${config.sops.secrets.namespaceBuilderKey.path}
+        IdentityFile ${runtimeKeyPath}
         BatchMode yes
         IdentitiesOnly yes
         StrictHostKeyChecking no
@@ -227,6 +224,8 @@
 
     systemd.sockets.namespace-mac = {
       wantedBy = ["sockets.target"];
+      requires = ["namespace-darwin-builder-init.service"];
+      after = ["namespace-darwin-builder-init.service"];
       socketConfig = {
         ListenStream = "127.0.0.1:22022";
         Backlog = 128;
@@ -237,7 +236,8 @@
 
     systemd.services.namespace-mac = {
       description = "Namespace macOS SSH socket proxy";
-      after = ["network-online.target"];
+      requires = ["namespace-darwin-builder-init.service"];
+      after = ["network-online.target" "namespace-darwin-builder-init.service"];
       wants = ["network-online.target"];
 
       serviceConfig = {
@@ -245,7 +245,7 @@
         User = agentUser;
         Environment = [
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
-          "NAMESPACE_BUILDER_KEY_PATH=${config.sops.secrets.namespaceBuilderKey.path}"
+          "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
           "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
@@ -267,14 +267,38 @@
       };
     };
 
+    systemd.services.namespace-darwin-builder-init = {
+      description = "Initialize Namespace macOS builder runtime state";
+      after = ["network-online.target" "sops-nix.service"];
+      wants = ["network-online.target"];
+      before = ["namespace-mac.socket" "namespace-mac.service"];
+      wantedBy = ["multi-user.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        User = agentUser;
+        Environment = [
+          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
+          "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
+          "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
+          "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
+        ];
+        ExecStart = "${darwin-broker-init}/bin/darwin-broker-init";
+      };
+    };
+
     systemd.services.namespace-darwin-builder-reaper = {
       description = "Reap idle Namespace macOS builder instances";
       serviceConfig = {
         Type = "oneshot";
         Environment = [
           "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
+          "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
+          "NAMESPACE_DARWIN_FAILURE_LOOKBACK_SECONDS=300"
+          "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
         ];
         ExecStart = "${darwin-broker-reaper}/bin/darwin-broker-reaper";
         User = agentUser;

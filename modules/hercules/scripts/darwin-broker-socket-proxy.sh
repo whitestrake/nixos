@@ -23,6 +23,7 @@ mkdir -p "$RUNDIR"
 STATE_FILE="$RUNDIR/state.json"
 LEASE_FILE="$RUNDIR/lease.json"
 TUNNEL_PID_FILE="$RUNDIR/tunnel.pid"
+FAILURE_FILE="$RUNDIR/failure.json"
 UPSTREAM_PORT=22023
 DEBUG="${NAMESPACE_DARWIN_BROKER_DEBUG:-false}"
 
@@ -34,8 +35,32 @@ log_debug() {
   esac
 }
 
+write_failure_marker() {
+  local now marker_instance_id tmp
+
+  now="$(date +%s)"
+  marker_instance_id="${instance_id:-}"
+  if [ -z "$marker_instance_id" ] && [ -f "$STATE_FILE" ]; then
+    marker_instance_id="$(jq -r '.instance_id // .cluster_id // .id // empty' < "$STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  tmp="$FAILURE_FILE.$$"
+  umask 077
+  jq -n \
+    --argjson timestamp "$now" \
+    --argjson pid "$$" \
+    --arg instance_id "$marker_instance_id" \
+    '{
+      timestamp: $timestamp,
+      pid: $pid
+    } + (if $instance_id == "" then {} else {instance_id: $instance_id} end)' \
+    > "$tmp"
+  mv "$tmp" "$FAILURE_FILE"
+}
+
 cleanup_on_failure() {
   log_debug "running cleanup_on_failure"
+  write_failure_marker || true
   darwin-broker-cleanup >&2 || true
 }
 trap cleanup_on_failure ERR

@@ -185,51 +185,6 @@ if [ -f "$STATE_FILE" ]; then
   fi
 fi
 
-# Find existing instance with labels
-EXISTING_ID=$(
-  nsc list -o json | jq -r '
-    .[]? |
-    ( if .labels | type == "array" then
-        reduce .labels[] as $l ({}; .[$l.name] = $l.value)
-      elif .labels | type == "object" then
-        .labels
-      elif .label | type == "array" then
-        reduce .label[] as $l ({}; .[$l.name] = $l.value)
-      else
-        {}
-      end
-    ) as $lbls |
-    select(
-      $lbls.purpose == "hci-darwin-builder" and
-      $lbls.repo == "whitestrake/nixos" and
-      $lbls.broker == "'"${NAMESPACE_DARWIN_BROKER_NAME}"'"
-    ) | .instance_id // .cluster_id // .id // empty
-  ' | head -n 1 || true
-)
-
-if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
-  log_debug "evaluating labeled existing instance $EXISTING_ID"
-  nsc describe "$EXISTING_ID" -o json > "$STATE_FILE.candidate"
-  INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
-  if [ -z "$INGRESS_DOMAIN" ] || [ "$INGRESS_DOMAIN" = "null" ]; then
-    nsc list -o json | jq --arg id "$EXISTING_ID" '.[]? | select(.instance_id == $id or .cluster_id == $id or .id == $id)' > "$STATE_FILE.candidate"
-    INGRESS_DOMAIN="$(jq -r '.ingress_domain // empty' < "$STATE_FILE.candidate" || true)"
-  fi
-  if [ -n "$INGRESS_DOMAIN" ] && [ "$INGRESS_DOMAIN" != "null" ]; then
-    REGION="$(printf '%s\n' "$INGRESS_DOMAIN" | cut -d. -f1)"
-    SSH_HOST="ssh.$REGION.namespace.so"
-    if check_ssh "$EXISTING_ID" "$SSH_HOST"; then
-      echo "Found running instance with matching labels: $EXISTING_ID" >&2
-      if ensure_sshd_2222 "$EXISTING_ID" "$SSH_HOST"; then
-        mv "$STATE_FILE.candidate" "$STATE_FILE"
-        date +%s > "$RUNDIR/last-used"
-        exit 0
-      fi
-    fi
-  fi
-  rm -f "$STATE_FILE.candidate"
-fi
-
 echo "Creating macOS instance on Namespace.so..." >&2
 log_debug "no reusable instance found; creating new instance"
 if ! INSTANCE_JSON=$(nsc create \
