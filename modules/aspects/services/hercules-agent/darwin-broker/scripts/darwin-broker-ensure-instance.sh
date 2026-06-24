@@ -78,6 +78,13 @@ SSH_OPTS=(
   -o UserKnownHostsFile=/dev/null
 )
 
+SSH_STDIN_OPTS=(
+  -i "$NAMESPACE_BUILDER_KEY_PATH"
+  -o BatchMode=yes
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+)
+
 check_ssh() {
   local id="$1"
   local ssh_host="$2"
@@ -101,22 +108,30 @@ ensure_sshd_2222() {
   local host="$2"
   log_debug "ensuring sshd on $host for $id"
 
-  log_debug "installing broker public key into /var/root/.ssh/authorized_keys on $id@$host"
-  if ! ROOT_AUTH_RESULT="$(
+  log_debug "installing broker public key into runner and root authorized_keys on $id@$host"
+  if ! RUNNER_AUTH_RESULT="$(
     printf '%s\n' "$BROKER_PUBLIC_KEY" \
-      | ssh "${SSH_OPTS[@]}" "$id@$host" \
-        'sudo -n mkdir -p /var/root/.ssh &&
-         sudo -n chmod 700 /var/root/.ssh &&
-         sudo -n tee /var/root/.ssh/authorized_keys >/dev/null' 2>&1
+      | ssh "${SSH_STDIN_OPTS[@]}" "$id@$host" \
+        'mkdir -p ~/.ssh &&
+         chmod 700 ~/.ssh &&
+         tee ~/.ssh/authorized_keys >/dev/null &&
+         chmod 600 ~/.ssh/authorized_keys' 2>&1
   )"; then
-    echo "Failed to create /var/root/.ssh and write authorized_keys on $id@$host." >&2
-    [ -n "$ROOT_AUTH_RESULT" ] && echo "$ROOT_AUTH_RESULT" >&2
+    echo "Failed to create ~/.ssh and write authorized_keys on $id@$host." >&2
+    [ -n "$RUNNER_AUTH_RESULT" ] && echo "$RUNNER_AUTH_RESULT" >&2
     return 1
   fi
 
-  if ! ROOT_AUTH_RESULT="$(ssh "${SSH_OPTS[@]}" "$id@$host" 'sudo -n chmod 600 /var/root/.ssh/authorized_keys' 2>&1)"; then
-    echo "Failed to set permissions for /var/root/.ssh/authorized_keys on $id@$host." >&2
-    echo "$ROOT_AUTH_RESULT" >&2
+  if ! ROOT_AUTH_RESULT="$(
+    printf '%s\n' "$BROKER_PUBLIC_KEY" \
+      | ssh "${SSH_STDIN_OPTS[@]}" "$id@$host" \
+        'sudo -n mkdir -p /var/root/.ssh &&
+         sudo -n chmod 700 /var/root/.ssh &&
+         sudo -n tee /var/root/.ssh/authorized_keys >/dev/null &&
+         sudo -n chmod 600 /var/root/.ssh/authorized_keys' 2>&1
+  )"; then
+    echo "Failed to create /var/root/.ssh and write authorized_keys on $id@$host." >&2
+    [ -n "$ROOT_AUTH_RESULT" ] && echo "$ROOT_AUTH_RESULT" >&2
     return 1
   fi
 

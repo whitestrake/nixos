@@ -1,4 +1,19 @@
 {den, ...} @ flake: {
+  perSystem = {pkgs, ...}: {
+    checks.darwin-broker-ssh-stdin =
+      pkgs.runCommand "darwin-broker-ssh-stdin" {} ''
+        script=${./darwin-broker/scripts/darwin-broker-ensure-instance.sh}
+
+        echo "Checking that stdin-fed SSH calls do not include -n..."
+        if grep -n '| ssh "''${SSH_OPTS\[@\]}" "\$id@\$host"' "$script"; then
+          echo "ERROR: authorized_keys install uses SSH_OPTS, whose -n option discards stdin." >&2
+          exit 1
+        fi
+
+        touch "$out"
+      '';
+  };
+
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
     den.aspects.hercules.namespace-darwin-broker
