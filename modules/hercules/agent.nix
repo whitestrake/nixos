@@ -2,7 +2,7 @@
   perSystem = {pkgs, ...}: {
     checks.darwin-broker-ssh-stdin =
       pkgs.runCommand "darwin-broker-ssh-stdin" {} ''
-        script=${./darwin-broker/scripts/darwin-broker-ensure-instance.sh}
+        script=${./scripts/darwin-broker-ensure-instance.sh}
 
         echo "Checking that stdin-fed SSH calls do not include -n..."
         if grep -n '| ssh "''${SSH_OPTS\[@\]}" "\$id@\$host"' "$script"; then
@@ -165,7 +165,7 @@
         curl
         openssh
       ];
-      text = builtins.readFile ./darwin-broker/scripts/darwin-broker-ensure-instance.sh;
+      text = builtins.readFile ./scripts/darwin-broker-ensure-instance.sh;
     };
 
     darwin-broker-cleanup = pkgs.writeShellApplication {
@@ -176,7 +176,7 @@
         openssh
         namespace-cli
       ];
-      text = builtins.readFile ./darwin-broker/scripts/darwin-broker-cleanup.sh;
+      text = builtins.readFile ./scripts/darwin-broker-cleanup.sh;
     };
 
     darwin-broker-socket-proxy = pkgs.writeShellApplication {
@@ -190,7 +190,7 @@
         darwin-broker-cleanup
         darwin-broker-ensure-instance
       ];
-      text = builtins.readFile ./darwin-broker/scripts/darwin-broker-socket-proxy.sh;
+      text = builtins.readFile ./scripts/darwin-broker-socket-proxy.sh;
     };
 
     darwin-broker-reaper = pkgs.writeShellApplication {
@@ -201,7 +201,7 @@
         coreutils
         systemd
       ];
-      text = builtins.readFile ./darwin-broker/scripts/darwin-broker-reaper.sh;
+      text = builtins.readFile ./scripts/darwin-broker-reaper.sh;
     };
   in {
     # Secrets configuration
