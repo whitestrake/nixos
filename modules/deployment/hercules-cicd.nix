@@ -25,13 +25,15 @@
       "aarch64-darwin"
     ];
 
-    hciMode =
-      if dryRun
-      then "dry"
-      else "production";
-
     isProductionBranch = config.repo.branch == "master";
-    deploymentEnabled = !dryRun && isProductionBranch;
+    productionRun = !dryRun && isProductionBranch;
+
+    hciMode =
+      if productionRun
+      then "production"
+      else "dry";
+
+    deploymentEnabled = productionRun;
 
     # We want to build all nixosConfigurations and darwinConfigurations
     pinnableNixosConfigurations = self.nixosConfigurations or {};

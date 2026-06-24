@@ -17,6 +17,7 @@
       den.aspects.dev-tools
       den.aspects.vscode-server
       den.aspects.hercules
+      den.aspects.hercules.namespace-darwin-broker
     ];
 
     nixos = {
@@ -42,6 +43,13 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
       boot.kernel.sysctl = {
         "vm.swappiness" = 10;
+      };
+      swapDevices = lib.mkForce [];
+      zramSwap = {
+        enable = true;
+        algorithm = "zstd";
+        memoryPercent = 50;
+        priority = 100;
       };
 
       # Network hostname properties

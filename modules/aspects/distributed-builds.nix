@@ -19,6 +19,7 @@
     config,
     host,
     lib,
+    pkgs,
     nixBuilder ? [],
     nixBuilders ? [],
     ...
@@ -48,6 +49,7 @@
         # them to trusted-users.
         users.users.builder.isSystemUser = true;
         users.users.builder.group = "nogroup";
+        users.users.builder.shell = pkgs.bashInteractive;
         users.users.builder.openssh.authorizedKeys.keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJEs1Rivn0+fX55kjEuAerbgSckJyfHd0D8M+fM1dGtm nix-builder"];
         nix.settings.trusted-users = ["builder"];
       })

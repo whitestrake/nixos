@@ -1,7 +1,7 @@
 {den, ...} @ flake: {
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
-    den.aspects.hercules.namespace-darwin-broker
+    # den.aspects.hercules.namespace-darwin-broker
     den.aspects.hercules.nixbuild-linux-broker
   ];
 
@@ -225,8 +225,6 @@
 
     systemd.sockets.namespace-mac = {
       wantedBy = ["multi-user.target"];
-      requires = ["namespace-darwin-builder-init.service"];
-      after = ["namespace-darwin-builder-init.service"];
       socketConfig = {
         ListenStream = "127.0.0.1:22022";
         Backlog = 128;
@@ -275,7 +273,7 @@
       description = "Initialize Namespace macOS builder runtime state";
       after = ["network-online.target" "sops-nix.service"];
       wants = ["network-online.target"];
-      before = ["namespace-mac.socket" "namespace-mac.service"];
+      before = ["namespace-mac.service"];
       wantedBy = ["multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
