@@ -6,6 +6,8 @@ hci_mode="${HCI_MODE:-dry}"
 deployment_enabled="${DEPLOYMENT_ENABLED:-false}"
 build_items="${BUILD_ITEMS_JSON:-[]}"
 deploy_items="${DEPLOY_ITEMS_JSON:-[]}"
+deploy_spec_path="${DEPLOY_SPEC_PATH:-}"
+deploy_spec_pin="${DEPLOY_SPEC_PIN:-built-deploy-spec}"
 
 # Mode validation
 case "$hci_mode" in
@@ -25,6 +27,11 @@ fi
 
 if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
+  exit 1
+fi
+
+if [ -z "$deploy_spec_path" ]; then
+  echo "ERROR: DEPLOY_SPEC_PATH is empty." >&2
   exit 1
 fi
 
@@ -173,6 +180,60 @@ require_store_path() {
   echo "ERROR: expected $description for $host is not available to the effect runner: $store_path" >&2
   echo "HCI should build selected host outputs before production deployment effects run." >&2
   return 1
+}
+
+pin_built_deploy_spec() {
+  local previous_built rollback
+
+  previous_built="$(pin_path "$deploy_spec_pin")"
+
+  if [ "$previous_built" = "$deploy_spec_path" ]; then
+    echo "Built deploy spec already pinned:"
+    echo "  $deploy_spec_pin -> $previous_built"
+    return 0
+  fi
+
+  echo "Built deploy spec differs:"
+  echo "  previous: ${previous_built:-[none]}"
+  echo "  current:  $deploy_spec_path"
+
+  if is_dry_run; then
+    while IFS= read -r rollback; do
+      [ -n "$rollback" ] || continue
+      echo "[dry-run] would push rollback script for manual deploy spec: $rollback"
+    done < <(printf '%s\n' "$deploy_items" | jq -r '[.[].rollbackScript] | unique[]')
+    echo "[dry-run] would push deploy spec: $deploy_spec_path"
+    echo "[dry-run] would pin deploy spec: $deploy_spec_pin -> $deploy_spec_path"
+    return 0
+  fi
+
+  while IFS= read -r rollback; do
+    [ -n "$rollback" ] || continue
+
+    require_store_path "manual deploy spec" "rollback script" "$rollback" || return 1
+
+    echo "Ensuring rollback script is present in Cachix for manual deploys: $rollback"
+    if ! with_retry cachix push "$cache_name" "$rollback"; then
+      echo "Failed to push rollback script for manual deploy spec to cachix: $rollback" >&2
+      return 1
+    fi
+  done < <(printf '%s\n' "$deploy_items" | jq -r '[.[].rollbackScript] | unique[]')
+
+  require_store_path "deploy spec" "deploy spec" "$deploy_spec_path" || return 1
+
+  echo "Ensuring deploy spec is present in Cachix..."
+  if ! with_retry cachix push "$cache_name" "$deploy_spec_path"; then
+    echo "Failed to push deploy spec to cachix." >&2
+    return 1
+  fi
+
+  echo "Pinning built deploy spec: $deploy_spec_pin -> $deploy_spec_path"
+  if ! with_retry cachix pin "$cache_name" "$deploy_spec_pin" "$deploy_spec_path"; then
+    echo "Failed to pin deploy spec to cachix." >&2
+    return 1
+  fi
+
+  pins="$(fetch_pins)"
 }
 
 probe_cachix_agent() {
@@ -378,6 +439,16 @@ done < <(printf '%s\n' "$build_items" | jq -c '.[]')
 
 if [ "$phase_a_errors" -gt 0 ]; then
   echo "Phase A completed with $phase_a_errors errors. Skipping deploy phase." >&2
+  exit 1
+fi
+
+echo ""
+echo "============================================================"
+echo "PHASE A.5: Deploy Spec Pinning"
+echo "============================================================"
+
+if ! pin_built_deploy_spec; then
+  echo "Deploy spec pinning failed. Skipping deploy phase." >&2
   exit 1
 fi
 

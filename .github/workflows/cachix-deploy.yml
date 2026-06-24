@@ -1,0 +1,64 @@
+name: "Cachix Deploy: manual canary"
+run-name: >-
+  ${{
+    inputs.hosts == ''
+    && 'Manual Cachix deploy preview'
+    || format(
+      'Manual Cachix deploy: {0}{1}',
+      inputs.hosts,
+      inputs.force && ' (forced)' || ''
+    )
+  }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: "Comma-separated hosts to deploy. Empty previews changed hosts; all deploys every deployable host."
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Redeploy selected hosts even when deployed-host-* already matches built state."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: cachix-deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: "Manual Cachix deploy"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Configure Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Deploy selected Cachix agents
+        shell: bash
+        env:
+          CACHIX_CACHE_NAME: whitestrake
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+          CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
+          CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
+          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy
+        run: bash modules/deployment/scripts/cachix-manual-deploy-script.sh

@@ -47,6 +47,10 @@
         && !(cfg.config.wsl.enable or false))
       (self.nixosConfigurations or {});
 
+    deployableSystems =
+      lib.sort builtins.lessThan
+      (lib.unique (lib.mapAttrsToList (_name: cfg: cfg.pkgs.stdenv.hostPlatform.system) deployableConfigurations));
+
     mkBuildItem = name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
@@ -77,6 +81,21 @@
     effectDeployItemsJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON (lib.mapAttrsToList mkDeployItem deployableConfigurations)
     );
+    effectDeploySpecJson = builtins.unsafeDiscardStringContext (
+      builtins.toJSON {
+        agents =
+          lib.mapAttrs
+          (_name: cfg: toString cfg.config.system.build.toplevel)
+          deployableConfigurations;
+        rollbackScript =
+          lib.listToAttrs
+          (builtins.map (system: {
+              name = system;
+              value = toString self.packages.${system}.deploy-health-rollback-script;
+            })
+            deployableSystems);
+      }
+    );
   in {
     inherit ciSystems;
 
@@ -101,6 +120,8 @@
           runtimeInputs = dependencies;
           text = builtins.readFile ./scripts/cachix-deploy-script.sh;
         };
+
+        deploySpec = pkgs.writeTextDir "deploy.json" effectDeploySpecJson;
       in {
         checks = lib.mkForce {
           inherit (self.checks) x86_64-linux aarch64-linux;
@@ -131,6 +152,8 @@
             export CACHIX_CACHE_NAME="whitestrake"
             export BUILD_ITEMS_JSON=${escapeShellArg effectBuildItemsJson}
             export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
+            export DEPLOY_SPEC_PATH=${escapeShellArg "${deploySpec}"}
+            export DEPLOY_SPEC_PIN="built-deploy-spec"
 
             export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
