@@ -171,14 +171,26 @@ pin_deployed_state() {
 
 path_available_in_cache() {
   local store_path="$1"
+  local store_name store_hash cache_base
 
-  nix path-info --store "$binary_cache_url" "$store_path" >/dev/null 2>&1
+  store_name="${store_path#/nix/store/}"
+  if [ "$store_name" = "$store_path" ]; then
+    return 1
+  fi
+
+  store_hash="${store_name%%-*}"
+  if [ -z "$store_hash" ] || [ "$store_hash" = "$store_name" ]; then
+    return 1
+  fi
+
+  cache_base="${binary_cache_url%/}"
+  curl -fsS -o /dev/null "$cache_base/$store_hash.narinfo" >/dev/null 2>&1
 }
 
 path_available_locally() {
   local store_path="$1"
 
-  nix path-info "$store_path" >/dev/null 2>&1
+  [ -e "$store_path" ]
 }
 
 path_available_in_cache_with_retry() {
