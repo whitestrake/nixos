@@ -149,7 +149,7 @@ pin_path() {
     <<< "$pins"
 }
 
-pin_deployed_state() {
+pin_state() {
   local pin_name="$1"
   local store_path="$2"
   local payload
@@ -276,7 +276,7 @@ pin_built_deploy_spec() {
   ensure_cached_path "deploy spec" "deploy spec" "$deploy_spec_path" || return 1
 
   echo "Pinning built deploy spec: $deploy_spec_pin -> $deploy_spec_path"
-  if ! with_retry cachix pin "$cache_name" "$deploy_spec_pin" "$deploy_spec_path"; then
+  if ! pin_state "$deploy_spec_pin" "$deploy_spec_path"; then
     echo "Failed to pin deploy spec to cachix." >&2
     return 1
   fi
@@ -394,7 +394,7 @@ deploy_one() {
 
   echo "Deployment succeeded for $host. Pinning deployed state:"
   echo "  $deploy_pin -> $store_path"
-  if ! pin_deployed_state "$deploy_pin" "$store_path"; then
+  if ! pin_state "$deploy_pin" "$store_path"; then
     echo "Failed to pin deployed state for $host." >&2
     return 1
   fi
@@ -458,7 +458,7 @@ while read -r item; do
       fi
 
       echo "Pinning built state: $build_pin -> $store_path"
-      if ! with_retry cachix pin "$cache_name" "$build_pin" "$store_path"; then
+      if ! pin_state "$build_pin" "$store_path"; then
         echo "Failed to pin $host to cachix." >&2
         phase_a_errors=$((phase_a_errors + 1))
         continue

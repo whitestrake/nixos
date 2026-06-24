@@ -1,7 +1,7 @@
 {den, ...} @ flake: {
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
-    den.aspects.hercules.namespace-darwin-broker
+    # den.aspects.hercules.namespace-darwin-broker
     den.aspects.hercules.nixbuild-linux-broker
   ];
 
