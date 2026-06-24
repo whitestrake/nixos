@@ -79,9 +79,23 @@
       };
     };
 
-    # GHC reserves 1T of virtual address space by default on 64-bit platforms.
-    # Keep worker forks from tripping Linux overcommit accounting.
-    systemd.services.hercules-ci-agent.environment.GHCRTS = "-xr128G";
+    systemd.services.hercules-ci-agent = {
+      # GHC reserves 1T of virtual address space by default on 64-bit platforms.
+      # Keep worker forks from tripping Linux overcommit accounting.
+      environment.GHCRTS = "-xr128G";
+
+      # HCI effects run under the agent. If Cachix Deploy switches the same host
+      # that is currently running an effect, restarting the agent can kill the
+      # effect before it updates pins and reports success.
+      stopIfChanged = false;
+      restartIfChanged = false;
+    };
+
+    # Effects execute on the local agent after their derivation has been
+    # realised. Mark native x86_64 Linux agents explicitly so effect
+    # derivations cannot be treated like ordinary cross-realizable builds.
+    nix.settings.extra-system-features =
+      lib.optionals (host.system == "x86_64-linux") ["hci-effect-runner"];
   };
 
   den.aspects.hercules.nixbuild-linux-broker.nixos = {

@@ -78,7 +78,12 @@
     # deploy-rs configurations
     deploy = mkDeploy deployableNodes;
 
-    # checks for CI matrix builds
+    # Lightweight deploy-rs schema validation for CI matrix builds.
+    # deploy-rs' upstream deployChecks intentionally reference full system
+    # closures. That is useful for deploy-rs-only CI, but it makes these tiny
+    # checks force huge host graphs in HCI, so keep the context-stripped schema
+    # check here and leave full host closure verification to the real flake
+    # outputs.
     checks = lib.genAttrs config.systems (
       system: let
         sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
@@ -86,16 +91,13 @@
         if deploy-rs.lib ? ${system} && sysDeployableNodes != {}
         then let
           pkgs = inputs.nixpkgs.legacyPackages.${system};
-          upstreamDeployChecks = deploy-rs.lib.${system}.deployChecks (mkDeploy sysDeployableNodes);
-        in
-          upstreamDeployChecks
-          // {
-            deploy-schema-fast = mkFastDeploySchemaCheck {
-              inherit pkgs;
-              deploy = mkDeploy sysDeployableNodes;
-              deployRsSrc = inputs.deploy-rs;
-            };
-          }
+        in {
+          deploy-schema-fast = mkFastDeploySchemaCheck {
+            inherit pkgs;
+            deploy = mkDeploy sysDeployableNodes;
+            deployRsSrc = inputs.deploy-rs;
+          };
+        }
         else {}
     );
   };

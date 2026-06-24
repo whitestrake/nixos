@@ -84,6 +84,67 @@
       osConfig,
       ...
     }: let
+      mcp-nixos = inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos;
+      homeassistant-mcp = pkgs.unstable.ha-mcp;
+      komodo-mcp = pkgs.myPkgs.komodo-mcp-server;
+      contextlessExe = pkg: command: builtins.unsafeDiscardStringContext "${pkg}/bin/${command}";
+
+      mkMcpSecretWrapper = {
+        name,
+        package,
+        command,
+        envFiles,
+      }:
+        pkgs.writeShellApplication {
+          inherit name;
+          text = ''
+            set -euo pipefail
+
+            read_secret() {
+              local var="$1"
+              local path="$2"
+              local value
+
+              if ! value="$(< "$path")"; then
+                printf '%s: failed to read %s from %s\n' "$0" "$var" "$path" >&2
+                exit 1
+              fi
+
+              export "$var=$value"
+            }
+
+            ${lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (
+                var: path: "read_secret ${lib.escapeShellArg var} ${lib.escapeShellArg path}"
+              )
+              envFiles
+            )}
+
+            exec ${lib.escapeShellArg "${package}/bin/${command}"} "$@"
+          '';
+        };
+
+      homeassistant-mcp-wrapper = mkMcpSecretWrapper {
+        name = "mcp-homeassistant";
+        package = homeassistant-mcp;
+        command = "ha-mcp";
+        envFiles = {
+          HOMEASSISTANT_URL = osConfig.sops.secrets.homeAssistantURL.path;
+          HOMEASSISTANT_TOKEN = osConfig.sops.secrets.homeAssistantToken.path;
+        };
+      };
+
+      komodo-mcp-wrapper = mkMcpSecretWrapper {
+        name = "mcp-komodo";
+        package = komodo-mcp;
+        command = "komodo-mcp-server";
+        envFiles = {
+          KOMODO_URL = osConfig.sops.secrets.komodoURL.path;
+          KOMODO_API_KEY = osConfig.sops.secrets.komodoKey.path;
+          KOMODO_API_SECRET = osConfig.sops.secrets.komodoSecret.path;
+        };
+      };
+
       codexMcpServers =
         lib.mapAttrs (
           name: server:
@@ -105,27 +166,9 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos.command = let
-            system = host.system;
-            mcp-nixos = inputs.mcp-nixos-pr.packages.${system}.mcp-nixos;
-          in "${mcp-nixos}/bin/mcp-nixos";
-
-          homeassistant = {
-            command = "${pkgs.unstable.ha-mcp}/bin/ha-mcp";
-            env = {
-              HOMEASSISTANT_URL.file = osConfig.sops.secrets.homeAssistantURL.path;
-              HOMEASSISTANT_TOKEN.file = osConfig.sops.secrets.homeAssistantToken.path;
-            };
-          };
-
-          komodo = {
-            command = "${pkgs.myPkgs.komodo-mcp-server}/bin/komodo-mcp-server";
-            env = {
-              KOMODO_URL.file = osConfig.sops.secrets.komodoURL.path;
-              KOMODO_API_KEY.file = osConfig.sops.secrets.komodoKey.path;
-              KOMODO_API_SECRET.file = osConfig.sops.secrets.komodoSecret.path;
-            };
-          };
+          nixos.command = contextlessExe mcp-nixos "mcp-nixos";
+          homeassistant.command = contextlessExe homeassistant-mcp-wrapper "mcp-homeassistant";
+          komodo.command = contextlessExe komodo-mcp-wrapper "mcp-komodo";
         };
       };
 
@@ -177,6 +220,14 @@
             mcp_servers = codexMcpServers;
           };
       };
+
+      home.packages = [
+        mcp-nixos
+        homeassistant-mcp
+        komodo-mcp
+        homeassistant-mcp-wrapper
+        komodo-mcp-wrapper
+      ];
     };
   };
 
