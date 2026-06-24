@@ -165,6 +165,20 @@ pin_deployed_state() {
     >/dev/null
 }
 
+require_store_path() {
+  local host="$1"
+  local description="$2"
+  local store_path="$3"
+
+  if nix path-info "$store_path" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "ERROR: expected $description for $host is not available to the effect runner: $store_path" >&2
+  echo "HCI should build selected host outputs before production deployment effects run." >&2
+  return 1
+}
+
 probe_cachix_agent() {
   local host="$1"
   local code
@@ -256,6 +270,9 @@ deploy_one() {
     return 0
   fi
 
+  require_store_path "$host" "system closure" "$store_path" || return 1
+  require_store_path "$host" "rollback script" "$rollback" || return 1
+
   echo "Ensuring rollback script is present in Cachix..."
   if ! with_retry cachix push "$cache_name" "$rollback"; then
     echo "Failed to push rollback script for $host to Cachix." >&2
@@ -336,6 +353,11 @@ while read -r item; do
       echo "[dry-run] would pin built state: $build_pin -> $store_path"
     else
       echo "Ensuring system closure is present in Cachix..."
+      if ! require_store_path "$host" "system closure" "$store_path"; then
+        phase_a_errors=$((phase_a_errors + 1))
+        continue
+      fi
+
       if ! with_retry cachix push "$cache_name" "$store_path"; then
         echo "Failed to push $host to cachix." >&2
         phase_a_errors=$((phase_a_errors + 1))

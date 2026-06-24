@@ -85,16 +85,14 @@
     buildItemsJson = builtins.toJSON buildItems;
     deployItemsJson = builtins.toJSON deployItems;
 
-    # Dry effects are telemetry only. Do not make HCI realize every host
-    # closure before running a non-mutating report.
-    effectBuildItemsJson =
-      if effectiveHciMode == "dry"
-      then builtins.unsafeDiscardStringContext buildItemsJson
-      else buildItemsJson;
-    effectDeployItemsJson =
-      if effectiveHciMode == "dry"
-      then builtins.unsafeDiscardStringContext deployItemsJson
-      else deployItemsJson;
+    mkConfigurationOutput = _name: cfg: {
+      config.system.build.toplevel = cfg.config.system.build.toplevel;
+    };
+
+    # Effect payloads are control data only. HCI build outputs below are the
+    # explicit dependency contract for host closure verification.
+    effectBuildItemsJson = builtins.unsafeDiscardStringContext buildItemsJson;
+    effectDeployItemsJson = builtins.unsafeDiscardStringContext deployItemsJson;
   in
     assert lib.assertMsg
     (builtins.elem configuredHciMode ["suppressed" "dry" "production"])
@@ -129,6 +127,12 @@
             checks = lib.mkForce {
               inherit (self.checks) x86_64-linux aarch64-linux;
             };
+            nixosConfigurations = lib.mkForce (
+              lib.mapAttrs mkConfigurationOutput pinnableNixosConfigurations
+            );
+            darwinConfigurations = lib.mkForce (
+              lib.mapAttrs mkConfigurationOutput pinnableDarwinConfigurations
+            );
 
             effects.pin-and-deploy = hci-effects.mkEffect {
               inputs = dependencies;
