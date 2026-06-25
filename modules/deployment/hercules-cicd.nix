@@ -165,12 +165,6 @@
             jq
           ];
 
-          builtStateScript = pkgs.writeShellApplication {
-            name = "hci-built-state-script";
-            runtimeInputs = dependencies;
-            text = builtins.readFile ./scripts/hci-built-state-script.sh;
-          };
-
           hostBuildJson = builtins.unsafeDiscardStringContext (
             builtins.toJSON (mkBuildStateItem kind name cfg)
           );
@@ -184,9 +178,8 @@
             effectScript = with lib; ''
               export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
               export HCI_BUILT_STATE_HISTORY_LIMIT="10"
-              export -f getStateFile putStateFile
 
-              exec ${builtStateScript}/bin/hci-built-state-script
+              source ${./scripts/hci-built-state-script.sh}
             '';
           };
         });
