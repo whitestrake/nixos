@@ -40,65 +40,8 @@
       sshOpts = ["-A"];
       nodes = lib.mapAttrs mkNode nodesList;
     };
-
-    stripDeployPathContexts = deploy:
-      deploy
-      // {
-        nodes = builtins.mapAttrs (
-          _nodeName: node:
-            node
-            // {
-              profiles = builtins.mapAttrs (
-                _profileName: profile:
-                  profile
-                  // {
-                    path = builtins.unsafeDiscardStringContext (toString profile.path);
-                  }
-              ) (node.profiles or {});
-            }
-        ) (deploy.nodes or {});
-      };
-
-    mkFastDeploySchemaCheck = {
-      pkgs,
-      deploy,
-      deployRsSrc,
-    }:
-      pkgs.runCommand "deploy-rs-schema-fast" {
-        nativeBuildInputs = [pkgs.check-jsonschema];
-        deployJson = builtins.toJSON (stripDeployPathContexts deploy);
-        passAsFile = ["deployJson"];
-      } ''
-        check-jsonschema \
-          --schemafile ${deployRsSrc}/interface.json \
-          "$deployJsonPath"
-        touch "$out"
-      '';
   in {
     # deploy-rs configurations
     deploy = mkDeploy deployableNodes;
-
-    # Lightweight deploy-rs schema validation for CI matrix builds.
-    # deploy-rs' upstream deployChecks intentionally reference full system
-    # closures. That is useful for deploy-rs-only CI, but it makes these tiny
-    # checks force huge host graphs in HCI, so keep the context-stripped schema
-    # check here and leave full host closure verification to the real flake
-    # outputs.
-    checks = lib.genAttrs config.systems (
-      system: let
-        sysDeployableNodes = lib.filterAttrs (_: n: n.system == system) deployableNodes;
-      in
-        if deploy-rs.lib ? ${system} && sysDeployableNodes != {}
-        then let
-          pkgs = inputs.nixpkgs.legacyPackages.${system};
-        in {
-          deploy-schema-fast = mkFastDeploySchemaCheck {
-            inherit pkgs;
-            deploy = mkDeploy sysDeployableNodes;
-            deployRsSrc = inputs.deploy-rs;
-          };
-        }
-        else {}
-    );
   };
 }

@@ -2,25 +2,11 @@
 set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-}"
-hci_mode="${HCI_MODE:-dry}"
-deployment_enabled="${DEPLOYMENT_ENABLED:-false}"
-build_items="${BUILD_ITEMS_JSON:-[]}"
 deploy_items="${DEPLOY_ITEMS_JSON:-[]}"
 deploy_spec_path="${DEPLOY_SPEC_PATH:-}"
 deploy_spec_pin="${DEPLOY_SPEC_PIN:-built-deploy-spec}"
 binary_cache_url="${CACHIX_BINARY_CACHE_URL:-https://$cache_name.cachix.org}"
 
-# Mode validation
-case "$hci_mode" in
-  dry|production)
-    ;;
-  *)
-    echo "ERROR: invalid HCI_MODE: $hci_mode" >&2
-    exit 1
-    ;;
-esac
-
-# Cache name validation
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
   exit 1
@@ -58,25 +44,6 @@ validate_required_field() {
   fi
 }
 
-validate_build_items() {
-  local index=0 errors=0 item host store_path build_pin
-
-  while IFS= read -r item; do
-    host="$(jq -r '.host // empty' <<< "$item")"
-    store_path="$(jq -r '.storePath // empty' <<< "$item")"
-    build_pin="$(jq -r '.buildPin // empty' <<< "$item")"
-
-    validate_required_field "build" "$index" "host" "$host" || errors=$((errors + 1))
-    validate_required_field "build" "$index" "storePath" "$store_path" || errors=$((errors + 1))
-    validate_required_field "build" "$index" "buildPin" "$build_pin" || errors=$((errors + 1))
-    index=$((index + 1))
-  done < <(printf '%s\n' "$build_items" | jq -c '.[]')
-
-  if [ "$errors" -gt 0 ]; then
-    exit 1
-  fi
-}
-
 validate_deploy_items() {
   local index=0 errors=0 item host system store_path deploy_pin rollback
 
@@ -92,6 +59,16 @@ validate_deploy_items() {
     validate_required_field "deploy" "$index" "storePath" "$store_path" || errors=$((errors + 1))
     validate_required_field "deploy" "$index" "deployPin" "$deploy_pin" || errors=$((errors + 1))
     validate_required_field "deploy" "$index" "rollbackScript" "$rollback" || errors=$((errors + 1))
+
+    case "$deploy_pin" in
+      deployed-host-*)
+        ;;
+      *)
+        echo "ERROR: deploy item at index $index has non-deployed pin: $deploy_pin" >&2
+        errors=$((errors + 1))
+        ;;
+    esac
+
     index=$((index + 1))
   done < <(printf '%s\n' "$deploy_items" | jq -c '.[]')
 
@@ -100,36 +77,21 @@ validate_deploy_items() {
   fi
 }
 
-validate_json_array BUILD_ITEMS_JSON "$build_items"
-validate_json_array DEPLOY_ITEMS_JSON "$deploy_items"
-validate_build_items
-validate_deploy_items
-
-# Context logging
-echo "HCI mode: $hci_mode"
-echo "Deployment enabled: $deployment_enabled"
-hci_branch="${HCI_BRANCH:-}"
-echo "HCI branch: ${hci_branch:-[unknown]}"
-
-is_dry_run() {
-  [ "$hci_mode" = "dry" ]
-}
-
 with_retry() {
   local n=1 max=3 delay=2
   while true; do
     if "$@"; then
       break
+    fi
+
+    if [[ $n -lt $max ]]; then
+      n=$((n + 1))
+      echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
+      sleep "$delay"
+      delay=$((delay * 2))
     else
-      if [[ $n -lt $max ]]; then
-        ((n++))
-        echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
-        sleep $delay
-        delay=$((delay * 2))
-      else
-        echo "Command failed after $n attempts." >&2
-        return 1
-      fi
+      echo "Command failed after $n attempts." >&2
+      return 1
     fi
   done
 }
@@ -153,6 +115,15 @@ pin_state() {
   local pin_name="$1"
   local store_path="$2"
   local payload
+
+  case "$pin_name" in
+    built-deploy-spec|deployed-host-*)
+      ;;
+    *)
+      echo "ERROR: refusing to update unexpected pin: $pin_name" >&2
+      return 1
+      ;;
+  esac
 
   payload="$(
     jq -n \
@@ -238,7 +209,7 @@ ensure_cached_path() {
   fi
 
   echo "ERROR: expected $description for $host is neither in Cachix nor local to the effect runner: $store_path" >&2
-  echo "HCI should build selected host outputs and upload them to Cachix before production deployment effects run." >&2
+  echo "HCI should build selected deployment outputs and upload them to Cachix before deployment effects run." >&2
   return 1
 }
 
@@ -257,19 +228,8 @@ pin_built_deploy_spec() {
   echo "  previous: ${previous_built:-[none]}"
   echo "  current:  $deploy_spec_path"
 
-  if is_dry_run; then
-    while IFS= read -r rollback; do
-      [ -n "$rollback" ] || continue
-      echo "[dry-run] would push rollback script for manual deploy spec: $rollback"
-    done < <(printf '%s\n' "$deploy_items" | jq -r '[.[].rollbackScript] | unique[]')
-    echo "[dry-run] would push deploy spec: $deploy_spec_path"
-    echo "[dry-run] would pin deploy spec: $deploy_spec_pin -> $deploy_spec_path"
-    return 0
-  fi
-
   while IFS= read -r rollback; do
     [ -n "$rollback" ] || continue
-
     ensure_cached_path "manual deploy spec" "rollback script" "$rollback" || return 1
   done < <(printf '%s\n' "$deploy_items" | jq -r '[.[].rollbackScript] | unique[]')
 
@@ -277,7 +237,7 @@ pin_built_deploy_spec() {
 
   echo "Pinning built deploy spec: $deploy_spec_pin -> $deploy_spec_path"
   if ! pin_state "$deploy_spec_pin" "$deploy_spec_path"; then
-    echo "Failed to pin deploy spec to cachix." >&2
+    echo "Failed to pin deploy spec to Cachix." >&2
     return 1
   fi
 
@@ -323,27 +283,6 @@ deploy_one() {
   deploy_pin="$(jq -r '.deployPin' <<< "$item")"
   rollback="$(jq -r '.rollbackScript' <<< "$item")"
 
-  # deploy item validation here
-  if [ -z "$host" ] || [ "$host" = "null" ]; then
-    echo "ERROR: malformed deploy item with missing host: $item" >&2
-    return 1
-  fi
-
-  if [ -z "$store_path" ] || [ "$store_path" = "null" ]; then
-    echo "ERROR: malformed deploy item for $host has no storePath." >&2
-    return 1
-  fi
-
-  if [ -z "$deploy_pin" ] || [ "$deploy_pin" = "null" ]; then
-    echo "ERROR: malformed deploy item for $host has no deployPin." >&2
-    return 1
-  fi
-
-  if [ -z "$rollback" ] || [ "$rollback" = "null" ]; then
-    echo "ERROR: deployable host $host has no rollback script. Refusing to continue." >&2
-    return 1
-  fi
-
   deployed="$(pin_path "$deploy_pin")"
 
   if [ "$deployed" = "$store_path" ]; then
@@ -356,6 +295,11 @@ deploy_one() {
   echo "  deployed: ${deployed:-[none]}"
   echo "  current:  $store_path"
 
+  if [ -z "${CACHIX_ACTIVATE_TOKEN:-}" ]; then
+    echo "ERROR: CACHIX_ACTIVATE_TOKEN is empty for mutating deployment." >&2
+    return 1
+  fi
+
   deploy_spec="$tmpdir/deploy-$host.json"
 
   jq -n \
@@ -365,15 +309,6 @@ deploy_one() {
     --arg rollback "$rollback" \
     '{"agents": {($agent): $path}, "rollbackScript": {($sys): $rollback}}' \
     > "$deploy_spec"
-
-  if is_dry_run; then
-    echo "[dry-run] would push rollback script for $host: $rollback"
-    echo "[dry-run] would probe Cachix Deploy agent for $host: skipped in dry mode"
-    echo "[dry-run] would activate Cachix Deploy for $host with spec:"
-    cat "$deploy_spec"
-    echo "[dry-run] would pin deployed state: $deploy_pin -> $store_path"
-    return 0
-  fi
 
   ensure_cached_path "$host" "system closure" "$store_path" || return 1
   ensure_cached_path "$host" "rollback script" "$rollback" || return 1
@@ -400,87 +335,19 @@ deploy_one() {
   fi
 }
 
+validate_json_array DEPLOY_ITEMS_JSON "$deploy_items"
+validate_deploy_items
+
 tmpdir="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmpdir"
 }
 trap cleanup EXIT
 
-if printf '%s\n' "$build_items" | jq -e 'type == "array" and length == 0' >/dev/null; then
-  echo "No build/pin targets found. Nothing to pin or deploy."
-  exit 0
-fi
-
 pins="$(fetch_pins)"
 
 echo "============================================================"
-echo "PHASE A: Built-State Pinning"
-echo "============================================================"
-
-phase_a_errors=0
-
-while read -r item; do
-  host="$(jq -r '.host' <<< "$item")"
-  store_path="$(jq -r '.storePath' <<< "$item")"
-  build_pin="$(jq -r '.buildPin' <<< "$item")"
-
-  echo "--- target: $host ---"
-
-  if [ -z "$host" ] || [ "$host" = "null" ]; then
-    echo "ERROR: malformed build item with missing host." >&2
-    phase_a_errors=$((phase_a_errors + 1))
-    continue
-  fi
-
-  if [ -z "$store_path" ] || [ "$store_path" = "null" ]; then
-    echo "ERROR: malformed build item for $host has no storePath." >&2
-    phase_a_errors=$((phase_a_errors + 1))
-    continue
-  fi
-
-  previous_built="$(pin_path "$build_pin")"
-
-  if [ "$previous_built" = "$store_path" ]; then
-    echo "Built state already pinned for $host."
-  else
-    echo "Built state differs for $host:"
-    echo "  previous: ${previous_built:-[none]}"
-    echo "  current:  $store_path"
-
-    if is_dry_run; then
-      echo "[dry-run] would push system closure for $host: $store_path"
-      echo "[dry-run] would pin built state: $build_pin -> $store_path"
-    else
-      echo "Ensuring system closure is present in Cachix..."
-      if ! ensure_cached_path "$host" "system closure" "$store_path"; then
-        phase_a_errors=$((phase_a_errors + 1))
-        continue
-      fi
-
-      echo "Pinning built state: $build_pin -> $store_path"
-      if ! pin_state "$build_pin" "$store_path"; then
-        echo "Failed to pin $host to cachix." >&2
-        phase_a_errors=$((phase_a_errors + 1))
-        continue
-      fi
-
-      pins="$(fetch_pins)" || {
-        echo "Failed to fetch pins after pinning $host." >&2
-        phase_a_errors=$((phase_a_errors + 1))
-        continue
-      }
-    fi
-  fi
-done < <(printf '%s\n' "$build_items" | jq -c '.[]')
-
-if [ "$phase_a_errors" -gt 0 ]; then
-  echo "Phase A completed with $phase_a_errors errors. Skipping deploy phase." >&2
-  exit 1
-fi
-
-echo ""
-echo "============================================================"
-echo "PHASE A.5: Deploy Spec Pinning"
+echo "Deploy Spec Pinning"
 echo "============================================================"
 
 if ! pin_built_deploy_spec; then
@@ -488,24 +355,14 @@ if ! pin_built_deploy_spec; then
   exit 1
 fi
 
-if [ "$deployment_enabled" != "true" ]; then
-  if is_dry_run; then
-    echo "HCI dry mode: deployment mutations disabled."
-    echo "Dry-run deploy candidate evaluation only; no Cachix pins or host state will change."
-  else
-    echo "Deployment disabled for this branch/mode; deployment skipped after built-state pins."
-    exit 0
-  fi
-fi
-
 if printf '%s\n' "$deploy_items" | jq -e 'type == "array" and length == 0' >/dev/null; then
-  echo "No Cachix Deploy targets found. Built-state pins are complete."
+  echo "No Cachix Deploy targets found. Deploy spec pinning is complete."
   exit 0
 fi
 
 echo ""
 echo "============================================================"
-echo "PHASE B: Cachix Deployment"
+echo "Cachix Deployment"
 echo "============================================================"
 
 phase_b_errors=0
@@ -541,6 +398,6 @@ for host in "${!deploy_pids[@]}"; do
 done
 
 if [ "$phase_b_errors" -gt 0 ]; then
-  echo "Phase B completed with $phase_b_errors errors." >&2
+  echo "Deployment completed with $phase_b_errors errors." >&2
   exit 1
 fi

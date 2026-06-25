@@ -91,11 +91,12 @@
       restartIfChanged = false;
     };
 
-    # Effects execute on the local agent after their derivation has been
-    # realised. Mark native x86_64 Linux agents explicitly so effect
-    # derivations cannot be treated like ordinary cross-realizable builds.
+    # HCI executes an effect derivation's builder inside the local effect
+    # container. Mark only native x86_64 Linux agents for x86_64 effects; remote
+    # builders and substituters can realise paths, but they cannot make an
+    # aarch64 agent execute an x86_64 builder.
     nix.settings.extra-system-features =
-      lib.optionals (host.system == "x86_64-linux") ["hci-effect-runner"];
+      lib.optionals (host.system == "x86_64-linux") ["hci-x86_64-effect-runner"];
   };
 
   den.aspects.hercules.nixbuild-linux-broker.nixos = {

@@ -13,9 +13,7 @@
     lib,
     ...
   }: let
-    # Configuration
-    dryRun = false;
-    effectRunnerFeature = "hci-effect-runner";
+    effectRunnerFeature = "hci-x86_64-effect-runner";
     ciSystems = [
       # CI systems intentionally evaluated by Hercules CI.
       # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
@@ -27,22 +25,12 @@
     ];
 
     isProductionBranch = config.repo.branch == "master";
-    productionRun = !dryRun && isProductionBranch;
 
-    hciMode =
-      if productionRun
-      then "production"
-      else "dry";
-
-    deploymentEnabled = productionRun;
-
-    # We want to build all nixosConfigurations and darwinConfigurations
     pinnableNixosConfigurations = self.nixosConfigurations or {};
     pinnableDarwinConfigurations = self.darwinConfigurations or {};
     pinnableConfigurations =
       pinnableNixosConfigurations // pinnableDarwinConfigurations;
 
-    # We want to deploy to all nixosConfigurations with Cachix Agent active
     deployableConfigurations =
       lib.filterAttrs
       (_name: cfg:
@@ -53,6 +41,15 @@
     deployableSystems =
       lib.sort builtins.lessThan
       (lib.unique (lib.mapAttrsToList (_name: cfg: cfg.pkgs.stdenv.hostPlatform.system) deployableConfigurations));
+
+    linuxFormatterSystems =
+      lib.filter
+      (system: lib.hasSuffix "-linux" system && builtins.hasAttr system (self.formatter or {}))
+      ciSystems;
+
+    mkToplevelOutput = cfg: {
+      config.system.build.toplevel = cfg.config.system.build.toplevel;
+    };
 
     mkBuildItem = name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
@@ -76,14 +73,18 @@
       rollbackScript = toString rollbackScript;
     };
 
-    # Effect payloads are control data only. HCI's default flake output
-    # traversal supplies the host toplevel build outputs.
+    # Effect JSON is control-plane data only. The real build contract is
+    # expressed by configurationOutputs and deploymentBuildOutputs below.
     effectBuildItemsJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON (lib.mapAttrsToList mkBuildItem pinnableConfigurations)
     );
     effectDeployItemsJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON (lib.mapAttrsToList mkDeployItem deployableConfigurations)
     );
+
+    # Temporary manual-deploy bridge: the GitHub workflow fetches only this
+    # deploy.json path from Cachix. Keep it contextless until that workflow no
+    # longer depends on built-deploy-spec.
     effectDeploySpecJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON {
         agents =
@@ -99,80 +100,144 @@
             deployableSystems);
       }
     );
+
+    defaultOutputs = {
+      checks.x86_64-linux = {
+        inherit (self.checks.x86_64-linux) check-flake-file treefmt;
+      };
+      formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
+    };
+
+    configurationOutputs = {
+      nixosConfigurations =
+        lib.mapAttrs
+        (_name: cfg: mkToplevelOutput cfg)
+        pinnableNixosConfigurations;
+      darwinConfigurations =
+        lib.mapAttrs
+        (_name: cfg: mkToplevelOutput cfg)
+        pinnableDarwinConfigurations;
+    };
+
+    deploymentBuildOutputs = {
+      nixosConfigurations =
+        lib.mapAttrs
+        (_name: cfg: mkToplevelOutput cfg)
+        deployableConfigurations;
+      packages =
+        lib.genAttrs
+        deployableSystems
+        (system: {
+          deploy-health-rollback-script = self.packages.${system}.deploy-health-rollback-script;
+        });
+    };
+
+    nixosConfigurationJobs =
+      lib.mapAttrs'
+      (name: cfg:
+        lib.nameValuePair "nixosConfiguration-${name}" {
+          outputs.nixosConfigurations.${name} = mkToplevelOutput cfg;
+        })
+      pinnableNixosConfigurations;
+
+    darwinConfigurationJobs =
+      lib.mapAttrs'
+      (name: cfg:
+        lib.nameValuePair "darwinConfiguration-${name}" {
+          outputs.darwinConfigurations.${name} = mkToplevelOutput cfg;
+        })
+      pinnableDarwinConfigurations;
   in {
     inherit ciSystems;
 
-    # Configure the deployment effect using Cachix Deploy
-    onPush = {
-      default.outputs = withSystem "x86_64-linux" ({
-        pkgs,
-        hci-effects,
-        ...
-      }: let
-        dependencies = with pkgs; [
-          bash
-          coreutils
-          curl
-          jq
-          nix
-          cachix
-        ];
+    onPush =
+      {
+        default.outputs = lib.mkForce defaultOutputs;
 
-        deployScript = pkgs.writeShellApplication {
-          name = "cachix-deploy-script";
-          runtimeInputs = dependencies;
-          text = builtins.readFile ./scripts/cachix-deploy-script.sh;
-        };
+        configurations.outputs = withSystem "x86_64-linux" ({
+          pkgs,
+          hci-effects,
+          ...
+        }: let
+          dependencies = with pkgs; [
+            bash
+            coreutils
+            curl
+            jq
+            nix
+            cachix
+          ];
 
-        deploySpec = pkgs.writeTextDir "deploy.json" effectDeploySpecJson;
-      in {
-        checks = lib.mkForce {
-          inherit (self.checks) x86_64-linux aarch64-linux;
-        };
+          builtPinScript = pkgs.writeShellApplication {
+            name = "cachix-built-pin-script";
+            runtimeInputs = dependencies;
+            text = builtins.readFile ./scripts/cachix-built-pin-script.sh;
+          };
+        in
+          configurationOutputs
+          // {
+            effects.pin-built-hosts = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
+              inputs = dependencies;
+              requiredSystemFeatures = [effectRunnerFeature];
+              secretsMap = lib.genAttrs ["cachixPush"] lib.id;
 
-        effects.pin-and-deploy = hci-effects.mkEffect {
-          inputs = dependencies;
-          requiredSystemFeatures = [effectRunnerFeature];
+              effectScript = with lib; ''
+                export CACHIX_CACHE_NAME="whitestrake"
+                export BUILD_ITEMS_JSON=${escapeShellArg effectBuildItemsJson}
+                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
-          secretsMap =
-            lib.genAttrs (
-              ["cachixPush"]
-              ++ lib.optionals deploymentEnabled [
-                "cachixDeploy"
-                "cachixPersonal"
-              ]
-            )
-            lib.id;
+                exec ${builtPinScript}/bin/cachix-built-pin-script
+              '';
+            });
+          });
 
-          effectScript = with lib; ''
-            export HCI_MODE=${escapeShellArg hciMode}
-            export DEPLOYMENT_ENABLED="${boolToString deploymentEnabled}"
-            export HCI_BRANCH=${escapeShellArg (
-              if config.repo.branch == null
-              then ""
-              else config.repo.branch
-            )}
+        deployment.outputs = withSystem "x86_64-linux" ({
+          pkgs,
+          hci-effects,
+          ...
+        }: let
+          dependencies = with pkgs; [
+            bash
+            coreutils
+            curl
+            jq
+            nix
+            cachix
+          ];
 
-            export CACHIX_CACHE_NAME="whitestrake"
-            export BUILD_ITEMS_JSON=${escapeShellArg effectBuildItemsJson}
-            export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
-            export DEPLOY_SPEC_PATH=${escapeShellArg "${deploySpec}"}
-            export DEPLOY_SPEC_PIN="built-deploy-spec"
+          deployScript = pkgs.writeShellApplication {
+            name = "cachix-deploy-script";
+            runtimeInputs = dependencies;
+            text = builtins.readFile ./scripts/cachix-deploy-script.sh;
+          };
 
-            export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+          deploySpec = pkgs.writeTextDir "deploy.json" effectDeploySpecJson;
+        in
+          deploymentBuildOutputs
+          // {
+            inherit deploySpec;
 
-            if [ "$DEPLOYMENT_ENABLED" = "true" ]; then
-              export CACHIX_ACTIVATE_TOKEN="$(readSecretString cachixDeploy .token)"
-              export CACHIX_PERSONAL_TOKEN="$(readSecretString cachixPersonal .token)"
-            else
-              export CACHIX_ACTIVATE_TOKEN=""
-              export CACHIX_PERSONAL_TOKEN=""
-            fi
+            effects.pin-and-deploy = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
+              inputs = dependencies;
+              requiredSystemFeatures = [effectRunnerFeature];
+              secretsMap = lib.genAttrs ["cachixPush" "cachixDeploy" "cachixPersonal"] lib.id;
 
-            exec ${deployScript}/bin/cachix-deploy-script
-          '';
-        };
-      });
-    };
+              effectScript = with lib; ''
+                export CACHIX_CACHE_NAME="whitestrake"
+                export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
+                export DEPLOY_SPEC_PATH=${escapeShellArg "${deploySpec}"}
+                export DEPLOY_SPEC_PIN="built-deploy-spec"
+
+                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+                export CACHIX_ACTIVATE_TOKEN="$(readSecretString cachixDeploy .token)"
+                export CACHIX_PERSONAL_TOKEN="$(readSecretString cachixPersonal .token)"
+
+                exec ${deployScript}/bin/cachix-deploy-script
+              '';
+            });
+          });
+      }
+      // nixosConfigurationJobs
+      // darwinConfigurationJobs;
   };
 }

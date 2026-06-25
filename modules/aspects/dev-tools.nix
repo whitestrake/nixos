@@ -87,7 +87,6 @@
       mcp-nixos = inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos;
       homeassistant-mcp = pkgs.unstable.ha-mcp;
       komodo-mcp = pkgs.myPkgs.komodo-mcp-server;
-      contextlessExe = pkg: command: builtins.unsafeDiscardStringContext "${pkg}/bin/${command}";
 
       mkMcpSecretWrapper = {
         name,
@@ -166,9 +165,9 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos.command = contextlessExe mcp-nixos "mcp-nixos";
-          homeassistant.command = contextlessExe homeassistant-mcp-wrapper "mcp-homeassistant";
-          komodo.command = contextlessExe komodo-mcp-wrapper "mcp-komodo";
+          nixos.command = "${mcp-nixos}/bin/mcp-nixos";
+          homeassistant.command = "${homeassistant-mcp-wrapper}/bin/mcp-homeassistant";
+          komodo.command = "${komodo-mcp-wrapper}/bin/mcp-komodo";
         };
       };
 
