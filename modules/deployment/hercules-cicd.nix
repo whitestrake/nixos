@@ -221,8 +221,19 @@
               inputs = dependencies;
               requiredSystemFeatures = [effectRunnerFeature];
               secretsMap = lib.genAttrs ["cachixPush" "cachixDeploy" "cachixPersonal"] lib.id;
+              __hci_effect_mounts = builtins.toJSON {
+                "/effect-locks" = "deploymentLocks";
+              };
 
               effectScript = with lib; ''
+                lock="/effect-locks/pin-and-deploy.lock"
+                mkdir -p "$(dirname "$lock")"
+                printf 'pid=%s\nstarted=%s\n' "$$" "$(date +%s)" > "$lock"
+                cleanup_lock() {
+                  rm -f "$lock"
+                }
+                trap cleanup_lock EXIT INT TERM
+
                 export CACHIX_CACHE_NAME="whitestrake"
                 export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
                 export DEPLOY_SPEC_PATH=${escapeShellArg "${deploySpec}"}
@@ -232,7 +243,7 @@
                 export CACHIX_ACTIVATE_TOKEN="$(readSecretString cachixDeploy .token)"
                 export CACHIX_PERSONAL_TOKEN="$(readSecretString cachixPersonal .token)"
 
-                exec ${deployScript}/bin/cachix-deploy-script
+                ${deployScript}/bin/cachix-deploy-script
               '';
             });
           });

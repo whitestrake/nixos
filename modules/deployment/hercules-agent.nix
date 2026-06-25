@@ -76,8 +76,23 @@
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
+        effectMountables.deploymentLocks = {
+          source = "/run/hercules-ci-effect-locks";
+          readOnly = false;
+          condition = {
+            and = [
+              {isOwner = "whitestrake";}
+              {isRepo = "nixos";}
+              {isBranch = "master";}
+            ];
+          };
+        };
       };
     };
+
+    systemd.tmpfiles.rules = [
+      "d /run/hercules-ci-effect-locks 0750 hercules-ci-agent hercules-ci-agent -"
+    ];
 
     systemd.services.hercules-ci-agent = {
       # GHC reserves 1T of virtual address space by default on 64-bit platforms.
@@ -90,6 +105,47 @@
       stopIfChanged = false;
       restartIfChanged = false;
     };
+
+    systemd.services.hercules-ci-agent-restarter.script = lib.mkBefore ''
+      effect_lock="/run/hercules-ci-effect-locks/pin-and-deploy.lock"
+
+      effect_lock_is_active() {
+        if [ ! -f "$effect_lock" ]; then
+          return 1
+        fi
+
+        current_time="$(${pkgs.coreutils}/bin/date +%s)"
+        lock_time="$(${pkgs.coreutils}/bin/stat -c %Y "$effect_lock" 2>/dev/null || echo 0)"
+        age=$((current_time - lock_time))
+
+        if [ "$age" -gt 3600 ]; then
+          echo "hercules-ci-agent-restarter: Stale pin-and-deploy effect lock (age: ''${age}s). Removing."
+          ${pkgs.coreutils}/bin/rm -f "$effect_lock"
+          return 1
+        fi
+
+        echo "hercules-ci-agent-restarter: pin-and-deploy effect lock is active (age: ''${age}s)."
+        return 0
+      }
+
+      if effect_lock_is_active; then
+        ${pkgs.coreutils}/bin/sleep 10
+
+        if effect_lock_is_active; then
+          delay_seconds="''${HERCULES_CI_AGENT_RESTART_DEFER_SECONDS:-30}"
+          unit_suffix="$(${pkgs.coreutils}/bin/date +%s)"
+          echo "hercules-ci-agent-restarter: pin-and-deploy effect is still active. Deferring restart by ''${delay_seconds}s."
+          ${pkgs.systemd}/bin/systemd-run \
+            --unit="hercules-ci-agent-restarter-deferred-''${unit_suffix}" \
+            --description="Deferred Hercules CI Agent restart" \
+            --collect \
+            --on-active="''${delay_seconds}s" \
+            ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service \
+            || echo "hercules-ci-agent-restarter: WARNING: failed to schedule deferred restart."
+          exit 0
+        fi
+      fi
+    '';
 
     # HCI executes an effect derivation's builder inside the local effect
     # container. Mark only native x86_64 Linux agents for x86_64 effects; remote
