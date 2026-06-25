@@ -11,7 +11,12 @@
     lib,
     host,
     ...
-  }: {
+  }: let
+    agentExecStart = config.systemd.services.hercules-ci-agent.serviceConfig.ExecStart;
+    agentConfigPath =
+      lib.head (lib.splitString " " (lib.last (lib.splitString "--config " agentExecStart)));
+    agentBin = "${config.services.hercules-ci-agent.package}/libexec/hercules-ci-agent";
+  in {
     # Secrets configuration
     sops.secrets = {
       cachixPushToken = {};
@@ -146,6 +151,47 @@
         fi
       fi
     '';
+
+    systemd.services.hercules-ci-agent-config-restarter = {
+      description = "Trigger Hercules CI Agent restarter when the running agent is stale";
+      wantedBy = ["multi-user.target"];
+      after = ["hercules-ci-agent.service"];
+      restartTriggers = [
+        agentExecStart
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        main_pid="$(${pkgs.systemd}/bin/systemctl show -p MainPID --value hercules-ci-agent.service 2>/dev/null || true)"
+        if [ -z "$main_pid" ] || [ "$main_pid" = "0" ] || [ ! -e "/proc/$main_pid" ]; then
+          echo "hercules-ci-agent-config-restarter: agent is not running; no restart needed."
+          exit 0
+        fi
+
+        running_config="$(
+          ${pkgs.coreutils}/bin/tr '\0' '\n' < "/proc/$main_pid/cmdline" \
+            | ${pkgs.gnused}/bin/sed -n '/^--config$/ { n; p; q; }'
+        )"
+        running_bin="$(${pkgs.coreutils}/bin/readlink -f "/proc/$main_pid/exe" 2>/dev/null || true)"
+        expected_bin="$(${pkgs.coreutils}/bin/readlink -f "${agentBin}" 2>/dev/null || true)"
+
+        if [ "$running_config" != "${agentConfigPath}" ]; then
+          echo "hercules-ci-agent-config-restarter: config changed from ''${running_config:-unknown} to ${agentConfigPath}."
+          ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service
+          exit 0
+        fi
+
+        if [ -n "$running_bin" ] && [ -n "$expected_bin" ] && [ "$running_bin" != "$expected_bin" ]; then
+          echo "hercules-ci-agent-config-restarter: binary changed from $running_bin to $expected_bin."
+          ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service
+          exit 0
+        fi
+
+        echo "hercules-ci-agent-config-restarter: running agent is current."
+      '';
+    };
 
     # HCI executes an effect derivation's builder inside the local effect
     # container. Mark only native x86_64 Linux agents for x86_64 effects; remote
