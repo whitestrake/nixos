@@ -17,17 +17,9 @@
 
   config = {
     caches = {
-      nix-community = {
-        url = "https://nix-community.cachix.org?priority=41";
-        key = "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=";
-      };
       cachix = {
         url = "https://whitestrake.cachix.org?priority=50";
         key = "whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=";
-      };
-      garnix = {
-        url = "https://cache.garnix.io?priority=51";
-        key = "cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=";
       };
     };
   };
