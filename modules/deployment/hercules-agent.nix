@@ -77,6 +77,7 @@
     # Enable and configure Hercules CI Agent
     services.hercules-ci-agent = {
       enable = true;
+      tomlFile = lib.mkForce (pkgs.writeText "hercules-ci-agent.json" (builtins.toJSON config.services.hercules-ci-agent.settings));
       settings = {
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
