@@ -73,6 +73,26 @@
       rollbackScript = toString rollbackScript;
     };
 
+    mkBuildStateItem = kind: name: cfg: let
+      system = cfg.pkgs.stdenv.hostPlatform.system;
+      systemClosure = cfg.config.system.build.toplevel;
+      isDeployable = builtins.hasAttr name deployableConfigurations;
+    in
+      {
+        host = name;
+        inherit kind system;
+        storePath = toString systemClosure;
+        deployable = isDeployable;
+        ref = config.repo.ref;
+        branch = config.repo.branch;
+        rev = config.repo.rev;
+        shortRev = config.repo.shortRev;
+        jobName = "${kind}-${name}";
+      }
+      // lib.optionalAttrs isDeployable {
+        rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+      };
+
     # Effect JSON is control-plane data only. The real build contract is
     # expressed by configurationOutputs and deploymentBuildOutputs below.
     effectBuildItemsJson = builtins.unsafeDiscardStringContext (
@@ -132,20 +152,54 @@
         });
     };
 
+    mkConfigurationJob = kind: name: cfg:
+      lib.nameValuePair "${kind}-${name}" {
+        outputs = withSystem "x86_64-linux" ({
+          pkgs,
+          hci-effects,
+          ...
+        }: let
+          dependencies = with pkgs; [
+            bash
+            coreutils
+            jq
+          ];
+
+          builtStateScript = pkgs.writeShellApplication {
+            name = "hci-built-state-script";
+            runtimeInputs = dependencies;
+            text = builtins.readFile ./scripts/hci-built-state-script.sh;
+          };
+
+          hostBuildJson = builtins.unsafeDiscardStringContext (
+            builtins.toJSON (mkBuildStateItem kind name cfg)
+          );
+        in {
+          "${kind}s".${name} = mkToplevelOutput cfg;
+
+          effects.record-built-state = hci-effects.mkEffect {
+            inputs = dependencies;
+            requiredSystemFeatures = [effectRunnerFeature];
+
+            effectScript = with lib; ''
+              export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
+              export HCI_BUILT_STATE_HISTORY_LIMIT="10"
+              export -f getStateFile putStateFile
+
+              exec ${builtStateScript}/bin/hci-built-state-script
+            '';
+          };
+        });
+      };
+
     nixosConfigurationJobs =
       lib.mapAttrs'
-      (name: cfg:
-        lib.nameValuePair "nixosConfiguration-${name}" {
-          outputs.nixosConfigurations.${name} = mkToplevelOutput cfg;
-        })
+      (mkConfigurationJob "nixosConfiguration")
       pinnableNixosConfigurations;
 
     darwinConfigurationJobs =
       lib.mapAttrs'
-      (name: cfg:
-        lib.nameValuePair "darwinConfiguration-${name}" {
-          outputs.darwinConfigurations.${name} = mkToplevelOutput cfg;
-        })
+      (mkConfigurationJob "darwinConfiguration")
       pinnableDarwinConfigurations;
   in {
     inherit ciSystems;
