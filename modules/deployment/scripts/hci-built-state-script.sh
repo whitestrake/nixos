@@ -4,7 +4,6 @@ set -euo pipefail
 cache_name="${CACHIX_CACHE_NAME:-}"
 host_build_json="${HOST_BUILD_JSON:-}"
 state_history_limit="${HCI_BUILT_STATE_HISTORY_LIMIT:-10}"
-binary_cache_url="${CACHIX_BINARY_CACHE_URL:-https://$cache_name.cachix.org}"
 
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
@@ -37,7 +36,14 @@ required_filter='
   and (.jobName | type == "string" and length > 0)
   and (.deployable | type == "boolean")
   and (.buildPin | type == "string" and startswith("built-host-"))
-  and (if .deployable then (.rollbackScript | type == "string" and startswith("/nix/store/")) else true end)
+  and (
+    if .deployable then
+      (.rollbackScript | type == "string" and startswith("/nix/store/"))
+      and (.rollbackPin | type == "string" and startswith("built-rollback-"))
+    else
+      true
+    end
+  )
 '
 
 if ! printf '%s\n' "$host_build_json" | jq -e "$required_filter" >/dev/null; then
@@ -101,10 +107,10 @@ pin_state() {
   local payload
 
   case "$pin_name" in
-    built-host-*)
+    built-host-*|built-rollback-*)
       ;;
     *)
-      echo "ERROR: refusing to update non-built pin: $pin_name" >&2
+      echo "ERROR: refusing to update unexpected pin: $pin_name" >&2
       return 1
       ;;
   esac
@@ -124,86 +130,25 @@ pin_state() {
     >/dev/null
 }
 
-path_available_in_cache() {
-  local path="$1"
-  local store_name store_hash cache_base
-
-  store_name="${path#/nix/store/}"
-  if [ "$store_name" = "$path" ]; then
-    return 1
-  fi
-
-  store_hash="${store_name%%-*}"
-  if [ -z "$store_hash" ] || [ "$store_hash" = "$store_name" ]; then
-    return 1
-  fi
-
-  cache_base="${binary_cache_url%/}"
-  curl -fsS -o /dev/null "$cache_base/$store_hash.narinfo" >/dev/null 2>&1
-}
-
-path_available_locally() {
-  local path="$1"
-
-  [ -e "$path" ]
-}
-
-path_available_in_cache_with_retry() {
-  local path="$1"
-  local n=1 max=3 delay=2
-
-  while true; do
-    if path_available_in_cache "$path"; then
-      return 0
-    fi
-
-    if [[ $n -lt $max ]]; then
-      n=$((n + 1))
-      sleep "$delay"
-      delay=$((delay * 2))
-    else
-      return 1
-    fi
-  done
-}
-
-ensure_cached_path() {
-  local description="$1"
-  local path="$2"
-
-  if path_available_in_cache "$path"; then
-    echo "Cachix already has $description for $host: $path"
-    return 0
-  fi
-
-  if path_available_locally "$path"; then
-    echo "Pushing $description for $host to Cachix: $path"
-    if with_retry cachix push "$cache_name" "$path"; then
-      return 0
-    fi
-
-    echo "ERROR: failed to push $description for $host to Cachix: $path" >&2
-    return 1
-  fi
-
-  if path_available_in_cache_with_retry "$path"; then
-    echo "Cachix now has $description for $host: $path"
-    return 0
-  fi
-
-  echo "ERROR: expected $description for $host is neither in Cachix nor local to the effect runner: $path" >&2
-  echo "HCI should build this host output and make it available before build-state recording runs." >&2
-  return 1
-}
-
 pins="$(fetch_pins)"
 previous_built="$(pin_path "$build_pin")"
 
-ensure_cached_path "system closure" "$store_path"
-
 if [ "$deployable" = "true" ]; then
   rollback_script="$(printf '%s\n' "$host_build_json" | jq -r '.rollbackScript')"
-  ensure_cached_path "rollback script" "$rollback_script"
+  rollback_pin="$(printf '%s\n' "$host_build_json" | jq -r '.rollbackPin')"
+  previous_rollback="$(pin_path "$rollback_pin")"
+
+  if [ "$previous_rollback" = "$rollback_script" ]; then
+    echo "Rollback script already pinned for $host:"
+    echo "  $rollback_pin -> $rollback_script"
+  else
+    echo "Rollback script differs for $host:"
+    echo "  previous: ${previous_rollback:-[none]}"
+    echo "  current:  $rollback_script"
+
+    echo "Pinning rollback script: $rollback_pin -> $rollback_script"
+    pin_state "$rollback_pin" "$rollback_script"
+  fi
 fi
 
 if [ "$previous_built" = "$store_path" ]; then

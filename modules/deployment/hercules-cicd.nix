@@ -62,6 +62,7 @@
       }
       // lib.optionalAttrs isDeployable {
         rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+        rollbackPin = "built-rollback-${name}";
       };
 
     # Record which hosts are deployable for this revision so GitHub knows which
@@ -85,39 +86,39 @@
           ...
         }: let
           system = cfg.pkgs.stdenv.hostPlatform.system;
+          isDeployable = builtins.hasAttr name deployableConfigurations;
           hostBuildJson = builtins.unsafeDiscardStringContext (
             builtins.toJSON (mkBuildStateItem kind name cfg)
           );
-        in {
-          "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
+        in
+          {
+            "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
 
-          effects.record-built-state = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-            inputs =
-              (with pkgs; [
+            effects.record-built-state = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
+              inputs = with pkgs; [
                 bash
                 coreutils
                 curl
                 jq
-                nix
-                cachix
-              ])
-              ++ lib.optional
-              (builtins.hasAttr name deployableConfigurations)
-              (self.packages.${system}.deploy-health-rollback-script);
+              ];
 
-            requiredSystemFeatures = [effectRunnerFeature];
-            secretsMap = lib.genAttrs ["cachixPush"] lib.id;
+              requiredSystemFeatures = [effectRunnerFeature];
+              secretsMap = lib.genAttrs ["cachixPush"] lib.id;
 
-            effectScript = with lib; ''
-              export CACHIX_CACHE_NAME="whitestrake"
-              export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
-              export HCI_BUILT_STATE_HISTORY_LIMIT="10"
-              export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+              effectScript = with lib; ''
+                export CACHIX_CACHE_NAME="whitestrake"
+                export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
+                export HCI_BUILT_STATE_HISTORY_LIMIT="10"
+                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
-              source ${./scripts/hci-built-state-script.sh}
-            '';
+                source ${./scripts/hci-built-state-script.sh}
+              '';
+            });
+          }
+          // lib.optionalAttrs isDeployable {
+            packages.${system}."deploy-health-rollback-script-${name}" =
+              self.packages.${system}.deploy-health-rollback-script;
           });
-        });
       };
   in {
     inherit ciSystems;
