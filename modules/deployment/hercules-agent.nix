@@ -84,13 +84,11 @@
         effectMountables.deploymentLocks = {
           source = "/run/hercules-ci-effect-locks";
           readOnly = false;
-          condition = {
-            and = [
-              {isOwner = "whitestrake";}
-              {isRepo = "nixos";}
-              {isBranch = "master";}
-            ];
-          };
+          # Keep this as a TOML scalar: hercules-ci-agent's TOML parser can
+          # silently ignore nested condition subtables without explicit
+          # intermediate tables. Branch protection still lives on the effect
+          # itself via runIf and on the Cachix secrets.
+          condition = true;
         };
       };
     };
