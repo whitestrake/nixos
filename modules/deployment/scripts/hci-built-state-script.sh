@@ -33,7 +33,7 @@ if ! printf '%s\n' "$host_build_json" | jq -e "$required_filter" >/dev/null; the
 fi
 
 host="$(printf '%s\n' "$host_build_json" | jq -r '.host')"
-state_name="built-host/$host.json"
+state_name="built-host-$host.json"
 work_dir="$(mktemp -d)"
 old_state="$work_dir/state-old.json"
 new_state="$work_dir/state-new.json"
