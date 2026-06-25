@@ -1,8 +1,8 @@
 {den, ...} @ flake: {
   den.aspects.hercules.includes = [
     den.aspects.hercules.agent
-    # den.aspects.hercules.namespace-darwin-broker
     den.aspects.hercules.nixbuild-linux-broker
+    # den.aspects.hercules.namespace-darwin-broker
   ];
 
   den.aspects.hercules.agent.nixos = {
@@ -82,90 +82,97 @@
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
-        effectMountables.deploymentLocks = {
-          source = "/run/hercules-ci-effect-locks";
-          readOnly = false;
-          # Keep this as a TOML scalar: hercules-ci-agent's TOML parser can
-          # silently ignore nested condition subtables without explicit
-          # intermediate tables. Branch protection still lives on the effect
-          # itself via runIf and on the Cachix secrets.
-          condition = true;
-        };
       };
     };
-
-    systemd.tmpfiles.rules = [
-      "d /run/hercules-ci-effect-locks 0750 hercules-ci-agent hercules-ci-agent -"
-    ];
 
     systemd.services.hercules-ci-agent = {
       # GHC reserves 1T of virtual address space by default on 64-bit platforms.
       # Keep worker forks from tripping Linux overcommit accounting.
       environment.GHCRTS = "-xr128G";
 
-      # HCI effects run under the agent. If Cachix Deploy switches the same host
-      # that is currently running an effect, restarting the agent can kill the
-      # effect before it updates pins and reports success.
+      # Upstream does not set these. Keep switches from killing active HCI
+      # builds/effects; the config-restarter below handles stale agent configs.
       stopIfChanged = false;
       restartIfChanged = false;
     };
 
-    systemd.services.hercules-ci-agent-restarter.script = lib.mkBefore ''
-      effect_lock="/run/hercules-ci-effect-locks/pin-and-deploy.lock"
-
-      effect_lock_is_active() {
-        if [ ! -f "$effect_lock" ]; then
-          return 1
-        fi
-
-        current_time="$(${pkgs.coreutils}/bin/date +%s)"
-        lock_time="$(${pkgs.coreutils}/bin/stat -c %Y "$effect_lock" 2>/dev/null || echo 0)"
-        age=$((current_time - lock_time))
-
-        if [ "$age" -gt 3600 ]; then
-          echo "hercules-ci-agent-restarter: Stale pin-and-deploy effect lock (age: ''${age}s). Removing."
-          ${pkgs.coreutils}/bin/rm -f "$effect_lock"
-          return 1
-        fi
-
-        echo "hercules-ci-agent-restarter: pin-and-deploy effect lock is active (age: ''${age}s)."
-        return 0
-      }
-
-      if effect_lock_is_active; then
-        ${pkgs.coreutils}/bin/sleep 10
-
-        if effect_lock_is_active; then
-          delay_seconds="''${HERCULES_CI_AGENT_RESTART_DEFER_SECONDS:-30}"
-          unit_suffix="$(${pkgs.coreutils}/bin/date +%s)"
-          echo "hercules-ci-agent-restarter: pin-and-deploy effect is still active. Deferring restart by ''${delay_seconds}s."
-          ${pkgs.systemd}/bin/systemd-run \
-            --unit="hercules-ci-agent-restarter-deferred-''${unit_suffix}" \
-            --description="Deferred Hercules CI Agent restart" \
-            --collect \
-            --on-active="''${delay_seconds}s" \
-            ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service \
-            || echo "hercules-ci-agent-restarter: WARNING: failed to schedule deferred restart."
-          exit 0
-        fi
-      fi
-    '';
-
+    # Because the main unit is not restarted by activation, this oneshot checks
+    # whether the running agent still matches the current config and binary. If
+    # not, it delegates to upstream restarter only while no HCI worker is active.
     systemd.services.hercules-ci-agent-config-restarter = {
       description = "Trigger Hercules CI Agent restarter when the running agent is stale";
       wantedBy = ["multi-user.target"];
       after = ["hercules-ci-agent.service"];
-      restartTriggers = [
-        agentExecStart
-      ];
+      restartTriggers = [agentExecStart];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
       };
       script = ''
+        retry_timer="hercules-ci-agent-config-restarter-retry.timer"
+
+        stop_retry_timer() {
+          ${pkgs.systemd}/bin/systemctl stop "$retry_timer" >/dev/null 2>&1 || true
+        }
+
+        agent_has_workers() {
+          local control_group cgroup_procs pid cmdline
+
+          control_group="$(${pkgs.systemd}/bin/systemctl show -p ControlGroup --value hercules-ci-agent.service 2>/dev/null || true)"
+          if [ -z "$control_group" ]; then
+            echo "hercules-ci-agent-config-restarter: could not determine agent control group."
+            return 2
+          fi
+
+          cgroup_procs="/sys/fs/cgroup$control_group/cgroup.procs"
+          if [ ! -r "$cgroup_procs" ]; then
+            echo "hercules-ci-agent-config-restarter: cannot inspect $cgroup_procs."
+            return 2
+          fi
+
+          while IFS= read -r pid; do
+            if [ -z "$pid" ] || [ "$pid" = "$main_pid" ] || [ ! -r "/proc/$pid/cmdline" ]; then
+              continue
+            fi
+
+            cmdline="$(${pkgs.coreutils}/bin/tr '\0' ' ' < "/proc/$pid/cmdline" || true)"
+            case "$cmdline" in
+              *hercules-ci-agent-worker*)
+                echo "hercules-ci-agent-config-restarter: active worker pid $pid: $cmdline"
+                return 0
+                ;;
+            esac
+          done < "$cgroup_procs"
+
+          return 1
+        }
+
+        restart_or_defer() {
+          local reason="$1" worker_status
+
+          echo "hercules-ci-agent-config-restarter: $reason"
+          if agent_has_workers; then
+            echo "hercules-ci-agent-config-restarter: agent is busy; retrying stale restart check in 2 minutes."
+            ${pkgs.systemd}/bin/systemctl restart "$retry_timer"
+            exit 0
+          else
+            worker_status=$?
+          fi
+
+          if [ "$worker_status" = "2" ]; then
+            echo "hercules-ci-agent-config-restarter: worker state unknown; restarting rather than leaving stale agent running."
+          else
+            stop_retry_timer
+          fi
+
+          ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service
+          exit 0
+        }
+
         main_pid="$(${pkgs.systemd}/bin/systemctl show -p MainPID --value hercules-ci-agent.service 2>/dev/null || true)"
         if [ -z "$main_pid" ] || [ "$main_pid" = "0" ] || [ ! -e "/proc/$main_pid" ]; then
           echo "hercules-ci-agent-config-restarter: agent is not running; no restart needed."
+          stop_retry_timer
           exit 0
         fi
 
@@ -177,19 +184,33 @@
         expected_bin="$(${pkgs.coreutils}/bin/readlink -f "${agentBin}" 2>/dev/null || true)"
 
         if [ "$running_config" != "${agentConfigPath}" ]; then
-          echo "hercules-ci-agent-config-restarter: config changed from ''${running_config:-unknown} to ${agentConfigPath}."
-          ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service
-          exit 0
+          restart_or_defer "config changed from ''${running_config:-unknown} to ${agentConfigPath}."
         fi
 
         if [ -n "$running_bin" ] && [ -n "$expected_bin" ] && [ "$running_bin" != "$expected_bin" ]; then
-          echo "hercules-ci-agent-config-restarter: binary changed from $running_bin to $expected_bin."
-          ${pkgs.systemd}/bin/systemctl start hercules-ci-agent-restarter.service
-          exit 0
+          restart_or_defer "binary changed from $running_bin to $expected_bin."
         fi
 
+        stop_retry_timer
         echo "hercules-ci-agent-config-restarter: running agent is current."
       '';
+    };
+
+    systemd.services.hercules-ci-agent-config-restarter-retry = {
+      description = "Retry Hercules CI Agent stale restart check";
+      serviceConfig.Type = "oneshot";
+      script = ''
+        ${pkgs.systemd}/bin/systemctl restart hercules-ci-agent-config-restarter.service
+      '';
+    };
+
+    systemd.timers.hercules-ci-agent-config-restarter-retry = {
+      description = "Retry Hercules CI Agent stale restart check";
+      timerConfig = {
+        OnActiveSec = "2min";
+        AccuracySec = "10s";
+        Unit = "hercules-ci-agent-config-restarter-retry.service";
+      };
     };
 
     # HCI executes an effect derivation's builder inside the local effect
@@ -225,6 +246,7 @@
       };
     };
 
+    # Let HCI treat nixbuild.net as capable of Linux work matching local features.
     services.hercules-ci-agent.settings.remotePlatformsWithSameFeatures = [
       "x86_64-linux"
       "aarch64-linux"
@@ -244,7 +266,8 @@
     };
   };
 
-  # Subaspect for inclusion on a single host ONLY to manage namespace macos instance lifecycle
+  # Socket-activated remote builder backed by ephemeral Namespace macOS instances.
+  # Include this on one host only; every cold Darwin build can create paid runtime.
   den.aspects.hercules.namespace-darwin-broker.nixos = {
     config,
     host,
@@ -252,16 +275,26 @@
     lib,
     ...
   }: let
-    agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
+    # Enables verbose broker script logging for live namespace-mac debugging.
     enableBrokerDebug = false;
 
-    builderHost = "namespace-mac";
-    brokerName = host.name;
+    # The Hercules agent user owns all Namespace CLI credentials and runtime state.
+    agentUser = config.systemd.services.hercules-ci-agent.serviceConfig.User;
+
+    # Runtime-generated SSH key used for native Namespace SSH and guest root SSH.
     runtimeKeyPath = "/run/namespace-darwin-builder/id_ed25519";
 
-    darwin-broker-common = pkgs.writeText "darwin-broker-common.sh" (builtins.readFile ./scripts/darwin-broker-common.sh);
-    darwin-guest-bootstrap = pkgs.writeText "darwin-guest-bootstrap.sh" (builtins.readFile ./scripts/darwin-guest-bootstrap.sh);
+    # Shared broker shell library sourced by the broker lifecycle scripts.
+    darwin-broker-common =
+      pkgs.writeText "darwin-broker-common.sh"
+      (builtins.readFile ./scripts/darwin-broker-common.sh);
 
+    # Guest-side bootstrap payload uploaded over native Namespace SSH.
+    darwin-guest-bootstrap =
+      pkgs.writeText "darwin-guest-bootstrap.sh"
+      (builtins.readFile ./scripts/darwin-guest-bootstrap.sh);
+
+    # Boot/setup phase: generate the runtime SSH key and purge stale instances.
     darwin-broker-init = pkgs.writeShellApplication {
       name = "darwin-broker-init";
       runtimeInputs = with pkgs; [
@@ -274,6 +307,7 @@
       text = builtins.readFile ./scripts/darwin-broker-init.sh;
     };
 
+    # Hot provisioning phase: create/reuse an instance and bootstrap the guest.
     darwin-broker-ensure-instance = pkgs.writeShellApplication {
       name = "darwin-broker-ensure-instance";
       runtimeInputs = with pkgs; [
@@ -285,6 +319,7 @@
       text = builtins.readFile ./scripts/darwin-broker-ensure-instance.sh;
     };
 
+    # Shared cleanup phase: kill tunnels and destroy the state-tracked instance.
     darwin-broker-cleanup = pkgs.writeShellApplication {
       name = "darwin-broker-cleanup";
       runtimeInputs = with pkgs; [
@@ -295,6 +330,7 @@
       text = builtins.readFile ./scripts/darwin-broker-cleanup.sh;
     };
 
+    # Socket service entrypoint: ensure an instance, tunnel SSH, then proxy stdin.
     darwin-broker-socket-proxy = pkgs.writeShellApplication {
       name = "darwin-broker-socket-proxy";
       runtimeInputs = with pkgs; [
@@ -308,6 +344,7 @@
       text = builtins.readFile ./scripts/darwin-broker-socket-proxy.sh;
     };
 
+    # Periodic idle/failure cleanup path kept out of the hot provisioning path.
     darwin-broker-reaper = pkgs.writeShellApplication {
       name = "darwin-broker-reaper";
       runtimeInputs = with pkgs; [
@@ -319,16 +356,17 @@
       text = builtins.readFile ./scripts/darwin-broker-reaper.sh;
     };
   in {
-    # Secrets configuration
-    sops.secrets.namespaceHciToken.owner = agentUser;
+    # Namespace API token consumed by nsc for instance create/list/destroy calls.
+    sops.secrets.namespaceToken.owner = agentUser;
 
+    # Runtime state for generated SSH keys, leases, tunnel pids, and markers.
     systemd.tmpfiles.rules = [
       "d /run/namespace-darwin-builder 0700 ${agentUser} ${agentUser} -"
     ];
 
-    # SSH configuration mapping the builder host to the local socket proxy
+    # Nix connects to this alias; systemd socket activation wakes the proxy.
     programs.ssh.extraConfig = ''
-      Host ${builderHost}
+      Host namespace-mac
         HostName 127.0.0.1
         Port 22022
         User root
@@ -339,6 +377,7 @@
         UserKnownHostsFile /dev/null
     '';
 
+    # Local ssh-ng listener for Nix; the service below accepts and proxies it.
     systemd.sockets.namespace-mac = {
       wantedBy = ["multi-user.target"];
       socketConfig = {
@@ -349,6 +388,8 @@
       };
     };
 
+    # Hot path service for Nix builder connections: provision/bootstrap the
+    # Namespace guest, create the local root SSH tunnel, then proxy this socket.
     systemd.services.namespace-mac = {
       description = "Namespace macOS SSH socket proxy";
       requires = ["namespace-darwin-builder-init.service"];
@@ -359,9 +400,9 @@
         Type = "simple";
         User = agentUser;
         Environment = [
-          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
+          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceToken.path}"
           "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
-          "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_BROKER_NAME=${host.name}"
           "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
           "NAMESPACE_DARWIN_GUEST_BOOTSTRAP=${darwin-guest-bootstrap}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
@@ -385,6 +426,8 @@
       startLimitIntervalSec = 120;
     };
 
+    # Boot one-shot: create the ephemeral SSH key and remove stale labeled
+    # instances left by a previous boot before the socket can be used.
     systemd.services.namespace-darwin-builder-init = {
       description = "Initialize Namespace macOS builder runtime state";
       after = ["network-online.target" "sops-nix.service"];
@@ -396,9 +439,9 @@
         RemainAfterExit = true;
         User = agentUser;
         Environment = [
-          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
+          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceToken.path}"
           "NAMESPACE_BUILDER_KEY_PATH=${runtimeKeyPath}"
-          "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NAMESPACE_DARWIN_BROKER_NAME=${host.name}"
           "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
@@ -407,13 +450,15 @@
       };
     };
 
+    # Timer target: reap idle instances and handle recent failure markers without
+    # putting labeled nsc list/purge work in the provisioning hot path.
     systemd.services.namespace-darwin-builder-reaper = {
       description = "Reap idle Namespace macOS builder instances";
       serviceConfig = {
         Type = "oneshot";
         Environment = [
-          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceHciToken.path}"
-          "NAMESPACE_DARWIN_BROKER_NAME=${brokerName}"
+          "NSC_TOKEN_FILE=${config.sops.secrets.namespaceToken.path}"
+          "NAMESPACE_DARWIN_BROKER_NAME=${host.name}"
           "NAMESPACE_DARWIN_BROKER_COMMON=${darwin-broker-common}"
           "NAMESPACE_DARWIN_RUN_DIR=/run/namespace-darwin-builder"
           "NAMESPACE_DARWIN_LEASE_TTL_SECONDS=120"
@@ -426,6 +471,7 @@
       };
     };
 
+    # Run the reaper frequently; it exits immediately while namespace-mac is active.
     systemd.timers.namespace-darwin-builder-reaper = {
       description = "Timer for Namespace macOS builder reaper";
       wantedBy = ["timers.target"];
@@ -436,17 +482,18 @@
       };
     };
 
+    # Let HCI schedule Darwin outputs here; Nix then sends them to namespace-mac.
     services.hercules-ci-agent.settings.remotePlatformsWithSameFeatures = [
       "aarch64-darwin"
     ];
 
-    # Register the builder for distributed builds
+    # Expose namespace-mac to Nix as the aarch64-darwin ssh-ng remote builder.
     nix = {
       distributedBuilds = true;
       settings.builders-use-substitutes = true;
       buildMachines = [
         {
-          hostName = builderHost;
+          hostName = "namespace-mac";
           system = "aarch64-darwin";
           maxJobs = 3;
           supportedFeatures = ["big-parallel"];

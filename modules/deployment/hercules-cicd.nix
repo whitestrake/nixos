@@ -13,7 +13,12 @@
     lib,
     ...
   }: let
+    # Only master effects mutate Cachix pins or HCI deployment state.
+    isProductionBranch = config.repo.branch == "master";
+
+    # Effects must execute on native x86_64 Linux agents, even if builds fan out.
     effectRunnerFeature = "hci-x86_64-effect-runner";
+
     ciSystems = [
       # CI systems intentionally evaluated by Hercules CI.
       # To disable evaluating Darwin builds, remove "aarch64-darwin" here.
@@ -24,55 +29,20 @@
       "aarch64-darwin"
     ];
 
-    isProductionBranch = config.repo.branch == "master";
-
-    pinnableNixosConfigurations = self.nixosConfigurations or {};
-    pinnableDarwinConfigurations = self.darwinConfigurations or {};
-    pinnableConfigurations =
-      pinnableNixosConfigurations // pinnableDarwinConfigurations;
-
+    # Deployable hosts are the NixOS configurations managed by Cachix Deploy.
     deployableConfigurations =
       lib.filterAttrs
-      (_name: cfg:
-        (cfg.config.services.cachix-agent.enable or false)
-        && !(cfg.config.wsl.enable or false))
+      (_name: cfg: cfg.config.services.cachix-agent.enable or false)
       (self.nixosConfigurations or {});
 
-    deployableSystems =
-      lib.sort builtins.lessThan
-      (lib.unique (lib.mapAttrsToList (_name: cfg: cfg.pkgs.stdenv.hostPlatform.system) deployableConfigurations));
-
+    # Keep default hygiene cheap by excluding Darwin formatters from HCI.
     linuxFormatterSystems =
       lib.filter
-      (system: lib.hasSuffix "-linux" system && builtins.hasAttr system (self.formatter or {}))
-      ciSystems;
+      (system: !(lib.systems.elaborate system).isDarwin)
+      (builtins.attrNames (self.formatter or {}));
 
-    mkToplevelOutput = cfg: {
-      config.system.build.toplevel = cfg.config.system.build.toplevel;
-    };
-
-    mkBuildItem = name: cfg: let
-      system = cfg.pkgs.stdenv.hostPlatform.system;
-      systemClosure = cfg.config.system.build.toplevel;
-    in {
-      host = name;
-      inherit system;
-      storePath = toString systemClosure;
-      buildPin = "built-host-${name}";
-    };
-
-    mkDeployItem = name: cfg: let
-      system = cfg.pkgs.stdenv.hostPlatform.system;
-      systemClosure = cfg.config.system.build.toplevel;
-      rollbackScript = self.packages.${system}.deploy-health-rollback-script;
-    in {
-      host = name;
-      inherit system;
-      storePath = toString systemClosure;
-      deployPin = "deployed-host-${name}";
-      rollbackScript = toString rollbackScript;
-    };
-
+    # Build a per-host proof that GitHub downloads from HCI state later to
+    # construct and issue the Cachix Deploy spec for this exact store path.
     mkBuildStateItem = kind: name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
@@ -88,70 +58,25 @@
         rev = config.repo.rev;
         shortRev = config.repo.shortRev;
         jobName = "${kind}-${name}";
+        buildPin = "built-host-${name}";
       }
       // lib.optionalAttrs isDeployable {
         rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
       };
 
-    # Effect JSON is control-plane data only. The real build contract is
-    # expressed by configurationOutputs and deploymentBuildOutputs below.
-    effectBuildItemsJson = builtins.unsafeDiscardStringContext (
-      builtins.toJSON (lib.mapAttrsToList mkBuildItem pinnableConfigurations)
-    );
-    effectDeployItemsJson = builtins.unsafeDiscardStringContext (
-      builtins.toJSON (lib.mapAttrsToList mkDeployItem deployableConfigurations)
-    );
-
-    # Temporary manual-deploy bridge: the GitHub workflow fetches only this
-    # deploy.json path from Cachix. Keep it contextless until that workflow no
-    # longer depends on built-deploy-spec.
-    effectDeploySpecJson = builtins.unsafeDiscardStringContext (
+    # Record which hosts are deployable for this revision so GitHub knows which
+    # built-host-*.json state files must contain matching build proofs.
+    deployablesStateJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON {
-        agents =
-          lib.mapAttrs
-          (_name: cfg: toString cfg.config.system.build.toplevel)
-          deployableConfigurations;
-        rollbackScript =
-          lib.listToAttrs
-          (builtins.map (system: {
-              name = system;
-              value = toString self.packages.${system}.deploy-health-rollback-script;
-            })
-            deployableSystems);
+        ref = config.repo.ref;
+        branch = config.repo.branch;
+        rev = config.repo.rev;
+        shortRev = config.repo.shortRev;
+        deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
       }
     );
 
-    defaultOutputs = {
-      checks.x86_64-linux = {
-        inherit (self.checks.x86_64-linux) check-flake-file treefmt;
-      };
-      formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
-    };
-
-    configurationOutputs = {
-      nixosConfigurations =
-        lib.mapAttrs
-        (_name: cfg: mkToplevelOutput cfg)
-        pinnableNixosConfigurations;
-      darwinConfigurations =
-        lib.mapAttrs
-        (_name: cfg: mkToplevelOutput cfg)
-        pinnableDarwinConfigurations;
-    };
-
-    deploymentBuildOutputs = {
-      nixosConfigurations =
-        lib.mapAttrs
-        (_name: cfg: mkToplevelOutput cfg)
-        deployableConfigurations;
-      packages =
-        lib.genAttrs
-        deployableSystems
-        (system: {
-          deploy-health-rollback-script = self.packages.${system}.deploy-health-rollback-script;
-        });
-    };
-
+    # Fan out each host as its own HCI job and record build state when it succeeds.
     mkConfigurationJob = kind: name: cfg:
       lib.nameValuePair "${kind}-${name}" {
         outputs = withSystem "x86_64-linux" ({
@@ -159,143 +84,83 @@
           hci-effects,
           ...
         }: let
-          dependencies = with pkgs; [
-            bash
-            coreutils
-            jq
-          ];
-
+          system = cfg.pkgs.stdenv.hostPlatform.system;
           hostBuildJson = builtins.unsafeDiscardStringContext (
             builtins.toJSON (mkBuildStateItem kind name cfg)
           );
         in {
-          "${kind}s".${name} = mkToplevelOutput cfg;
+          "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
 
-          effects.record-built-state = hci-effects.mkEffect {
-            inputs = dependencies;
+          effects.record-built-state = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
+            inputs =
+              (with pkgs; [
+                bash
+                coreutils
+                curl
+                jq
+                nix
+                cachix
+              ])
+              ++ lib.optional
+              (builtins.hasAttr name deployableConfigurations)
+              (self.packages.${system}.deploy-health-rollback-script);
+
             requiredSystemFeatures = [effectRunnerFeature];
+            secretsMap = lib.genAttrs ["cachixPush"] lib.id;
 
             effectScript = with lib; ''
+              export CACHIX_CACHE_NAME="whitestrake"
               export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
               export HCI_BUILT_STATE_HISTORY_LIMIT="10"
+              export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
               source ${./scripts/hci-built-state-script.sh}
             '';
-          };
+          });
         });
       };
-
-    nixosConfigurationJobs =
-      lib.mapAttrs'
-      (mkConfigurationJob "nixosConfiguration")
-      pinnableNixosConfigurations;
-
-    darwinConfigurationJobs =
-      lib.mapAttrs'
-      (mkConfigurationJob "darwinConfiguration")
-      pinnableDarwinConfigurations;
   in {
     inherit ciSystems;
 
-    onPush =
+    onPush = lib.foldl' (jobs: block: jobs // block) {} [
       {
-        default.outputs = lib.mkForce defaultOutputs;
+        # Branch protection can key off this fast job: Linux checks plus Linux formatters.
+        default.outputs = lib.mkForce {
+          checks.x86_64-linux = {
+            inherit (self.checks.x86_64-linux) check-flake-file treefmt;
+          };
+          formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
+        };
 
-        configurations.outputs = withSystem "x86_64-linux" ({
+        # Publish the deployable host list for the GitHub deploy planner.
+        deployables.outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
-        }: let
-          dependencies = with pkgs; [
-            bash
-            coreutils
-            curl
-            jq
-            nix
-            cachix
-          ];
+        }: {
+          effects.record-deployables = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
+            inputs = with pkgs; [bash coreutils jq];
+            requiredSystemFeatures = [effectRunnerFeature];
 
-          builtPinScript = pkgs.writeShellApplication {
-            name = "cachix-built-pin-script";
-            runtimeInputs = dependencies;
-            text = builtins.readFile ./scripts/cachix-built-pin-script.sh;
-          };
-        in
-          configurationOutputs
-          // {
-            effects.pin-built-hosts = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-              inputs = dependencies;
-              requiredSystemFeatures = [effectRunnerFeature];
-              secretsMap = lib.genAttrs ["cachixPush"] lib.id;
+            effectScript = with lib; ''
+              export DEPLOYABLES_JSON=${escapeShellArg deployablesStateJson}
+              export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
 
-              effectScript = with lib; ''
-                export CACHIX_CACHE_NAME="whitestrake"
-                export BUILD_ITEMS_JSON=${escapeShellArg effectBuildItemsJson}
-                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
-
-                exec ${builtPinScript}/bin/cachix-built-pin-script
-              '';
-            });
+              source ${./scripts/hci-deployables-state-script.sh}
+            '';
           });
-
-        deployment.outputs = withSystem "x86_64-linux" ({
-          pkgs,
-          hci-effects,
-          ...
-        }: let
-          dependencies = with pkgs; [
-            bash
-            coreutils
-            curl
-            jq
-            nix
-            cachix
-          ];
-
-          deployScript = pkgs.writeShellApplication {
-            name = "cachix-deploy-script";
-            runtimeInputs = dependencies;
-            text = builtins.readFile ./scripts/cachix-deploy-script.sh;
-          };
-
-          deploySpec = pkgs.writeTextDir "deploy.json" effectDeploySpecJson;
-        in
-          deploymentBuildOutputs
-          // {
-            inherit deploySpec;
-
-            effects.pin-and-deploy = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-              inputs = dependencies;
-              requiredSystemFeatures = [effectRunnerFeature];
-              secretsMap = lib.genAttrs ["cachixPush" "cachixDeploy" "cachixPersonal"] lib.id;
-              __hci_effect_mounts = builtins.toJSON {
-                "/effect-locks" = "deploymentLocks";
-              };
-
-              effectScript = with lib; ''
-                lock="/effect-locks/pin-and-deploy.lock"
-                mkdir -p "$(dirname "$lock")"
-                printf 'pid=%s\nstarted=%s\n' "$$" "$(date +%s)" > "$lock"
-                cleanup_lock() {
-                  rm -f "$lock"
-                }
-                trap cleanup_lock EXIT INT TERM
-
-                export CACHIX_CACHE_NAME="whitestrake"
-                export DEPLOY_ITEMS_JSON=${escapeShellArg effectDeployItemsJson}
-                export DEPLOY_SPEC_PATH=${escapeShellArg "${deploySpec}"}
-                export DEPLOY_SPEC_PIN="built-deploy-spec"
-
-                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
-                export CACHIX_ACTIVATE_TOKEN="$(readSecretString cachixDeploy .token)"
-                export CACHIX_PERSONAL_TOKEN="$(readSecretString cachixPersonal .token)"
-
-                ${deployScript}/bin/cachix-deploy-script
-              '';
-            });
-          });
+        });
       }
-      // nixosConfigurationJobs
-      // darwinConfigurationJobs;
+
+      # NixOS configurations are separate HCI jobs for visibility and faster fanout.
+      (lib.mapAttrs'
+        (mkConfigurationJob "nixosConfiguration")
+        (self.nixosConfigurations or {}))
+
+      # Darwin configurations are separate jobs so the macOS builder wakes only for them.
+      (lib.mapAttrs'
+        (mkConfigurationJob "darwinConfiguration")
+        (self.darwinConfigurations or {}))
+    ];
   };
 }

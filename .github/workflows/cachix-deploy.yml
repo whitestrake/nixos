@@ -1,16 +1,10 @@
 name: "Cachix Deploy"
-run-name: >-
-  ${{
-    inputs.hosts == ''
-    && 'Manual Cachix deploy preview'
-    || format(
-      'Manual Cachix deploy: {0}{1}',
-      inputs.hosts,
-      inputs.force && ' (forced)' || ''
-    )
-  }}
+run-name: "Cachix Deploy"
 
 on:
+  check_suite:
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       hosts:
@@ -25,20 +19,73 @@ on:
         type: boolean
 
 concurrency:
-  group: cachix-deploy-${{ github.repository }}
+  group: cachix-deploy-master
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: "Manual Cachix deploy"
+  plan:
+    name: "Plan Cachix deploy"
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        || (
+          github.event.check_suite.app.slug == 'hercules-ci'
+          && github.event.check_suite.conclusion == 'success'
+          && github.event.check_suite.head_branch == 'master'
+        )
+      }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      selected_count: ${{ steps.plan.outputs.selected_count }}
+      preview: ${{ steps.plan.outputs.preview }}
+      selected_hosts: ${{ steps.plan.outputs.selected_hosts }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Plan deploy from HCI state
+        id: plan
+        shell: bash
+        env:
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_PROJECT: github/whitestrake/nixos
+          CACHIX_CACHE_NAME: whitestrake
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_DEPLOY_REV: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
+          CACHIX_DEPLOY_HOSTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hosts || '' }}
+          CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
+          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
+          HCI_POLL_SECONDS: "30"
+          HCI_WAIT_TIMEOUT_SECONDS: "3600"
+        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+
+  deploy:
+    name: "Deploy ${{ matrix.host }}"
+    needs: plan
+    if: ${{ needs.plan.outputs.selected_count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -52,13 +99,16 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Deploy selected Cachix agents
+      - name: Deploy Cachix agent
         shell: bash
         env:
           CACHIX_CACHE_NAME: whitestrake
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
-          CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
-          CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
-          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy
-        run: bash modules/deployment/scripts/cachix-manual-deploy-script.sh
+          CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
+          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
+          DEPLOY_HOST: ${{ matrix.host }}
+          DEPLOY_SYSTEM: ${{ matrix.system }}
+          DEPLOY_STORE_PATH: ${{ matrix.storePath }}
+          DEPLOY_ROLLBACK_SCRIPT: ${{ matrix.rollbackScript }}
+        run: bash modules/deployment/scripts/cachix-github-deploy-host.sh
