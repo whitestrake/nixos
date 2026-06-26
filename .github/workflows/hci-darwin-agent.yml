@@ -1,0 +1,86 @@
+name: "HCI Darwin Agent"
+run-name: "HCI Darwin Agent"
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Git revision to monitor in Hercules CI. Defaults to this workflow run revision."
+        required: false
+        default: ""
+        type: string
+      hci_job_id:
+        description: "Optional Hercules CI job id to monitor instead of discovering by revision."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: hci-darwin-agent
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  darwin-agent:
+    name: "Run ephemeral Darwin HCI agent"
+    runs-on: macos-15
+    timeout-minutes: 355
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v35
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            max-jobs = 2
+            keep-derivations = true
+            keep-outputs = true
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+
+      - name: Restore rolling Darwin Nix cache
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-darwin-andred-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-prefixes-first-match: |
+            nix-darwin-andred-${{ github.ref_name }}-
+            nix-darwin-andred-master-
+          gc-max-store-size-macos: 0
+          purge: true
+          purge-prefixes: |
+            nix-darwin-andred-
+          purge-last-accessed: P1D
+          purge-primary-key: never
+
+      - name: Run ephemeral Hercules CI Darwin agent
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_CACHE_NAME: whitestrake
+          DARWIN_CONFIGURATION: andred
+          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
+          HCI_PROJECT: github/whitestrake/nixos
+          HCI_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          set -euo pipefail
+
+          nix shell \
+            --accept-flake-config \
+            --inputs-from . \
+            nixpkgs#curl \
+            nixpkgs#hercules-ci-agent \
+            nixpkgs#jq \
+            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
