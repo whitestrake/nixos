@@ -7,6 +7,8 @@ rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
 hosts_raw="${CACHIX_DEPLOY_HOSTS:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 event_name="${GITHUB_EVENT_NAME:-}"
+branch="${CACHIX_DEPLOY_BRANCH:-${GITHUB_REF_NAME:-}}"
+short_rev="${CACHIX_DEPLOY_SHORT_REV:-${rev:0:7}}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
 
 if [ -z "$rev" ]; then
@@ -23,11 +25,6 @@ case "$force" in
     ;;
 esac
 
-if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
-  echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
-  exit 1
-fi
-
 if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
   exit 1
@@ -41,6 +38,11 @@ fi
 
 setup_hci_credentials() {
   local credentials_dir credentials_file
+
+  if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
+    echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
+    exit 1
+  fi
 
   if [ -z "${HOME:-}" ]; then
     echo "ERROR: HOME must be set so hci can read credentials." >&2
@@ -91,6 +93,52 @@ fetch_pins() {
 get_state() {
   local state_name="$1"
   hci state get --project "$hci_project" --name "$state_name" --file -
+}
+
+json_string() {
+  jq -Rn --arg value "$1" '$value'
+}
+
+local_deployables_entry() {
+  local flake_uri flake_uri_json branch_json rev_json short_rev_json ref_json
+
+  flake_uri="path:$PWD"
+  flake_uri_json="$(json_string "$flake_uri")"
+  branch_json="$(json_string "${branch:-unknown}")"
+  rev_json="$(json_string "$rev")"
+  short_rev_json="$(json_string "$short_rev")"
+  ref_json="$(json_string "${GITHUB_REF:-}")"
+
+  nix eval --impure --json --expr "
+    let
+      flake = builtins.getFlake ${flake_uri_json};
+      lib = flake.inputs.nixpkgs.lib;
+      deployableConfigurations =
+        lib.filterAttrs
+          (_name: cfg: cfg.config.services.cachix-agent.enable or false)
+          (flake.nixosConfigurations or {});
+      mkDeployableStateItem = name: cfg:
+        let
+          system = cfg.pkgs.stdenv.hostPlatform.system;
+        in {
+          kind = \"nixosConfiguration\";
+          jobName = \"nixosConfiguration-\${name}\";
+          inherit system;
+          storePath = toString cfg.config.system.build.toplevel;
+          buildPin = \"built-host-\${name}\";
+          rollbackScript = toString flake.packages.\${system}.deploy-health-rollback-script;
+          rollbackPin = \"built-rollback-\${name}\";
+          deployPin = \"deployed-host-\${name}\";
+        };
+    in {
+      ref = ${ref_json};
+      branch = ${branch_json};
+      rev = ${rev_json};
+      shortRev = ${short_rev_json};
+      deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
+      hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
+    }
+  "
 }
 
 write_output() {
@@ -155,30 +203,34 @@ fi
 mkdir -p "$output_dir"
 
 skip_if_stale_automatic_run
-setup_hci_credentials
-skip_if_stale_automatic_run
+if [ "$event_name" = "workflow_dispatch" ]; then
+  deployables_entry="$(local_deployables_entry)"
+else
+  setup_hci_credentials
+  skip_if_stale_automatic_run
 
-if ! deployables_state="$(get_state deployables.json)"; then
-  echo "ERROR: failed to read HCI state file deployables.json." >&2
-  exit 1
-fi
+  if ! deployables_state="$(get_state deployables.json)"; then
+    echo "ERROR: failed to read HCI state file deployables.json." >&2
+    exit 1
+  fi
 
-deployables_entry="$(
-  jq -c \
-    --arg rev "$rev" \
-    '
-      .[$rev]
-      | select(type == "object")
-      | select(.deployables | type == "array")
-      | select(.hosts | type == "object")
-    ' \
-    <<< "$deployables_state"
-)"
+  deployables_entry="$(
+    jq -c \
+      --arg rev "$rev" \
+      '
+        .[$rev]
+        | select(type == "object")
+        | select(.deployables | type == "array")
+        | select(.hosts | type == "object")
+      ' \
+      <<< "$deployables_state"
+  )"
 
-if [ -z "$deployables_entry" ]; then
-  echo "ERROR: deployables.json has no complete deployables entry for $rev." >&2
-  echo "HCI status gating should make this impossible; investigate HCI deployables state." >&2
-  exit 1
+  if [ -z "$deployables_entry" ]; then
+    echo "ERROR: deployables.json has no complete deployables entry for $rev." >&2
+    echo "HCI status gating should make this impossible; investigate HCI deployables state." >&2
+    exit 1
+  fi
 fi
 
 invalid_hosts_json="$(
