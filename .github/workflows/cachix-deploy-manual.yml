@@ -62,7 +62,7 @@ jobs:
           CACHIX_DEPLOY_FORCE: ${{ inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-        run: bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
       - name: Build and push selected deploy closures
         if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
