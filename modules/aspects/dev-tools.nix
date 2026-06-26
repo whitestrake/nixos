@@ -84,10 +84,6 @@
       osConfig,
       ...
     }: let
-      mcp-nixos = inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos;
-      homeassistant-mcp = pkgs.unstable.ha-mcp;
-      komodo-mcp = pkgs.myPkgs.komodo-mcp-server;
-
       codexMcpServers =
         lib.mapAttrs (
           name: server:
@@ -109,10 +105,10 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos.command = "${mcp-nixos}/bin/mcp-nixos";
+          nixos.command = "${inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos}/bin/mcp-nixos";
 
           homeassistant = {
-            command = "${homeassistant-mcp}/bin/ha-mcp";
+            command = "${pkgs.unstable.ha-mcp}/bin/ha-mcp";
             env = {
               HOMEASSISTANT_URL.file = osConfig.sops.secrets.homeAssistantURL.path;
               HOMEASSISTANT_TOKEN.file = osConfig.sops.secrets.homeAssistantToken.path;
@@ -120,7 +116,7 @@
           };
 
           komodo = {
-            command = "${komodo-mcp}/bin/komodo-mcp-server";
+            command = "${pkgs.myPkgs.komodo-mcp-server}/bin/komodo-mcp-server";
             env = {
               KOMODO_URL.file = osConfig.sops.secrets.komodoURL.path;
               KOMODO_API_KEY.file = osConfig.sops.secrets.komodoKey.path;
@@ -178,12 +174,6 @@
             mcp_servers = codexMcpServers;
           };
       };
-
-      home.packages = [
-        mcp-nixos
-        homeassistant-mcp
-        komodo-mcp
-      ];
     };
   };
 
