@@ -32,6 +32,7 @@ if ! [[ "$built_pin_keep_revisions" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# shellcheck disable=SC2016
 required_filter='
   . as $root
   | type == "object"
