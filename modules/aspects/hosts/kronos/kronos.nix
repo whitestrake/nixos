@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.kronos = {
     includes = [
-      den.aspects.vscode-server
       den.aspects.dev-tools
     ];
 

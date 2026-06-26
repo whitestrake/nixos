@@ -4,7 +4,6 @@
       den.aspects.server.lab
       den.aspects.docker
       den.aspects.i915-sriov
-      den.aspects.vscode-server
       den.aspects.user-mediaserver
       den.aspects.dev-tools
       den.aspects.hercules

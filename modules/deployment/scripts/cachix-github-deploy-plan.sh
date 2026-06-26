@@ -23,11 +23,6 @@ case "$force" in
     ;;
 esac
 
-if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
-  echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
-  exit 1
-fi
-
 if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
   exit 1
@@ -41,6 +36,11 @@ fi
 
 setup_hci_credentials() {
   local credentials_dir credentials_file
+
+  if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
+    echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
+    exit 1
+  fi
 
   if [ -z "${HOME:-}" ]; then
     echo "ERROR: HOME must be set so hci can read credentials." >&2
@@ -163,21 +163,28 @@ if ! deployables_state="$(get_state deployables.json)"; then
   exit 1
 fi
 
+if ! canary_deployables_state="$(get_state canary-deployables.json 2>/dev/null)"; then
+  canary_deployables_state='{}'
+fi
+
 deployables_entry="$(
-  jq -c \
+  jq -c -n \
     --arg rev "$rev" \
+    --argjson production "$deployables_state" \
+    --argjson canary "$canary_deployables_state" \
     '
-      .[$rev]
-      | select(type == "object")
-      | select(.deployables | type == "array")
-      | select(.hosts | type == "object")
-    ' \
-    <<< "$deployables_state"
+      def complete:
+        select(type == "object")
+        | select(.deployables | type == "array")
+        | select(.hosts | type == "object");
+
+      (($production[$rev] | complete) // ($canary[$rev] | complete))
+    '
 )"
 
-if [ -z "$deployables_entry" ]; then
-  echo "ERROR: deployables.json has no complete deployables entry for $rev." >&2
-  echo "HCI status gating should make this impossible; investigate HCI deployables state." >&2
+if [ -z "$deployables_entry" ] || [ "$deployables_entry" = "null" ]; then
+  echo "ERROR: no complete deployables entry for $rev." >&2
+  echo "Checked HCI state files: deployables.json and canary-deployables.json." >&2
   exit 1
 fi
 
@@ -198,15 +205,15 @@ invalid_hosts_json="$(
 )"
 
 if ! jq -e 'length == 0' <<< "$invalid_hosts_json" >/dev/null; then
-  echo "ERROR: deployables.json has malformed host records for $rev:" >&2
+  echo "ERROR: HCI deployables state has malformed host records for $rev:" >&2
   jq -r '.[] | "  " + .' <<< "$invalid_hosts_json" >&2
   exit 1
 fi
 
 deployables_json="$(jq -c '.deployables | sort' <<< "$deployables_entry")"
 if jq -e 'length == 0' <<< "$deployables_json" >/dev/null; then
-  echo "ERROR: deployables.json has an empty deployables list for $rev." >&2
-  echo "At least one deployable Cachix agent host is expected on master." >&2
+  echo "ERROR: HCI deployables state has an empty deployables list for $rev." >&2
+  echo "At least one deployable Cachix agent host is expected." >&2
   exit 1
 fi
 echo "Deployables for $rev: $(jq -r 'join(", ")' <<< "$deployables_json")"

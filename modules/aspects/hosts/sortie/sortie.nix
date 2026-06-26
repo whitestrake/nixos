@@ -15,7 +15,6 @@
       den.aspects.i915-sriov
       den.aspects.user-mediaserver
       den.aspects.dev-tools
-      den.aspects.vscode-server
       den.aspects.hercules
       den.aspects.hercules.namespace-darwin-broker
     ];

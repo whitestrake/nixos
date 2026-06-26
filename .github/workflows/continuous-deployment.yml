@@ -1,8 +1,38 @@
-name: "Cachix Deploy"
-run-name: "Cachix Deploy"
+name: "Continuous Deployment"
+run-name: >-
+  ${{
+    github.event_name == 'deployment'
+    && 'HCI Automated Continuous Deployment'
+    || 'Triggered Deployment'
+  }}
 
 on:
   deployment:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: "GitHub Deployment id to update."
+        required: false
+        default: ""
+        type: string
+      deployment_environment:
+        description: "Deployment environment."
+        required: true
+        default: "production"
+        type: string
+      deployment_sha:
+        description: "Commit SHA to deploy."
+        required: true
+        type: string
+      deployment_source:
+        description: "Deployment source label."
+        required: true
+        default: "github-actions"
+        type: string
+      matrix:
+        description: "Deployment matrix JSON."
+        required: true
+        type: string
 
 concurrency:
   group: cachix-deploy-master
@@ -14,8 +44,12 @@ permissions:
 
 jobs:
   prepare:
-    name: "Prepare GitHub Deployment"
-    if: ${{ github.event.deployment.task == 'deploy:cachix' }}
+    name: "Prepare Cachix deploy"
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        || github.event.deployment.task == 'deploy:cachix'
+      }}
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.prepare.outputs.deploy }}
@@ -25,10 +59,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DEPLOYMENT_ID: ${{ github.event.deployment.id }}
-          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
-          DEPLOYMENT_SHA: ${{ github.event.deployment.sha }}
-          DEPLOYMENT_SOURCE: ${{ github.event.deployment.payload.source }}
+          DEPLOYMENT_ID: ${{ github.event.deployment.id || inputs.deployment_id || '' }}
+          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment || inputs.deployment_environment }}
+          DEPLOYMENT_SHA: ${{ github.event.deployment.sha || inputs.deployment_sha }}
+          DEPLOYMENT_SOURCE: ${{ github.event.deployment.payload.source || inputs.deployment_source }}
           LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -36,32 +70,36 @@ jobs:
           master_rev="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
 
           if [ "$DEPLOYMENT_SOURCE" = "hercules-ci" ] && [ "$DEPLOYMENT_SHA" != "$master_rev" ]; then
-            echo "Deployment $DEPLOYMENT_ID is stale; marking inactive."
+            echo "Deployment is stale; skipping."
             echo "  deployment source: $DEPLOYMENT_SOURCE"
             echo "  deployment sha: $DEPLOYMENT_SHA"
             echo "  current master: $master_rev"
             echo "deploy=false" >> "$GITHUB_OUTPUT"
 
-            gh api \
-              -X POST \
-              "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
-              -f state=inactive \
-              -f environment="$DEPLOYMENT_ENVIRONMENT" \
-              -f log_url="$LOG_URL" \
-              -f description="Skipped stale Cachix deploy"
+            if [ -n "$DEPLOYMENT_ID" ]; then
+              gh api \
+                -X POST \
+                "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
+                -f state=inactive \
+                -f environment="$DEPLOYMENT_ENVIRONMENT" \
+                -f log_url="$LOG_URL" \
+                -f description="Skipped stale Cachix deploy"
+            fi
 
             exit 0
           fi
 
           echo "deploy=true" >> "$GITHUB_OUTPUT"
 
-          gh api \
-            -X POST \
-            "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
-            -f state=in_progress \
-            -f environment="$DEPLOYMENT_ENVIRONMENT" \
-            -f log_url="$LOG_URL" \
-            -f description="Cachix deploy started"
+          if [ -n "$DEPLOYMENT_ID" ]; then
+            gh api \
+              -X POST \
+              "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
+              -f state=in_progress \
+              -f environment="$DEPLOYMENT_ENVIRONMENT" \
+              -f log_url="$LOG_URL" \
+              -f description="Cachix deploy started"
+          fi
 
   deploy:
     name: "Deploy ${{ matrix.host }}"
@@ -71,12 +109,21 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix: ${{ github.event.deployment.payload.matrix }}
+      matrix: >-
+        ${{
+          github.event_name == 'workflow_dispatch'
+          && fromJSON(inputs.matrix)
+          || github.event.deployment.payload.matrix
+        }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.deployment.sha }}
+          ref: >-
+            ${{
+              github.event.deployment.sha
+              || inputs.deployment_sha
+            }}
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -110,7 +157,7 @@ jobs:
     needs:
       - prepare
       - deploy
-    if: ${{ always() && needs.prepare.outputs.deploy == 'true' }}
+    if: ${{ always() && github.event_name == 'deployment' && github.event.deployment.task == 'deploy:cachix' }}
     runs-on: ubuntu-latest
     steps:
       - name: Mark deployment final status
@@ -120,11 +167,24 @@ jobs:
           DEPLOYMENT_ID: ${{ github.event.deployment.id }}
           DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
           LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RESULT: ${{ needs.deploy.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PREPARE_DEPLOY: ${{ needs.prepare.outputs.deploy }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
         run: |
           set -euo pipefail
 
-          if [ "$RESULT" = "success" ]; then
+          if [ -z "$DEPLOYMENT_ID" ]; then
+            echo "No GitHub Deployment id; skipping final deployment status."
+            exit 0
+          fi
+
+          if [ "$PREPARE_RESULT" != "success" ]; then
+            state=failure
+            description="Cachix deploy preparation failed"
+          elif [ "$PREPARE_DEPLOY" != "true" ]; then
+            echo "Deployment was already marked inactive during preparation."
+            exit 0
+          elif [ "$DEPLOY_RESULT" = "success" ]; then
             state=success
             description="Cachix deploy succeeded"
           else

@@ -1,0 +1,111 @@
+name: "Manual Deployment"
+run-name: "Manual Deployment"
+
+on:
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: "Comma-separated hosts to deploy. Empty previews changed hosts; all deploys every deployable host."
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Redeploy selected hosts even when deployed-host-* already matches built state."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: cachix-deploy-master
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prepare:
+    name: "Prepare manual deployment"
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Plan deploy
+        id: plan
+        shell: bash
+        env:
+          CACHIX_CACHE_NAME: whitestrake
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_DEPLOY_REV: ${{ github.sha }}
+          CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
+          CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
+          CACHIX_DEPLOY_FORCE: ${{ inputs.force && 'true' || 'false' }}
+          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+
+      - name: Report no dispatch
+        if: ${{ steps.plan.outputs.preview == 'true' || steps.plan.outputs.selected_count == '0' }}
+        shell: bash
+        env:
+          PREVIEW: ${{ steps.plan.outputs.preview }}
+          SELECTED_COUNT: ${{ steps.plan.outputs.selected_count }}
+          SELECTED_HOSTS: ${{ steps.plan.outputs.selected_hosts }}
+        run: |
+          set -euo pipefail
+
+          echo "No Cachix deploy executor dispatch required."
+          echo "  preview:        $PREVIEW"
+          echo "  selected count: $SELECTED_COUNT"
+          echo "  selected hosts: $SELECTED_HOSTS"
+
+      - name: Dispatch Cachix deploy workflow
+        if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
+          CACHIX_DEPLOY_REV: ${{ github.sha }}
+          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
+        run: |
+          set -euo pipefail
+
+          matrix="$(
+            jq -c '{
+              include: (
+                .include
+                | map({
+                    host,
+                    system,
+                    storePath,
+                    rollbackScript
+                  })
+              )
+            }' "$DEPLOY_PLAN_FILE"
+          )"
+
+          echo "Dispatching Cachix deploy executor for:"
+          jq -r '
+            .include[]
+            | "  - " + .host + " (" + .system + "): " + .storePath
+          ' <<< "$matrix"
+
+          echo "Executor matrix:"
+          jq . <<< "$matrix"
+
+          gh workflow run continuous-deployment.yml \
+            --ref "$CACHIX_DEPLOY_BRANCH" \
+            -f deployment_environment="production" \
+            -f deployment_sha="$CACHIX_DEPLOY_REV" \
+            -f deployment_source="github-actions" \
+            -f matrix="$matrix"
