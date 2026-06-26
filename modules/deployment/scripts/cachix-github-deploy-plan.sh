@@ -3,14 +3,11 @@ set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-whitestrake}"
 hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
-hci_api_base="${HCI_API_BASE_URL:-https://hercules-ci.com}"
 rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
 hosts_raw="${CACHIX_DEPLOY_HOSTS:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 event_name="${GITHUB_EVENT_NAME:-}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
-wait_timeout="${HCI_WAIT_TIMEOUT_SECONDS:-3600}"
-poll_seconds="${HCI_POLL_SECONDS:-30}"
 
 if [ -z "$rev" ]; then
   echo "ERROR: CACHIX_DEPLOY_REV or GITHUB_SHA must be set." >&2
@@ -25,16 +22,6 @@ case "$force" in
     exit 1
     ;;
 esac
-
-if ! [[ "$wait_timeout" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: HCI_WAIT_TIMEOUT_SECONDS must be a positive integer." >&2
-  exit 1
-fi
-
-if ! [[ "$poll_seconds" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: HCI_POLL_SECONDS must be a positive integer." >&2
-  exit 1
-fi
 
 if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
   echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
@@ -52,9 +39,6 @@ if [ -z "${hci_site:-}" ] || [ -z "${hci_account:-}" ] || [ -z "${hci_repo:-}" ]
   exit 1
 fi
 
-hci_api_base="${hci_api_base%/}"
-jobs_url="$hci_api_base/api/v1/site/$hci_site/account/$hci_account/project/$hci_repo/jobs?limit=100"
-
 setup_hci_credentials() {
   local credentials_dir credentials_file
 
@@ -71,10 +55,8 @@ setup_hci_credentials() {
   printf '%s\n' "$HERCULES_CI_CREDENTIALS_JSON" > "$credentials_file"
   chmod 0600 "$credentials_file"
 
-  if ! hci_personal_token="$(
-    jq -er '.domains."hercules-ci.com".personalToken | select(type == "string" and length > 0)' \
-      "$credentials_file"
-  )"; then
+  if ! jq -e '.domains."hercules-ci.com".personalToken | select(type == "string" and length > 0)' \
+    "$credentials_file" >/dev/null; then
     echo "ERROR: HERCULES_CI_CREDENTIALS_JSON must be a Hercules CI credentials.json document." >&2
     exit 1
   fi
@@ -99,87 +81,11 @@ with_retry() {
   done
 }
 
-hci_api_get() {
-  local url="$1"
-  curl -fsS \
-    -H "Authorization: Bearer $hci_personal_token" \
-    "$url"
-}
-
 fetch_pins() {
   with_retry curl -fsS \
     -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
     "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
     | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
-}
-
-wait_for_hci_success() {
-  local deadline now jobs rev_jobs count pending failed has_deployables
-
-  deadline="$(($(date +%s) + wait_timeout))"
-
-  while true; do
-    jobs="$(hci_api_get "$jobs_url")"
-    rev_jobs="$(
-      jq -c \
-        --arg rev "$rev" \
-        '[.items[]? | select(.source.revision == $rev and .jobType == "OnPush")]' \
-        <<< "$jobs"
-    )"
-    count="$(jq -r 'length' <<< "$rev_jobs")"
-    has_deployables="$(jq -r 'any(.[]; .jobName == "deployables")' <<< "$rev_jobs")"
-    pending="$(
-      jq -c '
-        [
-          .[]
-          | select(
-              .jobPhase != "Done"
-              or .jobStatus != "Success"
-              or .derivationStatus != "Success"
-              or .effectsStatus != "Success"
-            )
-        ]
-      ' <<< "$rev_jobs"
-    )"
-    failed="$(
-      jq -c '
-        [
-          .[]
-          | select(
-              .jobPhase == "Done"
-              and (
-                .jobStatus != "Success"
-                or .derivationStatus != "Success"
-                or .effectsStatus != "Success"
-              )
-            )
-        ]
-      ' <<< "$rev_jobs"
-    )"
-
-    if ! jq -e 'length == 0' <<< "$failed" >/dev/null; then
-      echo "ERROR: HCI reported failed jobs for $rev:" >&2
-      jq -r '.[] | "  job \(.index) \(.jobName): \(.jobStatus) derivations=\(.derivationStatus) effects=\(.effectsStatus)"' <<< "$failed" >&2
-      exit 1
-    fi
-
-    if [ "$count" -gt 0 ] && [ "$has_deployables" = "true" ] && jq -e 'length == 0' <<< "$pending" >/dev/null; then
-      echo "HCI jobs are green for $rev."
-      jq -r '.[] | "  job \(.index) \(.jobName): \(.jobStatus) derivations=\(.derivationStatus) effects=\(.effectsStatus)"' <<< "$rev_jobs"
-      return 0
-    fi
-
-    now="$(date +%s)"
-    if [ "$now" -ge "$deadline" ]; then
-      echo "ERROR: timed out waiting for HCI jobs for $rev." >&2
-      echo "Observed $count onPush job(s); deployables job present: $has_deployables" >&2
-      jq -r '.[] | "  job \(.index) \(.jobName): phase=\(.jobPhase) status=\(.jobStatus) derivations=\(.derivationStatus) effects=\(.effectsStatus)"' <<< "$rev_jobs" >&2
-      exit 1
-    fi
-
-    echo "Waiting for HCI jobs for $rev: $count seen, deployables=$has_deployables, pending=$(jq -r 'length' <<< "$pending")"
-    sleep "$poll_seconds"
-  done
 }
 
 get_state() {
@@ -210,7 +116,7 @@ emit_empty_plan() {
 skip_if_stale_automatic_run() {
   local master_rev
 
-  if [ "$event_name" != "check_suite" ]; then
+  if [ "$event_name" = "workflow_dispatch" ]; then
     return 0
   fi
 
@@ -226,14 +132,12 @@ skip_if_stale_automatic_run() {
 
   if [ "$rev" != "$master_rev" ]; then
     echo "Skipping stale automatic deploy:"
-    echo "  check suite revision: $rev"
-    echo "  current master:       $master_rev"
+    echo "  workflow revision: $rev"
+    echo "  current master:    $master_rev"
     emit_empty_plan false
     exit 0
   fi
 }
-
-setup_hci_credentials
 
 trimmed_hosts="$(
   jq -rn --arg hosts "$hosts_raw" '$hosts | gsub("^\\s+|\\s+$"; "")'
@@ -251,7 +155,8 @@ fi
 mkdir -p "$output_dir"
 
 skip_if_stale_automatic_run
-wait_for_hci_success
+setup_hci_credentials
+skip_if_stale_automatic_run
 
 if ! deployables_state="$(get_state deployables.json)"; then
   echo "ERROR: failed to read HCI state file deployables.json." >&2
@@ -265,13 +170,36 @@ deployables_entry="$(
       .[$rev]
       | select(type == "object")
       | select(.deployables | type == "array")
+      | select(.hosts | type == "object")
     ' \
     <<< "$deployables_state"
 )"
 
 if [ -z "$deployables_entry" ]; then
-  echo "ERROR: deployables.json has no deployables entry for $rev." >&2
+  echo "ERROR: deployables.json has no complete deployables entry for $rev." >&2
   echo "HCI status gating should make this impossible; investigate HCI deployables state." >&2
+  exit 1
+fi
+
+invalid_hosts_json="$(
+  jq -c '
+    . as $root
+    |
+    [
+      $root.deployables[] as $host
+      | select(
+          ($root.hosts[$host] | type) != "object"
+          or ($root.hosts[$host].system | type != "string" or ($root.hosts[$host].system | length) == 0)
+          or ($root.hosts[$host].storePath | type != "string" or ($root.hosts[$host].storePath | startswith("/nix/store/") | not))
+          or ($root.hosts[$host].rollbackScript | type != "string" or ($root.hosts[$host].rollbackScript | startswith("/nix/store/") | not))
+        )
+    ]
+  ' <<< "$deployables_entry"
+)"
+
+if ! jq -e 'length == 0' <<< "$invalid_hosts_json" >/dev/null; then
+  echo "ERROR: deployables.json has malformed host records for $rev:" >&2
+  jq -r '.[] | "  " + .' <<< "$invalid_hosts_json" >&2
   exit 1
 fi
 
@@ -283,46 +211,17 @@ if jq -e 'length == 0' <<< "$deployables_json" >/dev/null; then
 fi
 echo "Deployables for $rev: $(jq -r 'join(", ")' <<< "$deployables_json")"
 
-proofs_file="$output_dir/build-proofs.jsonl"
-: > "$proofs_file"
-
-while IFS= read -r host; do
-  if ! host_state="$(get_state "built-host-$host.json")"; then
-    echo "ERROR: deployables.json says $host is deployable for $rev, but built-host-$host.json could not be read." >&2
-    echo "HCI status gating should make this impossible; investigate HCI state/effect ordering." >&2
-    exit 1
-  fi
-
-  proof="$(
-    jq -c \
-      --arg host "$host" \
-      --arg rev "$rev" \
-      '
-        .[$host][$rev]
-        | select(type == "object")
-        | select(.deployable == true)
-        | select(.storePath | type == "string" and startswith("/nix/store/"))
-        | select(.rollbackScript | type == "string" and startswith("/nix/store/"))
-        | select(.system | type == "string" and length > 0)
-      ' \
-      <<< "$host_state"
-  )"
-
-  if [ -z "$proof" ]; then
-    echo "ERROR: deployables.json says $host is deployable for $rev, but built-host-$host.json has no build proof for that revision." >&2
-    echo "HCI status gating should make this impossible; investigate HCI state/effect ordering." >&2
-    exit 1
-  fi
-
-  jq -cn \
-    --arg host "$host" \
+proofs_json="$(
+  jq -c \
     --arg rev "$rev" \
-    --argjson proof "$proof" \
-    '$proof + {host: $host, rev: $rev}' \
-    >> "$proofs_file"
-done < <(jq -r '.[]' <<< "$deployables_json")
-
-proofs_json="$(jq -sc '.' "$proofs_file")"
+    '
+      [
+        .deployables[] as $host
+        | .hosts[$host] + {host: $host, rev: $rev}
+      ]
+      | sort_by(.host)
+    ' <<< "$deployables_entry"
+)"
 
 if [ "$trimmed_hosts" = "all" ] || [ -z "$trimmed_hosts" ]; then
   requested_hosts_json="$deployables_json"
@@ -366,8 +265,10 @@ deploy_info_json="$(
       $proofs
       | sort_by(.host)
       | map(
-          pinPath("deployed-host-" + .host) as $deployed
+          (.deployPin // ("deployed-host-" + .host)) as $deployPin
+          | pinPath($deployPin) as $deployed
           | . + {
+              deployPin: $deployPin,
               deployed: $deployed,
               changed: ($deployed != .storePath)
             }

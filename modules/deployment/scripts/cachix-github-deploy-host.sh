@@ -8,6 +8,7 @@ store_path="${DEPLOY_STORE_PATH:-}"
 rollback_script="${DEPLOY_ROLLBACK_SCRIPT:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
+deployed_pin_keep_revisions="${CACHIX_DEPLOYED_PIN_KEEP_REVISIONS:-10}"
 
 case "$force" in
   true|false)
@@ -35,6 +36,11 @@ fi
 
 if [[ "$rollback_script" != /nix/store/* ]]; then
   echo "ERROR: DEPLOY_ROLLBACK_SCRIPT must be a /nix/store path." >&2
+  exit 1
+fi
+
+if ! [[ "$deployed_pin_keep_revisions" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: CACHIX_DEPLOYED_PIN_KEEP_REVISIONS must be a positive integer." >&2
   exit 1
 fi
 
@@ -100,7 +106,8 @@ pin_deployed_state() {
     jq -n \
       --arg name "$pin_name" \
       --arg storePath "$path" \
-      '{name: $name, storePath: $storePath, artifacts: [], keep: null}'
+      --argjson keepRevisions "$deployed_pin_keep_revisions" \
+      '{name: $name, storePath: $storePath, artifacts: [], keep: {tag: "Revisions", contents: $keepRevisions}}'
   )"
 
   with_retry curl -fsS \

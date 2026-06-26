@@ -2,9 +2,7 @@ name: "Cachix Deploy"
 run-name: "Cachix Deploy"
 
 on:
-  check_suite:
-    types:
-      - completed
+  status:
   workflow_dispatch:
     inputs:
       hosts:
@@ -24,6 +22,7 @@ concurrency:
 
 permissions:
   contents: read
+  statuses: read
 
 jobs:
   plan:
@@ -32,9 +31,8 @@ jobs:
       ${{
         github.event_name == 'workflow_dispatch'
         || (
-          github.event.check_suite.app.slug == 'hercules-ci'
-          && github.event.check_suite.conclusion == 'success'
-          && github.event.check_suite.head_branch == 'master'
+          github.event.context == 'ci/hercules/onPush/deployables'
+          && github.event.state == 'success'
         )
       }}
     runs-on: ubuntu-latest
@@ -48,7 +46,73 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
+          ref: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
+
+      - name: Wait for Hercules CI commit statuses
+        if: ${{ github.event_name == 'status' }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.payload.sha;
+            const prefix = "ci/hercules/onPush/";
+            const sentinel = "ci/hercules/onPush/deployables";
+            const timeoutMs = 10 * 60 * 1000;
+            const pollMs = 5000;
+            const deadline = Date.now() + timeoutMs;
+            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+            while (true) {
+              const { data } = await github.rest.repos.getCombinedStatusForRef({
+                owner,
+                repo,
+                ref: sha,
+                per_page: 100,
+              });
+
+              if (data.total_count > data.statuses.length) {
+                core.setFailed(
+                  `GitHub returned ${data.statuses.length}/${data.total_count} statuses for ${sha}; pagination is required.`
+                );
+                return;
+              }
+
+              const hci = data.statuses
+                .filter(s => s.context.startsWith(prefix))
+                .sort((a, b) => a.context.localeCompare(b.context));
+
+              core.info(
+                "Hercules statuses:\n" +
+                hci.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
+              );
+
+              const failed = hci.filter(s => s.state === "failure" || s.state === "error");
+              if (failed.length > 0) {
+                core.setFailed(
+                  "Hercules CI failed statuses:\n" +
+                  failed.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
+                );
+                return;
+              }
+
+              const deployables = hci.find(s => s.context === sentinel);
+              const pending = hci.filter(s => s.state !== "success");
+
+              if (deployables?.state === "success" && pending.length === 0) {
+                core.info(`All Hercules CI commit statuses are successful for ${sha}`);
+                return;
+              }
+
+              if (Date.now() >= deadline) {
+                core.setFailed(
+                  "Timed out waiting for Hercules CI statuses:\n" +
+                  pending.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
+                );
+                return;
+              }
+
+              await sleep(pollMs);
+            }
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -64,12 +128,10 @@ jobs:
           HCI_PROJECT: github/whitestrake/nixos
           CACHIX_CACHE_NAME: whitestrake
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          CACHIX_DEPLOY_REV: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
+          CACHIX_DEPLOY_REV: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
           CACHIX_DEPLOY_HOSTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hosts || '' }}
           CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
-          HCI_POLL_SECONDS: "30"
-          HCI_WAIT_TIMEOUT_SECONDS: "3600"
         run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
   deploy:
@@ -85,7 +147,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'check_suite' && github.event.check_suite.head_sha || github.sha }}
+          ref: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -107,6 +169,7 @@ jobs:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
           CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
+          CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "10"
           DEPLOY_HOST: ${{ matrix.host }}
           DEPLOY_SYSTEM: ${{ matrix.system }}
           DEPLOY_STORE_PATH: ${{ matrix.storePath }}

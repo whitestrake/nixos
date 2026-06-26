@@ -41,32 +41,24 @@
       (system: !(lib.systems.elaborate system).isDarwin)
       (builtins.attrNames (self.formatter or {}));
 
-    # Build a per-host proof that GitHub downloads from HCI state later to
-    # construct and issue the Cachix Deploy spec for this exact store path.
-    mkBuildStateItem = kind: name: cfg: let
+    # Build per-host deployable proofs that GitHub downloads from HCI state
+    # later to construct and issue Cachix Deploy specs for exact store paths.
+    mkDeployableStateItem = name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
-      isDeployable = builtins.hasAttr name deployableConfigurations;
-    in
-      {
-        host = name;
-        inherit kind system;
-        storePath = toString systemClosure;
-        deployable = isDeployable;
-        ref = config.repo.ref;
-        branch = config.repo.branch;
-        rev = config.repo.rev;
-        shortRev = config.repo.shortRev;
-        jobName = "${kind}-${name}";
-        buildPin = "built-host-${name}";
-      }
-      // lib.optionalAttrs isDeployable {
-        rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
-        rollbackPin = "built-rollback-${name}";
-      };
+    in {
+      kind = "nixosConfiguration";
+      jobName = "nixosConfiguration-${name}";
+      inherit system;
+      storePath = toString systemClosure;
+      buildPin = "built-host-${name}";
+      rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+      rollbackPin = "built-rollback-${name}";
+      deployPin = "deployed-host-${name}";
+    };
 
-    # Record which hosts are deployable for this revision so GitHub knows which
-    # built-host-*.json state files must contain matching build proofs.
+    # Record deployable hosts plus exact paths so GitHub can later build the
+    # Cachix Deploy matrix without re-evaluating the flake.
     deployablesStateJson = builtins.unsafeDiscardStringContext (
       builtins.toJSON {
         ref = config.repo.ref;
@@ -74,51 +66,33 @@
         rev = config.repo.rev;
         shortRev = config.repo.shortRev;
         deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
+        hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
       }
     );
 
-    # Fan out each host as its own HCI job and record build state when it succeeds.
+    deployableRollbackPackages =
+      lib.foldl'
+      (
+        packages: name: let
+          system = deployableConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
+        in
+          packages
+          // {
+            ${system} =
+              (packages.${system} or {})
+              // {
+                "deploy-health-rollback-script-${name}" =
+                  self.packages.${system}.deploy-health-rollback-script;
+              };
+          }
+      )
+      {}
+      (builtins.attrNames deployableConfigurations);
+
+    # Fan out each host as its own pure build job for readable GitHub status.
     mkConfigurationJob = kind: name: cfg:
       lib.nameValuePair "${kind}-${name}" {
-        outputs = withSystem "x86_64-linux" ({
-          pkgs,
-          hci-effects,
-          ...
-        }: let
-          system = cfg.pkgs.stdenv.hostPlatform.system;
-          isDeployable = builtins.hasAttr name deployableConfigurations;
-          hostBuildJson = builtins.unsafeDiscardStringContext (
-            builtins.toJSON (mkBuildStateItem kind name cfg)
-          );
-        in
-          {
-            "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
-
-            effects.record-built-state = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-              inputs = with pkgs; [
-                bash
-                coreutils
-                curl
-                jq
-              ];
-
-              requiredSystemFeatures = [effectRunnerFeature];
-              secretsMap = lib.genAttrs ["cachixPush"] lib.id;
-
-              effectScript = with lib; ''
-                export CACHIX_CACHE_NAME="whitestrake"
-                export HOST_BUILD_JSON=${escapeShellArg hostBuildJson}
-                export HCI_BUILT_STATE_HISTORY_LIMIT="10"
-                export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
-
-                source ${./scripts/hci-built-state-script.sh}
-              '';
-            });
-          }
-          // lib.optionalAttrs isDeployable {
-            packages.${system}."deploy-health-rollback-script-${name}" =
-              self.packages.${system}.deploy-health-rollback-script;
-          });
+        outputs."${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
       };
   in {
     inherit ciSystems;
@@ -133,19 +107,32 @@
           formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
         };
 
-        # Publish the deployable host list for the GitHub deploy planner.
+        # Build deployable host outputs and publish their pin/deploy state for GitHub.
         deployables.outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
         }: {
+          nixosConfigurations =
+            lib.mapAttrs
+            (_name: cfg: {
+              config.system.build.toplevel = cfg.config.system.build.toplevel;
+            })
+            deployableConfigurations;
+
+          packages = deployableRollbackPackages;
+
           effects.record-deployables = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-            inputs = with pkgs; [bash coreutils jq];
+            inputs = with pkgs; [bash coreutils curl jq];
             requiredSystemFeatures = [effectRunnerFeature];
+            secretsMap = lib.genAttrs ["cachixPush"] lib.id;
 
             effectScript = with lib; ''
+              export CACHIX_CACHE_NAME="whitestrake"
               export DEPLOYABLES_JSON=${escapeShellArg deployablesStateJson}
               export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
+              export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
+              export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
 
               source ${./scripts/hci-deployables-state-script.sh}
             '';
