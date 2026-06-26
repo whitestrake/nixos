@@ -61,6 +61,7 @@ jobs:
           CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
           CACHIX_DEPLOY_FORCE: ${{ inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
         run: bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
       - name: Build and push selected deploy closures
