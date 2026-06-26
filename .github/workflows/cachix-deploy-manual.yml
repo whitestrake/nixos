@@ -44,12 +44,6 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
-      - name: Configure Cachix
-        uses: cachix/cachix-action@v17
-        with:
-          name: whitestrake
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
       - name: Plan deploy
         id: plan
         shell: bash
@@ -63,35 +57,6 @@ jobs:
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
         run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
-
-      - name: Build and push selected deploy closures
-        if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
-        shell: bash
-        env:
-          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
-        run: |
-          set -euo pipefail
-
-          while IFS=$'\t' read -r host system store_path rollback_script; do
-            echo "Building deploy closure for $host..."
-            nix build --no-link \
-              ".#nixosConfigurations.$host.config.system.build.toplevel" \
-              ".#packages.$system.deploy-health-rollback-script"
-
-            nix path-info --recursive "$store_path" "$rollback_script" \
-              | cachix push whitestrake
-          done < <(
-            jq -r '
-              .include[]
-              | [
-                  .host,
-                  .system,
-                  .storePath,
-                  .rollbackScript
-                ]
-              | @tsv
-            ' "$DEPLOY_PLAN_FILE"
-          )
 
       - name: Upload Cachix deploy plan
         uses: actions/upload-artifact@v7
