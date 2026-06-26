@@ -5,7 +5,11 @@ cache_name="${CACHIX_CACHE_NAME:-}"
 deployables_json="${DEPLOYABLES_JSON:-}"
 state_history_limit="${HCI_DEPLOYABLES_HISTORY_LIMIT:-10}"
 built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
+github_api_url="${GITHUB_API_URL:-https://api.github.com}"
+github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
 state_name="deployables.json"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
 
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
@@ -14,6 +18,11 @@ fi
 
 if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
+  exit 1
+fi
+
+if [ -z "${GITHUB_DEPLOYMENT_TOKEN:-}" ]; then
+  echo "ERROR: GITHUB_DEPLOYMENT_TOKEN is empty." >&2
   exit 1
 fi
 
@@ -138,6 +147,30 @@ pin_state() {
     >/dev/null
 }
 
+dispatch_github_deployment() {
+  local matrix="$1"
+  local selected_count="$2"
+  local matrix_file
+
+  if [ "$selected_count" = "0" ]; then
+    echo "No deployable hosts changed; not creating a GitHub Deployment."
+    return 0
+  fi
+
+  matrix_file="$work_dir/deployment-matrix.json"
+  printf '%s\n' "$matrix" > "$matrix_file"
+
+    CACHIX_DEPLOY_REV="$rev" \
+    CACHIX_DEPLOY_SHORT_REV="$(printf '%s\n' "$deployables_json" | jq -r '.shortRev')" \
+    CACHIX_DEPLOY_BRANCH="$(printf '%s\n' "$deployables_json" | jq -r '.branch')" \
+    CACHIX_DEPLOY_SOURCE="hercules-ci" \
+    CACHIX_DEPLOY_MATRIX_FILE="$matrix_file" \
+    GITHUB_API_URL="$github_api_url" \
+    GITHUB_REPOSITORY="$github_repository" \
+    GITHUB_DEPLOYMENT_TOKEN="$GITHUB_DEPLOYMENT_TOKEN" \
+    bash "$create_github_deployment_script"
+}
+
 pins="$(fetch_pins)"
 
 while IFS=$'\t' read -r host build_pin store_path rollback_pin rollback_script; do
@@ -216,3 +249,33 @@ putStateFile "$state_name" "$new_state"
 
 echo "Recorded HCI deployables state: $state_name"
 jq -r --arg rev "$rev" '.[$rev] | "  \($rev) " + (.deployables | join(", "))' "$new_state"
+
+deployment_matrix="$(
+  printf '%s\n' "$deployables_json" \
+    | jq -c \
+      --argjson pins "$pins" \
+      '
+        def pinPath($name):
+          (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
+
+        {
+          include: (
+            [
+              .deployables[] as $host
+              | .hosts[$host] + {host: $host}
+              | select(pinPath(.deployPin) != .storePath)
+              | {
+                  host,
+                  system,
+                  storePath,
+                  rollbackScript
+                }
+            ]
+            | sort_by(.host)
+          )
+        }
+      '
+)"
+
+selected_count="$(jq -r '.include | length' <<< "$deployment_matrix")"
+dispatch_github_deployment "$deployment_matrix" "$selected_count"

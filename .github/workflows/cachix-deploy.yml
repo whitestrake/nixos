@@ -2,19 +2,7 @@ name: "Cachix Deploy"
 run-name: "Cachix Deploy"
 
 on:
-  status:
-  workflow_dispatch:
-    inputs:
-      hosts:
-        description: "Comma-separated hosts to deploy. Empty previews changed hosts; all deploys every deployable host."
-        required: false
-        default: ""
-        type: string
-      force:
-        description: "Redeploy selected hosts even when deployed-host-* already matches built state."
-        required: true
-        default: false
-        type: boolean
+  deployment:
 
 concurrency:
   group: cachix-deploy-master
@@ -22,143 +10,73 @@ concurrency:
 
 permissions:
   contents: read
-  statuses: read
+  deployments: write
 
 jobs:
-  plan:
-    name: "Plan Cachix deploy"
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch'
-        || (
-          github.event.context == 'ci/hercules/onPush/deployables'
-          && github.event.state == 'success'
-        )
-      }}
+  prepare:
+    name: "Prepare GitHub Deployment"
+    if: ${{ github.event.deployment.task == 'deploy:cachix' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
     outputs:
-      selected_count: ${{ steps.plan.outputs.selected_count }}
-      preview: ${{ steps.plan.outputs.preview }}
-      selected_hosts: ${{ steps.plan.outputs.selected_hosts }}
+      deploy: ${{ steps.prepare.outputs.deploy }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
-
-      - name: Wait for Hercules CI commit statuses
-        if: ${{ github.event_name == 'status' }}
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const sha = context.payload.sha;
-            const prefix = "ci/hercules/onPush/";
-            const sentinel = "ci/hercules/onPush/deployables";
-            const timeoutMs = 10 * 60 * 1000;
-            const pollMs = 5000;
-            const deadline = Date.now() + timeoutMs;
-            const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-            while (true) {
-              const { data } = await github.rest.repos.getCombinedStatusForRef({
-                owner,
-                repo,
-                ref: sha,
-                per_page: 100,
-              });
-
-              if (data.total_count > data.statuses.length) {
-                core.setFailed(
-                  `GitHub returned ${data.statuses.length}/${data.total_count} statuses for ${sha}; pagination is required.`
-                );
-                return;
-              }
-
-              const hci = data.statuses
-                .filter(s => s.context.startsWith(prefix))
-                .sort((a, b) => a.context.localeCompare(b.context));
-
-              core.info(
-                "Hercules statuses:\n" +
-                hci.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
-              );
-
-              const failed = hci.filter(s => s.state === "failure" || s.state === "error");
-              if (failed.length > 0) {
-                core.setFailed(
-                  "Hercules CI failed statuses:\n" +
-                  failed.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
-                );
-                return;
-              }
-
-              const deployables = hci.find(s => s.context === sentinel);
-              const pending = hci.filter(s => s.state !== "success");
-
-              if (deployables?.state === "success" && pending.length === 0) {
-                core.info(`All Hercules CI commit statuses are successful for ${sha}`);
-                return;
-              }
-
-              if (Date.now() >= deadline) {
-                core.setFailed(
-                  "Timed out waiting for Hercules CI statuses:\n" +
-                  pending.map(s => `  ${s.context}: ${s.state} ${s.description ?? ""}`).join("\n")
-                );
-                return;
-              }
-
-              await sleep(pollMs);
-            }
-
-      - name: Install Determinate Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
-        with:
-          extra-conf: |
-            accept-flake-config = true
-
-      - name: Plan deploy from HCI state
-        id: plan
+      - name: Mark deployment started
+        id: prepare
         shell: bash
         env:
-          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_PROJECT: github/whitestrake/nixos
-          CACHIX_CACHE_NAME: whitestrake
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          CACHIX_DEPLOY_REV: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
-          CACHIX_DEPLOY_HOSTS: ${{ github.event_name == 'workflow_dispatch' && inputs.hosts || '' }}
-          CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
-          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
-        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT_ID: ${{ github.event.deployment.id }}
+          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
+          DEPLOYMENT_SHA: ${{ github.event.deployment.sha }}
+          DEPLOYMENT_SOURCE: ${{ github.event.deployment.payload.source }}
+          LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
 
-      - name: Upload Cachix deploy plan
-        if: ${{ steps.plan.outputs.selected_count != '0' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: cachix-deploy-plan
-          path: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
-          if-no-files-found: error
-          retention-days: 1
+          master_rev="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" --jq '.object.sha')"
+
+          if [ "$DEPLOYMENT_SOURCE" = "hercules-ci" ] && [ "$DEPLOYMENT_SHA" != "$master_rev" ]; then
+            echo "Deployment $DEPLOYMENT_ID is stale; marking inactive."
+            echo "  deployment source: $DEPLOYMENT_SOURCE"
+            echo "  deployment sha: $DEPLOYMENT_SHA"
+            echo "  current master: $master_rev"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+
+            gh api \
+              -X POST \
+              "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
+              -f state=inactive \
+              -f environment="$DEPLOYMENT_ENVIRONMENT" \
+              -f log_url="$LOG_URL" \
+              -f description="Skipped stale Cachix deploy"
+
+            exit 0
+          fi
+
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+          gh api \
+            -X POST \
+            "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
+            -f state=in_progress \
+            -f environment="$DEPLOYMENT_ENVIRONMENT" \
+            -f log_url="$LOG_URL" \
+            -f description="Cachix deploy started"
 
   deploy:
-    name: "Deploy selected hosts"
-    needs: plan
-    if: ${{ needs.plan.outputs.selected_count != '0' }}
+    name: "Deploy ${{ matrix.host }}"
+    needs: prepare
+    if: ${{ needs.prepare.outputs.deploy == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ github.event.deployment.payload.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
-
-      - name: Download Cachix deploy plan
-        uses: actions/download-artifact@v8
-        with:
-          name: cachix-deploy-plan
-          path: ${{ runner.temp }}/cachix-deploy-plan
+          ref: ${{ github.event.deployment.sha }}
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -178,23 +96,46 @@ jobs:
           CACHIX_CACHE_NAME: whitestrake
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
-          CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
+          CACHIX_DEPLOY_FORCE: "false"
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
-          CACHIX_DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "10"
+          DEPLOY_HOST: ${{ matrix.host }}
+          DEPLOY_SYSTEM: ${{ matrix.system }}
+          DEPLOY_STORE_PATH: ${{ matrix.storePath }}
+          DEPLOY_ROLLBACK_SCRIPT: ${{ matrix.rollbackScript }}
+        run: bash modules/deployment/scripts/cachix-github-deploy-host.sh
+
+  finish:
+    name: "Mark GitHub Deployment finished"
+    needs:
+      - prepare
+      - deploy
+    if: ${{ always() && needs.prepare.outputs.deploy == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark deployment final status
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT_ID: ${{ github.event.deployment.id }}
+          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
+          LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESULT: ${{ needs.deploy.result }}
         run: |
-          mapfile -t hosts < <(jq -r '.include[].host' "$CACHIX_DEPLOY_PLAN_FILE")
-          failed=0
+          set -euo pipefail
 
-          for host in "${hosts[@]}"; do
-            echo "::group::Deploy $host"
-            if DEPLOY_HOST="$host" bash modules/deployment/scripts/cachix-github-deploy-host.sh; then
-              echo "Deploy $host succeeded."
-            else
-              echo "Deploy $host failed." >&2
-              failed=1
-            fi
-            echo "::endgroup::"
-          done
+          if [ "$RESULT" = "success" ]; then
+            state=success
+            description="Cachix deploy succeeded"
+          else
+            state=failure
+            description="Cachix deploy failed"
+          fi
 
-          exit "$failed"
+          gh api \
+            -X POST \
+            "repos/${GITHUB_REPOSITORY}/deployments/${DEPLOYMENT_ID}/statuses" \
+            -f state="$state" \
+            -f environment="$DEPLOYMENT_ENVIRONMENT" \
+            -f log_url="$LOG_URL" \
+            -f description="$description"

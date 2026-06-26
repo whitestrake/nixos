@@ -1,0 +1,118 @@
+name: "Cachix Deploy: Manual"
+run-name: "Cachix Deploy: Manual"
+
+on:
+  workflow_dispatch:
+    inputs:
+      hosts:
+        description: "Comma-separated hosts to deploy. Empty previews changed hosts; all deploys every deployable host."
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Redeploy selected hosts even when deployed-host-* already matches built state."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: cachix-deploy-master
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  plan:
+    name: "Plan manual Cachix deploy"
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    outputs:
+      selected_count: ${{ steps.plan.outputs.selected_count }}
+      preview: ${{ steps.plan.outputs.preview }}
+      selected_hosts: ${{ steps.plan.outputs.selected_hosts }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Plan deploy from HCI state
+        id: plan
+        shell: bash
+        env:
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_PROJECT: github/whitestrake/nixos
+          CACHIX_CACHE_NAME: whitestrake
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_DEPLOY_REV: ${{ github.sha }}
+          CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
+          CACHIX_DEPLOY_FORCE: ${{ inputs.force && 'true' || 'false' }}
+          CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
+        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+
+      - name: Upload Cachix deploy plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: cachix-deploy-plan
+          path: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
+          if-no-files-found: error
+          retention-days: 1
+
+  dispatch:
+    name: "Create GitHub Deployment"
+    needs: plan
+    if: >-
+      ${{
+        needs.plan.outputs.preview != 'true'
+        && needs.plan.outputs.selected_count != '0'
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download Cachix deploy plan
+        uses: actions/download-artifact@v8
+        with:
+          name: cachix-deploy-plan
+          path: ${{ runner.temp }}/cachix-deploy-plan
+
+      - name: Prepare deployment matrix
+        shell: bash
+        env:
+          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
+          DEPLOY_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
+        run: |
+          set -euo pipefail
+
+          jq '{
+            include: (
+              .include
+              | map({
+                  host,
+                  system,
+                  storePath,
+                  rollbackScript
+                })
+            )
+          }' "$DEPLOY_PLAN_FILE" > "$DEPLOY_MATRIX_FILE"
+
+      - name: Create GitHub Deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_DEPLOYMENT_TOKEN: ${{ github.token }}
+          CACHIX_DEPLOY_REV: ${{ github.sha }}
+          CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
+          CACHIX_DEPLOY_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
+        run: bash modules/deployment/scripts/cachix-create-github-deployment.sh

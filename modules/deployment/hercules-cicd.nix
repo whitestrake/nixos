@@ -35,41 +35,6 @@
       (_name: cfg: cfg.config.services.cachix-agent.enable or false)
       (self.nixosConfigurations or {});
 
-    # Keep default hygiene cheap by excluding Darwin formatters from HCI.
-    linuxFormatterSystems =
-      lib.filter
-      (system: !(lib.systems.elaborate system).isDarwin)
-      (builtins.attrNames (self.formatter or {}));
-
-    # Build per-host deployable proofs that GitHub downloads from HCI state
-    # later to construct and issue Cachix Deploy specs for exact store paths.
-    mkDeployableStateItem = name: cfg: let
-      system = cfg.pkgs.stdenv.hostPlatform.system;
-      systemClosure = cfg.config.system.build.toplevel;
-    in {
-      kind = "nixosConfiguration";
-      jobName = "nixosConfiguration-${name}";
-      inherit system;
-      storePath = toString systemClosure;
-      buildPin = "built-host-${name}";
-      rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
-      rollbackPin = "built-rollback-${name}";
-      deployPin = "deployed-host-${name}";
-    };
-
-    # Record deployable hosts plus exact paths so GitHub can later build the
-    # Cachix Deploy matrix without re-evaluating the flake.
-    deployablesStateJson = builtins.unsafeDiscardStringContext (
-      builtins.toJSON {
-        ref = config.repo.ref;
-        branch = config.repo.branch;
-        rev = config.repo.rev;
-        shortRev = config.repo.shortRev;
-        deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
-        hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
-      }
-    );
-
     deployableRollbackPackages =
       lib.foldl'
       (
@@ -89,6 +54,41 @@
       {}
       (builtins.attrNames deployableConfigurations);
 
+    # Keep default hygiene cheap by excluding Darwin formatters from HCI.
+    linuxFormatterSystems =
+      lib.filter
+      (system: !(lib.systems.elaborate system).isDarwin)
+      (builtins.attrNames (self.formatter or {}));
+
+    # Build per-host deployable records used for Cachix pins, HCI state, and
+    # GitHub Deployment payloads with exact store paths.
+    mkDeployableStateItem = name: cfg: let
+      system = cfg.pkgs.stdenv.hostPlatform.system;
+      systemClosure = cfg.config.system.build.toplevel;
+    in {
+      kind = "nixosConfiguration";
+      jobName = "nixosConfiguration-${name}";
+      inherit system;
+      storePath = toString systemClosure;
+      buildPin = "built-host-${name}";
+      rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+      rollbackPin = "built-rollback-${name}";
+      deployPin = "deployed-host-${name}";
+    };
+
+    # Record deployable hosts plus exact paths so the HCI effect can publish
+    # deployment payloads, while manual deploys can still read HCI state.
+    deployablesStateJson = builtins.unsafeDiscardStringContext (
+      builtins.toJSON {
+        ref = config.repo.ref;
+        branch = config.repo.branch;
+        rev = config.repo.rev;
+        shortRev = config.repo.shortRev;
+        deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
+        hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
+      }
+    );
+
     # Fan out each host as its own pure build job for readable GitHub status.
     mkConfigurationJob = kind: name: cfg:
       lib.nameValuePair "${kind}-${name}" {
@@ -107,25 +107,23 @@
           formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
         };
 
-        # Build deployable host outputs and publish their pin/deploy state for GitHub.
+        # Build rollback aliases and publish deployable pin/state for GitHub.
         deployables.outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
         }: {
-          nixosConfigurations =
-            lib.mapAttrs
-            (_name: cfg: {
-              config.system.build.toplevel = cfg.config.system.build.toplevel;
-            })
-            deployableConfigurations;
-
           packages = deployableRollbackPackages;
 
           effects.record-deployables = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
             inputs = with pkgs; [bash coreutils curl jq];
             requiredSystemFeatures = [effectRunnerFeature];
-            secretsMap = lib.genAttrs ["cachixPush"] lib.id;
+            secretsMap =
+              lib.genAttrs [
+                "cachixPush"
+                "githubWhitestrakeNixosDeployments"
+              ]
+              lib.id;
 
             effectScript = with lib; ''
               export CACHIX_CACHE_NAME="whitestrake"
@@ -133,6 +131,9 @@
               export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
               export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
               export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+              export GITHUB_DEPLOYMENT_TOKEN="$(readSecretString githubWhitestrakeNixosDeployments .token)"
+              export GITHUB_REPOSITORY="whitestrake/nixos"
+              export CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT=${./scripts/cachix-create-github-deployment.sh}
 
               source ${./scripts/hci-deployables-state-script.sh}
             '';
