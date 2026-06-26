@@ -3,11 +3,13 @@ set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-}"
 deployables_json="${DEPLOYABLES_JSON:-}"
+deployables_mode="${HCI_DEPLOYABLES_MODE:-production}"
+state_name="${HCI_DEPLOYABLES_STATE_NAME:-deployables.json}"
 state_history_limit="${HCI_DEPLOYABLES_HISTORY_LIMIT:-10}"
 built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
+create_github_deployment="${HCI_CREATE_GITHUB_DEPLOYMENT:-true}"
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
-state_name="deployables.json"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
 
@@ -21,13 +23,31 @@ if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   exit 1
 fi
 
-if [ -z "${GITHUB_DEPLOYMENT_TOKEN:-}" ]; then
-  echo "ERROR: GITHUB_DEPLOYMENT_TOKEN is empty." >&2
+if [ -z "$deployables_json" ]; then
+  echo "ERROR: DEPLOYABLES_JSON is empty." >&2
   exit 1
 fi
 
-if [ -z "$deployables_json" ]; then
-  echo "ERROR: DEPLOYABLES_JSON is empty." >&2
+case "$deployables_mode" in
+  production|canary)
+    ;;
+  *)
+    echo "ERROR: HCI_DEPLOYABLES_MODE must be production or canary." >&2
+    exit 1
+    ;;
+esac
+
+case "$create_github_deployment" in
+  true|false)
+    ;;
+  *)
+    echo "ERROR: HCI_CREATE_GITHUB_DEPLOYMENT must be true or false." >&2
+    exit 1
+    ;;
+esac
+
+if [ "$create_github_deployment" = "true" ] && [ -z "${GITHUB_DEPLOYMENT_TOKEN:-}" ]; then
+  echo "ERROR: GITHUB_DEPLOYMENT_TOKEN is empty." >&2
   exit 1
 fi
 
@@ -60,9 +80,17 @@ required_filter='
       and ($root.hosts[$host].jobName | type == "string" and length > 0)
       and ($root.hosts[$host].system | type == "string" and length > 0)
       and ($root.hosts[$host].storePath | type == "string" and startswith("/nix/store/"))
-      and ($root.hosts[$host].buildPin | type == "string" and startswith("built-host-"))
+      and ($root.hosts[$host].buildPin | type == "string")
+      and (
+        ($root.hosts[$host].buildPin | startswith("built-host-"))
+        or ($root.hosts[$host].buildPin | startswith("canary-host-"))
+      )
       and ($root.hosts[$host].rollbackScript | type == "string" and startswith("/nix/store/"))
-      and ($root.hosts[$host].rollbackPin | type == "string" and startswith("built-rollback-"))
+      and ($root.hosts[$host].rollbackPin | type == "string")
+      and (
+        ($root.hosts[$host].rollbackPin | startswith("built-rollback-"))
+        or ($root.hosts[$host].rollbackPin | startswith("canary-rollback-"))
+      )
       and ($root.hosts[$host].deployPin | type == "string" and startswith("deployed-host-"))
     )
 '
@@ -122,8 +150,8 @@ pin_state() {
   local path="$2"
   local payload
 
-  case "$pin_name" in
-    built-host-*|built-rollback-*)
+  case "$deployables_mode:$pin_name" in
+    production:built-host-*|production:built-rollback-*|canary:canary-host-*|canary:canary-rollback-*)
       ;;
     *)
       echo "ERROR: refusing to update unexpected pin: $pin_name" >&2
@@ -154,6 +182,11 @@ dispatch_github_deployment() {
 
   if [ "$selected_count" = "0" ]; then
     echo "No deployable hosts changed; not creating a GitHub Deployment."
+    return 0
+  fi
+
+  if [ "$create_github_deployment" = "false" ]; then
+    echo "GitHub Deployment creation disabled for $deployables_mode deployables."
     return 0
   fi
 

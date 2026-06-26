@@ -22,7 +22,6 @@ concurrency:
 permissions:
   actions: write
   contents: read
-  deployments: write
 
 jobs:
   plan:
@@ -102,7 +101,7 @@ jobs:
           retention-days: 1
 
   dispatch:
-    name: "Create GitHub Deployment"
+    name: "Dispatch Cachix deploy"
     needs: plan
     if: >-
       ${{
@@ -142,24 +141,12 @@ jobs:
             )
           }' "$DEPLOY_PLAN_FILE" > "$DEPLOY_MATRIX_FILE"
 
-      - name: Create GitHub Deployment
-        id: deployment
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_DEPLOYMENT_TOKEN: ${{ github.token }}
-          CACHIX_DEPLOY_REV: ${{ github.sha }}
-          CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
-          CACHIX_DEPLOY_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
-        run: bash modules/deployment/scripts/cachix-create-github-deployment.sh
-
       - name: Dispatch Cachix deploy workflow
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
           CACHIX_DEPLOY_REV: ${{ github.sha }}
-          DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment_id }}
           DEPLOYMENT_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
         run: |
           set -euo pipefail
@@ -168,7 +155,6 @@ jobs:
 
           gh workflow run "Cachix Deploy" \
             --ref "$CACHIX_DEPLOY_BRANCH" \
-            -f deployment_id="$DEPLOYMENT_ID" \
             -f deployment_environment="production" \
             -f deployment_sha="$CACHIX_DEPLOY_REV" \
             -f deployment_source="github-actions" \

@@ -7,8 +7,6 @@ rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
 hosts_raw="${CACHIX_DEPLOY_HOSTS:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 event_name="${GITHUB_EVENT_NAME:-}"
-branch="${CACHIX_DEPLOY_BRANCH:-${GITHUB_REF_NAME:-}}"
-short_rev="${CACHIX_DEPLOY_SHORT_REV:-${rev:0:7}}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
 
 if [ -z "$rev" ]; then
@@ -95,52 +93,6 @@ get_state() {
   hci state get --project "$hci_project" --name "$state_name" --file -
 }
 
-json_string() {
-  jq -Rn --arg value "$1" '$value'
-}
-
-local_deployables_entry() {
-  local flake_uri flake_uri_json branch_json rev_json short_rev_json ref_json
-
-  flake_uri="path:$PWD"
-  flake_uri_json="$(json_string "$flake_uri")"
-  branch_json="$(json_string "${branch:-unknown}")"
-  rev_json="$(json_string "$rev")"
-  short_rev_json="$(json_string "$short_rev")"
-  ref_json="$(json_string "${GITHUB_REF:-}")"
-
-  nix eval --impure --json --expr "
-    let
-      flake = builtins.getFlake ${flake_uri_json};
-      lib = flake.inputs.nixpkgs.lib;
-      deployableConfigurations =
-        lib.filterAttrs
-          (_name: cfg: cfg.config.services.cachix-agent.enable or false)
-          (flake.nixosConfigurations or {});
-      mkDeployableStateItem = name: cfg:
-        let
-          system = cfg.pkgs.stdenv.hostPlatform.system;
-        in {
-          kind = \"nixosConfiguration\";
-          jobName = \"nixosConfiguration-\${name}\";
-          inherit system;
-          storePath = toString cfg.config.system.build.toplevel;
-          buildPin = \"built-host-\${name}\";
-          rollbackScript = toString flake.packages.\${system}.deploy-health-rollback-script;
-          rollbackPin = \"built-rollback-\${name}\";
-          deployPin = \"deployed-host-\${name}\";
-        };
-    in {
-      ref = ${ref_json};
-      branch = ${branch_json};
-      rev = ${rev_json};
-      shortRev = ${short_rev_json};
-      deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
-      hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
-    }
-  "
-}
-
 write_output() {
   local name="$1"
   local value="$2"
@@ -203,34 +155,37 @@ fi
 mkdir -p "$output_dir"
 
 skip_if_stale_automatic_run
-if [ "$event_name" = "workflow_dispatch" ]; then
-  deployables_entry="$(local_deployables_entry)"
-else
-  setup_hci_credentials
-  skip_if_stale_automatic_run
+setup_hci_credentials
+skip_if_stale_automatic_run
 
-  if ! deployables_state="$(get_state deployables.json)"; then
-    echo "ERROR: failed to read HCI state file deployables.json." >&2
-    exit 1
-  fi
+if ! deployables_state="$(get_state deployables.json)"; then
+  echo "ERROR: failed to read HCI state file deployables.json." >&2
+  exit 1
+fi
 
-  deployables_entry="$(
-    jq -c \
-      --arg rev "$rev" \
-      '
-        .[$rev]
-        | select(type == "object")
+if ! canary_deployables_state="$(get_state canary-deployables.json 2>/dev/null)"; then
+  canary_deployables_state='{}'
+fi
+
+deployables_entry="$(
+  jq -c -n \
+    --arg rev "$rev" \
+    --argjson production "$deployables_state" \
+    --argjson canary "$canary_deployables_state" \
+    '
+      def complete:
+        select(type == "object")
         | select(.deployables | type == "array")
-        | select(.hosts | type == "object")
-      ' \
-      <<< "$deployables_state"
-  )"
+        | select(.hosts | type == "object");
 
-  if [ -z "$deployables_entry" ]; then
-    echo "ERROR: deployables.json has no complete deployables entry for $rev." >&2
-    echo "HCI status gating should make this impossible; investigate HCI deployables state." >&2
-    exit 1
-  fi
+      (($production[$rev] | complete) // ($canary[$rev] | complete))
+    '
+)"
+
+if [ -z "$deployables_entry" ] || [ "$deployables_entry" = "null" ]; then
+  echo "ERROR: no complete deployables entry for $rev." >&2
+  echo "Checked HCI state files: deployables.json and canary-deployables.json." >&2
+  exit 1
 fi
 
 invalid_hosts_json="$(
@@ -250,15 +205,15 @@ invalid_hosts_json="$(
 )"
 
 if ! jq -e 'length == 0' <<< "$invalid_hosts_json" >/dev/null; then
-  echo "ERROR: deployables.json has malformed host records for $rev:" >&2
+  echo "ERROR: HCI deployables state has malformed host records for $rev:" >&2
   jq -r '.[] | "  " + .' <<< "$invalid_hosts_json" >&2
   exit 1
 fi
 
 deployables_json="$(jq -c '.deployables | sort' <<< "$deployables_entry")"
 if jq -e 'length == 0' <<< "$deployables_json" >/dev/null; then
-  echo "ERROR: deployables.json has an empty deployables list for $rev." >&2
-  echo "At least one deployable Cachix agent host is expected on master." >&2
+  echo "ERROR: HCI deployables state has an empty deployables list for $rev." >&2
+  echo "At least one deployable Cachix agent host is expected." >&2
   exit 1
 fi
 echo "Deployables for $rev: $(jq -r 'join(", ")' <<< "$deployables_json")"

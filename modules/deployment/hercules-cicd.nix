@@ -13,7 +13,7 @@
     lib,
     ...
   }: let
-    # Only master effects mutate Cachix pins or HCI deployment state.
+    # Master records production deployables; other branches record canary deployables.
     isProductionBranch = config.repo.branch == "master";
 
     # Effects must execute on native x86_64 Linux agents, even if builds fan out.
@@ -62,7 +62,7 @@
 
     # Build per-host deployable records used for Cachix pins, HCI state, and
     # GitHub Deployment payloads with exact store paths.
-    mkDeployableStateItem = name: cfg: let
+    mkDeployableStateItem = pinNames: name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
     in {
@@ -70,24 +70,76 @@
       jobName = "nixosConfiguration-${name}";
       inherit system;
       storePath = toString systemClosure;
-      buildPin = "built-host-${name}";
+      buildPin = "${pinNames.host}-${name}";
       rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
-      rollbackPin = "built-rollback-${name}";
+      rollbackPin = "${pinNames.rollback}-${name}";
       deployPin = "deployed-host-${name}";
     };
 
     # Record deployable hosts plus exact paths so the HCI effect can publish
     # deployment payloads, while manual deploys can still read HCI state.
-    deployablesStateJson = builtins.unsafeDiscardStringContext (
-      builtins.toJSON {
-        ref = config.repo.ref;
-        branch = config.repo.branch;
-        rev = config.repo.rev;
-        shortRev = config.repo.shortRev;
-        deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
-        hosts = lib.mapAttrs mkDeployableStateItem deployableConfigurations;
-      }
-    );
+    mkDeployablesStateJson = pinNames:
+      builtins.unsafeDiscardStringContext (
+        builtins.toJSON {
+          ref = config.repo.ref;
+          branch = config.repo.branch;
+          rev = config.repo.rev;
+          shortRev = config.repo.shortRev;
+          deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
+          hosts = lib.mapAttrs (mkDeployableStateItem pinNames) deployableConfigurations;
+        }
+      );
+
+    productionDeployablesStateJson = mkDeployablesStateJson {
+      host = "built-host";
+      rollback = "built-rollback";
+    };
+
+    canaryDeployablesStateJson = mkDeployablesStateJson {
+      host = "canary-host";
+      rollback = "canary-rollback";
+    };
+
+    mkRecordDeployablesEffect = {
+      hci-effects,
+      pkgs,
+      mode,
+      stateName,
+      deployablesJson,
+      createGitHubDeployment,
+    }:
+      hci-effects.mkEffect {
+        inputs = with pkgs; [bash coreutils curl jq];
+        requiredSystemFeatures = [effectRunnerFeature];
+        secretsMap =
+          lib.genAttrs (
+            ["cachixPush"]
+            ++ lib.optional createGitHubDeployment "githubWhitestrakeNixosDeployments"
+          )
+          lib.id;
+
+        effectScript = with lib; ''
+          export CACHIX_CACHE_NAME="whitestrake"
+          export DEPLOYABLES_JSON=${escapeShellArg deployablesJson}
+          export HCI_DEPLOYABLES_MODE=${escapeShellArg mode}
+          export HCI_DEPLOYABLES_STATE_NAME=${escapeShellArg stateName}
+          export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
+          export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (
+            if createGitHubDeployment
+            then "true"
+            else "false"
+          )}
+          export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
+          export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+          ${optionalString createGitHubDeployment ''
+            export GITHUB_DEPLOYMENT_TOKEN="$(readSecretString githubWhitestrakeNixosDeployments .token)"
+            export GITHUB_REPOSITORY="whitestrake/nixos"
+            export CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT=${./scripts/cachix-create-github-deployment.sh}
+          ''}
+
+          source ${./scripts/hci-deployables-state-script.sh}
+        '';
+      };
 
     # Fan out each host as its own pure build job for readable GitHub status.
     mkConfigurationJob = kind: name: cfg:
@@ -115,29 +167,25 @@
         }: {
           packages = deployableRollbackPackages;
 
-          effects.record-deployables = hci-effects.runIf isProductionBranch (hci-effects.mkEffect {
-            inputs = with pkgs; [bash coreutils curl jq];
-            requiredSystemFeatures = [effectRunnerFeature];
-            secretsMap =
-              lib.genAttrs [
-                "cachixPush"
-                "githubWhitestrakeNixosDeployments"
-              ]
-              lib.id;
+          effects.record-deployables =
+            hci-effects.runIf isProductionBranch
+            (mkRecordDeployablesEffect {
+              inherit hci-effects pkgs;
+              mode = "production";
+              stateName = "deployables.json";
+              deployablesJson = productionDeployablesStateJson;
+              createGitHubDeployment = true;
+            });
 
-            effectScript = with lib; ''
-              export CACHIX_CACHE_NAME="whitestrake"
-              export DEPLOYABLES_JSON=${escapeShellArg deployablesStateJson}
-              export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
-              export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
-              export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
-              export GITHUB_DEPLOYMENT_TOKEN="$(readSecretString githubWhitestrakeNixosDeployments .token)"
-              export GITHUB_REPOSITORY="whitestrake/nixos"
-              export CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT=${./scripts/cachix-create-github-deployment.sh}
-
-              source ${./scripts/hci-deployables-state-script.sh}
-            '';
-          });
+          effects.record-canary-deployables =
+            hci-effects.runIf (!isProductionBranch)
+            (mkRecordDeployablesEffect {
+              inherit hci-effects pkgs;
+              mode = "canary";
+              stateName = "canary-deployables.json";
+              deployablesJson = canaryDeployablesStateJson;
+              createGitHubDeployment = false;
+            });
         });
       }
 
