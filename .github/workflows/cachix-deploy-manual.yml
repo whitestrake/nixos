@@ -103,7 +103,7 @@ jobs:
           echo "Executor matrix:"
           jq . <<< "$matrix"
 
-          gh workflow run "Continuous Deployment" \
+          gh workflow run cachix-deploy.yml \
             --ref "$CACHIX_DEPLOY_BRANCH" \
             -f deployment_environment="production" \
             -f deployment_sha="$CACHIX_DEPLOY_REV" \
