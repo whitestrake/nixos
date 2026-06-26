@@ -121,4 +121,8 @@ if [ -z "$deployment_id" ]; then
   exit 1
 fi
 
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+fi
+
 echo "Created GitHub Deployment $deployment_id."

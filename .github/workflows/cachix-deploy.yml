@@ -3,6 +3,30 @@ run-name: "Cachix Deploy"
 
 on:
   deployment:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: "GitHub Deployment id to update."
+        required: true
+        type: string
+      deployment_environment:
+        description: "Deployment environment."
+        required: true
+        default: "production"
+        type: string
+      deployment_sha:
+        description: "Commit SHA to deploy."
+        required: true
+        type: string
+      deployment_source:
+        description: "Deployment source label."
+        required: true
+        default: "github-actions"
+        type: string
+      matrix:
+        description: "Deployment matrix JSON."
+        required: true
+        type: string
 
 concurrency:
   group: cachix-deploy-master
@@ -15,7 +39,11 @@ permissions:
 jobs:
   prepare:
     name: "Prepare GitHub Deployment"
-    if: ${{ github.event.deployment.task == 'deploy:cachix' }}
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch'
+        || github.event.deployment.task == 'deploy:cachix'
+      }}
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.prepare.outputs.deploy }}
@@ -25,10 +53,30 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DEPLOYMENT_ID: ${{ github.event.deployment.id }}
-          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
-          DEPLOYMENT_SHA: ${{ github.event.deployment.sha }}
-          DEPLOYMENT_SOURCE: ${{ github.event.deployment.payload.source }}
+          DEPLOYMENT_ID: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_id
+              || github.event.deployment.id
+            }}
+          DEPLOYMENT_ENVIRONMENT: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_environment
+              || github.event.deployment.environment
+            }}
+          DEPLOYMENT_SHA: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_sha
+              || github.event.deployment.sha
+            }}
+          DEPLOYMENT_SOURCE: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_source
+              || github.event.deployment.payload.source
+            }}
           LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -71,12 +119,22 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix: ${{ github.event.deployment.payload.matrix }}
+      matrix: >-
+        ${{
+          github.event_name == 'workflow_dispatch'
+          && fromJSON(inputs.matrix)
+          || github.event.deployment.payload.matrix
+        }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.deployment.sha }}
+          ref: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_sha
+              || github.event.deployment.sha
+            }}
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -117,8 +175,18 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          DEPLOYMENT_ID: ${{ github.event.deployment.id }}
-          DEPLOYMENT_ENVIRONMENT: ${{ github.event.deployment.environment }}
+          DEPLOYMENT_ID: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_id
+              || github.event.deployment.id
+            }}
+          DEPLOYMENT_ENVIRONMENT: >-
+            ${{
+              github.event_name == 'workflow_dispatch'
+              && inputs.deployment_environment
+              || github.event.deployment.environment
+            }}
           LOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RESULT: ${{ needs.deploy.result }}
         run: |
