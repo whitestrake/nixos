@@ -108,7 +108,7 @@
           nixos.command = "${inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos}/bin/mcp-nixos";
 
           homeassistant = {
-            command = "${pkgs.unstable.ha-mcp}/bin/ha-mcp";
+            command = "${pkgs.myPkgs.ha-mcp}/bin/ha-mcp";
             env = {
               HOMEASSISTANT_URL.file = osConfig.sops.secrets.homeAssistantURL.path;
               HOMEASSISTANT_TOKEN.file = osConfig.sops.secrets.homeAssistantToken.path;
