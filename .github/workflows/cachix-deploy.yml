@@ -134,6 +134,15 @@ jobs:
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
         run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
+      - name: Upload Cachix deploy plan
+        if: ${{ steps.plan.outputs.selected_count != '0' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cachix-deploy-plan
+          path: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
+          if-no-files-found: error
+          retention-days: 1
+
   deploy:
     name: "Deploy ${{ matrix.host }}"
     needs: plan
@@ -148,6 +157,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'status' && github.event.sha || github.sha }}
+
+      - name: Download Cachix deploy plan
+        uses: actions/download-artifact@v8
+        with:
+          name: cachix-deploy-plan
+          path: ${{ runner.temp }}/cachix-deploy-plan
 
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
@@ -169,9 +184,7 @@ jobs:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
           CACHIX_DEPLOY_FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
+          CACHIX_DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "10"
           DEPLOY_HOST: ${{ matrix.host }}
-          DEPLOY_SYSTEM: ${{ matrix.system }}
-          DEPLOY_STORE_PATH: ${{ matrix.storePath }}
-          DEPLOY_ROLLBACK_SCRIPT: ${{ matrix.rollbackScript }}
         run: bash modules/deployment/scripts/cachix-github-deploy-host.sh

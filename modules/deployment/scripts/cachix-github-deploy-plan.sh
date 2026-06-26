@@ -111,6 +111,7 @@ emit_empty_plan() {
   write_output preview "$preview_value"
   write_output selected_hosts "[none]"
   printf '%s\n' '{"include":[]}' > "$output_dir/deploy-matrix.json"
+  printf '%s\n' '{"include":[]}' > "$output_dir/deploy-plan.json"
 }
 
 skip_if_stale_automatic_run() {
@@ -293,7 +294,8 @@ selected_json="$(
 )"
 
 selected_count="$(jq -r 'length' <<< "$selected_json")"
-matrix="$(jq -cn --argjson include "$selected_json" '{include: $include}')"
+matrix="$(jq -cn --argjson include "$selected_json" '{include: ($include | map({host: .host}))}')"
+deploy_plan="$(jq -cn --argjson include "$selected_json" '{include: $include}')"
 selected_hosts="$(jq -r 'if length == 0 then "[none]" else map(.host) | join(", ") end' <<< "$selected_json")"
 
 echo "Cachix deploy plan:"
@@ -324,6 +326,7 @@ done < <(
 if [ "$preview" = "true" ]; then
   selected_count=0
   matrix='{"include":[]}'
+  deploy_plan='{"include":[]}'
 fi
 
 write_output matrix "$matrix"
@@ -332,3 +335,4 @@ write_output preview "$preview"
 write_output selected_hosts "$selected_hosts"
 
 printf '%s\n' "$matrix" > "$output_dir/deploy-matrix.json"
+printf '%s\n' "$deploy_plan" > "$output_dir/deploy-plan.json"

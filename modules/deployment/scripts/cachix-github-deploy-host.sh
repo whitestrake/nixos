@@ -6,6 +6,7 @@ host="${DEPLOY_HOST:-}"
 system="${DEPLOY_SYSTEM:-}"
 store_path="${DEPLOY_STORE_PATH:-}"
 rollback_script="${DEPLOY_ROLLBACK_SCRIPT:-}"
+deploy_plan_file="${CACHIX_DEPLOY_PLAN_FILE:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
 deployed_pin_keep_revisions="${CACHIX_DEPLOYED_PIN_KEEP_REVISIONS:-10}"
@@ -22,6 +23,29 @@ esac
 if [ -z "$host" ]; then
   echo "ERROR: DEPLOY_HOST is empty." >&2
   exit 1
+fi
+
+if [ -n "$deploy_plan_file" ]; then
+  if [ ! -r "$deploy_plan_file" ]; then
+    echo "ERROR: CACHIX_DEPLOY_PLAN_FILE is not readable: $deploy_plan_file" >&2
+    exit 1
+  fi
+
+  host_record="$(
+    jq -c \
+      --arg host "$host" \
+      '.include[]? | select(.host == $host)' \
+      "$deploy_plan_file"
+  )"
+
+  if [ -z "$host_record" ]; then
+    echo "ERROR: deploy plan has no row for host: $host" >&2
+    exit 1
+  fi
+
+  system="$(jq -r '.system // ""' <<< "$host_record")"
+  store_path="$(jq -r '.storePath // ""' <<< "$host_record")"
+  rollback_script="$(jq -r '.rollbackScript // ""' <<< "$host_record")"
 fi
 
 if [ -z "$system" ]; then
