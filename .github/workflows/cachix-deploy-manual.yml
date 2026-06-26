@@ -1,5 +1,5 @@
-name: "Cachix Deploy: Manual"
-run-name: "Cachix Deploy: Manual"
+name: "Manual Deployment"
+run-name: "Manual Deployment"
 
 on:
   workflow_dispatch:
@@ -24,14 +24,10 @@ permissions:
   contents: read
 
 jobs:
-  plan:
-    name: "Plan manual Cachix deploy"
+  prepare:
+    name: "Prepare manual deployment"
     runs-on: ubuntu-latest
     timeout-minutes: 75
-    outputs:
-      selected_count: ${{ steps.plan.outputs.selected_count }}
-      preview: ${{ steps.plan.outputs.preview }}
-      selected_hosts: ${{ steps.plan.outputs.selected_hosts }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -58,68 +54,56 @@ jobs:
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
         run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
-      - name: Upload Cachix deploy plan
-        uses: actions/upload-artifact@v7
-        with:
-          name: cachix-deploy-plan
-          path: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
-          if-no-files-found: error
-          retention-days: 1
-
-  dispatch:
-    name: "Dispatch Cachix deploy"
-    needs: plan
-    if: >-
-      ${{
-        needs.plan.outputs.preview != 'true'
-        && needs.plan.outputs.selected_count != '0'
-      }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Download Cachix deploy plan
-        uses: actions/download-artifact@v8
-        with:
-          name: cachix-deploy-plan
-          path: ${{ runner.temp }}/cachix-deploy-plan
-
-      - name: Prepare deployment matrix
+      - name: Report no dispatch
+        if: ${{ steps.plan.outputs.preview == 'true' || steps.plan.outputs.selected_count == '0' }}
         shell: bash
         env:
-          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
-          DEPLOY_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
+          PREVIEW: ${{ steps.plan.outputs.preview }}
+          SELECTED_COUNT: ${{ steps.plan.outputs.selected_count }}
+          SELECTED_HOSTS: ${{ steps.plan.outputs.selected_hosts }}
         run: |
           set -euo pipefail
 
-          jq '{
-            include: (
-              .include
-              | map({
-                  host,
-                  system,
-                  storePath,
-                  rollbackScript
-                })
-            )
-          }' "$DEPLOY_PLAN_FILE" > "$DEPLOY_MATRIX_FILE"
+          echo "No Cachix deploy executor dispatch required."
+          echo "  preview:        $PREVIEW"
+          echo "  selected count: $SELECTED_COUNT"
+          echo "  selected hosts: $SELECTED_HOSTS"
 
       - name: Dispatch Cachix deploy workflow
+        if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
           CACHIX_DEPLOY_REV: ${{ github.sha }}
-          DEPLOYMENT_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deployment-matrix.json
+          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
         run: |
           set -euo pipefail
 
-          matrix="$(jq -c . "$DEPLOYMENT_MATRIX_FILE")"
+          matrix="$(
+            jq -c '{
+              include: (
+                .include
+                | map({
+                    host,
+                    system,
+                    storePath,
+                    rollbackScript
+                  })
+              )
+            }' "$DEPLOY_PLAN_FILE"
+          )"
 
-          gh workflow run "Cachix Deploy" \
+          echo "Dispatching Cachix deploy executor for:"
+          jq -r '
+            .include[]
+            | "  - " + .host + " (" + .system + "): " + .storePath
+          ' <<< "$matrix"
+
+          echo "Executor matrix:"
+          jq . <<< "$matrix"
+
+          gh workflow run "Continuous Deployment" \
             --ref "$CACHIX_DEPLOY_BRANCH" \
             -f deployment_environment="production" \
             -f deployment_sha="$CACHIX_DEPLOY_REV" \

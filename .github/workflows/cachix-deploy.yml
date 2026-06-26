@@ -1,5 +1,10 @@
-name: "Cachix Deploy"
-run-name: "Cachix Deploy"
+name: "Continuous Deployment"
+run-name: >-
+  ${{
+    github.event_name == 'deployment'
+    && 'HCI Automated Continuous Deployment'
+    || 'Triggered Deployment'
+  }}
 
 on:
   deployment:
