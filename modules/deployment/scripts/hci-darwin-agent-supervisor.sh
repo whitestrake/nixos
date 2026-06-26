@@ -47,21 +47,24 @@ parse_hci_project() {
 find_hci_job_id_for_revision() {
   local jobs_json="$1"
   local revision="$2"
+  local job_name="darwinConfiguration-${DARWIN_CONFIGURATION}"
 
   jq -er \
     --arg revision "$revision" \
     --arg site "$HCI_PROJECT_SITE" \
     --arg account "$HCI_PROJECT_ACCOUNT" \
     --arg repo "$HCI_PROJECT_REPO" \
+    --arg jobName "$job_name" \
     '
       [
         .[]?
-        | [.. | strings] as $strings
-        | select(any($strings[]; . == $site or contains($site)))
-        | select(any($strings[]; . == $account or contains($account)))
-        | select(any($strings[]; . == $repo or contains($repo)))
-        | select(any($strings[]; . == $revision or contains($revision)))
-        | (.id // .jobId // .job.id // empty)
+        | select(.project.siteSlug == $site)
+        | select(.project.ownerSlug == $account)
+        | select(.project.slug == $repo)
+        | .jobs[]?
+        | select(.source.revision == $revision)
+        | select(.jobName == $jobName)
+        | .id
       ][0] // empty
     ' <<< "$jobs_json"
 }
@@ -127,17 +130,26 @@ write_agent_files() {
 
   HCI_DARWIN_WORK_DIR="$RUNNER_TEMP/hci-darwin-agent"
   HCI_AGENT_BASE_DIR="$HCI_DARWIN_WORK_DIR/agent"
+  HCI_AGENT_SECRET_STATE_DIR="$HCI_AGENT_BASE_DIR/secretState"
   HCI_AGENT_SECRETS_DIR="$HCI_DARWIN_WORK_DIR/secrets"
   HCI_AGENT_CONFIG_FILE="$HCI_DARWIN_WORK_DIR/agent.json"
   HCI_AGENT_CLUSTER_JOIN_FILE="$HCI_AGENT_SECRETS_DIR/cluster-join-token.key"
+  HCI_AGENT_SESSION_KEY_FILE="$HCI_AGENT_SECRET_STATE_DIR/session.key"
   HCI_AGENT_BINARY_CACHES_FILE="$HCI_AGENT_SECRETS_DIR/binary-caches.json"
   HCI_AGENT_SECRETS_FILE="$HCI_AGENT_SECRETS_DIR/secrets.json"
 
-  mkdir -p "$HCI_AGENT_BASE_DIR" "$HCI_AGENT_SECRETS_DIR"
-  chmod 700 "$HCI_DARWIN_WORK_DIR" "$HCI_AGENT_BASE_DIR" "$HCI_AGENT_SECRETS_DIR"
+  mkdir -p "$HCI_AGENT_BASE_DIR" "$HCI_AGENT_SECRET_STATE_DIR" "$HCI_AGENT_SECRETS_DIR"
+  chmod 700 "$HCI_DARWIN_WORK_DIR" "$HCI_AGENT_BASE_DIR" "$HCI_AGENT_SECRET_STATE_DIR" "$HCI_AGENT_SECRETS_DIR"
 
   printf '%s' "$HERCULES_CI_CLUSTER_JOIN_TOKEN" > "$HCI_AGENT_CLUSTER_JOIN_FILE"
   chmod 600 "$HCI_AGENT_CLUSTER_JOIN_FILE"
+
+  if [ -n "${HERCULES_CI_AGENT_SESSION_KEY_B64:-}" ]; then
+    jq -jner 'env.HERCULES_CI_AGENT_SESSION_KEY_B64 | @base64d | select(length > 0)' > "$HCI_AGENT_SESSION_KEY_FILE"
+    chmod 600 "$HCI_AGENT_SESSION_KEY_FILE"
+  else
+    log "WARNING: HERCULES_CI_AGENT_SESSION_KEY_B64 is empty; this run will mint a fresh HCI agent identity."
+  fi
 
   jq -n \
     --arg cacheName "$CACHIX_CACHE_NAME" \
@@ -203,6 +215,7 @@ start_agent() {
   log "Starting ephemeral Hercules CI Darwin agent..."
   env \
     -u CACHIX_AUTH_TOKEN \
+    -u HERCULES_CI_AGENT_SESSION_KEY_B64 \
     -u HERCULES_CI_CLUSTER_JOIN_TOKEN \
     -u HERCULES_CI_CREDENTIALS_JSON \
     -u HCI_API_TOKEN \
@@ -436,6 +449,11 @@ main() {
 
   prepare_darwin_toplevel
   start_agent
+
+  if try_root_darwin_toplevel; then
+    log "Darwin toplevel for $DARWIN_CONFIGURATION is available before HCI job discovery."
+    return 0
+  fi
 
   job_id="$(wait_for_job_id "$revision" "$deadline")"
   monitor_darwin_toplevel "$job_id" "$deadline"

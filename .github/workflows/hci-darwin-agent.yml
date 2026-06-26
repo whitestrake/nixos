@@ -63,12 +63,22 @@ jobs:
           purge-last-accessed: P1D
           purge-primary-key: never
 
+      - name: Set HCI agent hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo scutil --set HostName github-actions-aarch64-darwin
+          sudo scutil --set LocalHostName github-actions-aarch64-darwin
+          sudo hostname github-actions-aarch64-darwin
+
       - name: Run ephemeral Hercules CI Darwin agent
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
           DARWIN_CONFIGURATION: andred
+          HERCULES_CI_AGENT_SESSION_KEY_B64: ${{ secrets.HERCULES_CI_AGENT_SESSION_KEY_B64 }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
