@@ -106,7 +106,6 @@ emit_empty_plan() {
   local preview_value="$1"
 
   mkdir -p "$output_dir"
-  write_output matrix '{"include":[]}'
   write_output selected_count "0"
   write_output preview "$preview_value"
   write_output selected_hosts "[none]"
@@ -329,7 +328,6 @@ if [ "$preview" = "true" ]; then
   deploy_plan='{"include":[]}'
 fi
 
-write_output matrix "$matrix"
 write_output selected_count "$selected_count"
 write_output preview "$preview"
 write_output selected_hosts "$selected_hosts"

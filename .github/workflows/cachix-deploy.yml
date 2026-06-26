@@ -38,7 +38,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       preview: ${{ steps.plan.outputs.preview }}
       selected_hosts: ${{ steps.plan.outputs.selected_hosts }}
@@ -144,14 +143,11 @@ jobs:
           retention-days: 1
 
   deploy:
-    name: "Deploy ${{ matrix.host }}"
+    name: "Deploy selected hosts"
     needs: plan
     if: ${{ needs.plan.outputs.selected_count != '0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -186,5 +182,19 @@ jobs:
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
           CACHIX_DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "10"
-          DEPLOY_HOST: ${{ matrix.host }}
-        run: bash modules/deployment/scripts/cachix-github-deploy-host.sh
+        run: |
+          mapfile -t hosts < <(jq -r '.include[].host' "$CACHIX_DEPLOY_PLAN_FILE")
+          failed=0
+
+          for host in "${hosts[@]}"; do
+            echo "::group::Deploy $host"
+            if DEPLOY_HOST="$host" bash modules/deployment/scripts/cachix-github-deploy-host.sh; then
+              echo "Deploy $host succeeded."
+            else
+              echo "Deploy $host failed." >&2
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+
+          exit "$failed"
