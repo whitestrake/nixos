@@ -13,10 +13,14 @@
     includes = [
       den.provides.define-user
       den.provides.primary-user
-      (den.provides.user-shell "fish")
+      (den.provides.user-shell "zsh")
     ];
 
     provides.to-hosts.os.nix.settings.trusted-users = ["whitestrake"];
+    provides.to-hosts.darwin = {pkgs, ...}: {
+      environment.shells = with pkgs; [zsh fish];
+      homebrew.enableZshIntegration = true;
+    };
 
     nixos = {config, ...}: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
@@ -28,6 +32,7 @@
     };
 
     homeManager = {
+      config,
       pkgs,
       lib,
       ...
@@ -54,20 +59,39 @@
         yt-dlp
         bat
         rbw
+        (writeShellApplication {
+          name = "nrr";
+          runtimeInputs = [nixos-rebuild];
+          text = ''
+            if [ "$#" -lt 1 ]; then
+              echo "Usage: nrr HOST [COMMAND]" >&2
+              exit 1
+            fi
+
+            host="$1"
+            cmd="''${2:-switch}"
+
+            NIX_SSHOPTS="-A" exec nixos-rebuild \
+              --flake ".#$host" \
+              --target-host "$host" \
+              --build-host "$host" \
+              --sudo "$cmd"
+          '';
+        })
       ];
 
       # Autojump
       programs.zoxide.enable = true;
-      programs.zoxide.enableFishIntegration = true;
+      programs.zoxide.enableZshIntegration = true;
       programs.zoxide.options = ["--cmd j"];
 
       # Command-line fuzzy finder
       programs.fzf.enable = true;
-      programs.fzf.enableFishIntegration = true;
+      programs.fzf.enableZshIntegration = true;
 
       # ls replacement
       programs.eza.enable = true;
-      programs.eza.enableFishIntegration = true;
+      programs.eza.enableZshIntegration = true;
       programs.eza.extraOptions = [
         "--git"
         "--group"
@@ -84,6 +108,7 @@
 
       # Fix whatever went wrong with the last command
       programs.pay-respects.enable = true;
+      programs.pay-respects.enableZshIntegration = true;
 
       programs.git.enable = true;
       programs.git.settings = {
@@ -96,40 +121,23 @@
 
       programs.starship = {
         enable = true;
-        enableFishIntegration = true;
+        enableZshIntegration = true;
         settings.username.format = "[$user]($style) at ";
         settings.username.show_always = true;
         settings.container.disabled = true;
       };
 
-      programs.fish = {
+      programs.zsh = {
         enable = true;
-        binds.ctrl-c.command = "cancel-commandline";
-        interactiveShellInit = ''
-          set fish_greeting
-        '';
-        loginShellInit = ''
-          if test -d /opt/docker
+        dotDir = config.home.homeDirectory;
+        autosuggestion.enable = true;
+        syntaxHighlighting.enable = true;
+        profileExtra = ''
+          if [[ -d /opt/docker ]]; then
             umask 0002
             cd /opt/docker
-          end
+          fi
         '';
-        functions = {
-          nrr = {
-            description = "Remote nixos-rebuild with SSH agent forwarding";
-            body = ''
-              if test (count $argv) -lt 1
-                echo "Usage: nrr HOST [COMMAND]" >&2
-                return 1
-              end
-              set -l CMD switch
-              if test (count $argv) -gt 1
-                set CMD $argv[2]
-              end
-              NIX_SSHOPTS="-A" nixos-rebuild --flake .#$argv[1] --target-host $argv[1] --build-host $argv[1] --sudo $CMD
-            '';
-          };
-        };
       };
 
       programs.helix = {
