@@ -130,7 +130,17 @@
       programs.zsh = {
         enable = true;
         dotDir = config.home.homeDirectory;
-        autosuggestion.enable = true;
+        autosuggestion = {
+          enable = true;
+          strategy = ["history" "completion"];
+          highlight = "fg=8";
+        };
+        history = {
+          append = true;
+          extended = true;
+          size = 100000;
+          save = 100000;
+        };
         syntaxHighlighting.enable = true;
         profileExtra = ''
           if [[ -d /opt/docker ]]; then
@@ -139,6 +149,71 @@
           fi
         '';
       };
+
+      home.activation.importFishHistoryToZsh = lib.hm.dag.entryAfter ["writeBoundary"] ''
+        fish_history="${config.xdg.dataHome}/fish/fish_history"
+        zsh_history="${config.programs.zsh.history.path}"
+        marker_dir="${config.xdg.stateHome}/zsh"
+        marker="$marker_dir/fish-history-imported"
+
+        if [ ! -e "$marker" ] && [ -s "$fish_history" ]; then
+          verboseEcho "Importing fish history into zsh history"
+
+          if [ -n "''${DRY_RUN:-}" ]; then
+            echo "Would import fish history from $fish_history into $zsh_history"
+          else
+            tmp="$(mktemp)"
+            imported="$(mktemp)"
+
+            tab="$(printf '\t')"
+            ${lib.getExe pkgs.fish} -c "history search --reverse --show-time=\"%s$tab\" --null" \
+              | ${pkgs.perl}/bin/perl -0 -Mstrict -Mwarnings -e '
+                  my $zsh_history = shift @ARGV;
+                  my %seen;
+
+                  if (defined $zsh_history && -e $zsh_history) {
+                    open my $fh, "<", $zsh_history or die "failed to read $zsh_history: $!";
+                    {
+                      local $/ = "\n";
+                      while (my $line = <$fh>) {
+                        chomp $line;
+                        $line =~ s/^: [0-9]+:[0-9]+;//;
+                        $seen{$line} = 1 if $line ne "";
+                      }
+                    }
+                    close $fh;
+                  }
+
+                  while (defined(my $entry = <STDIN>)) {
+                    chomp $entry;
+                    my ($timestamp, $command) = split(/\t/, $entry, 2);
+                    next unless defined $timestamp && defined $command;
+                    next unless $timestamp =~ /^[0-9]+$/;
+                    next if $command eq "";
+                    next if $command =~ /\n/;
+                    next if $seen{$command}++;
+                    print ": $timestamp:0;$command\n";
+                  }
+                ' "$zsh_history" > "$imported"
+
+            imported_count="$(wc -l < "$imported" | tr -d ' ')"
+
+            if [ "$imported_count" -gt 0 ]; then
+              mkdir -p "$(dirname "$zsh_history")"
+              if [ -e "$zsh_history" ]; then
+                cp -p "$zsh_history" "$zsh_history.pre-fish-import.$(date +%Y%m%d%H%M%S)"
+                cat "$zsh_history" >> "$imported"
+              fi
+              install -m 600 "$imported" "$tmp"
+              mv "$tmp" "$zsh_history"
+            fi
+
+            mkdir -p "$marker_dir"
+            printf 'imported=%s\n' "$imported_count" > "$marker"
+            rm -f "$tmp" "$imported"
+          fi
+        fi
+      '';
 
       programs.helix = {
         enable = true;
