@@ -375,6 +375,10 @@
       text = builtins.readFile ./scripts/darwin-broker-reaper.sh;
     };
   in {
+    # nsc currently resolves Namespace's API endpoint to IPv4 on sortie. dhcpcd's
+    # default "any" can satisfy network-online.target before IPv4 routing exists.
+    networking.dhcpcd.wait = lib.mkDefault "ipv4";
+
     # Namespace API token consumed by nsc for instance create/list/destroy calls.
     sops.secrets.namespaceToken.owner = agentUser;
 
@@ -466,7 +470,13 @@
           "NAMESPACE_DARWIN_BROKER_DEBUG=${lib.boolToString enableBrokerDebug}"
         ];
         ExecStart = "${darwin-broker-init}/bin/darwin-broker-init";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        RestartSteps = 6;
+        RestartMaxDelaySec = "30s";
       };
+      startLimitBurst = 8;
+      startLimitIntervalSec = 180;
     };
 
     # Timer target: reap idle instances and handle recent failure markers without
