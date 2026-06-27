@@ -10,6 +10,32 @@
     den.default = {
       includes = [den.provides.hostname];
 
+      provides.to-hosts = {user, ...}: {
+        # Keep the WSL SSH agent bridge available outside interactive sessions.
+        wsl-host.users.users.${user.userName}.linger = true;
+      };
+
+      wsl-host = {pkgs, ...}: {
+        environment.systemPackages = with pkgs; [
+          powershell
+        ];
+
+        # Explicit ssh-agent enablement in WSL
+        wsl.ssh-agent.enable = true;
+
+        # Fix for running Windows binaries (Exec format error)
+        environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
+
+        # Use systemd-resolved for native, robust mDNS resolution
+        services.resolved = {
+          enable = true;
+          settings.Resolve = {
+            LLMNR = "false";
+            MulticastDNS = "resolve";
+          };
+        };
+      };
+
       os = {pkgs, ...}: {
         home-manager.useGlobalPkgs = true;
         home-manager.useUserPackages = true;
