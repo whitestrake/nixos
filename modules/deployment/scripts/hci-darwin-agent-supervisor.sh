@@ -7,6 +7,7 @@ set -euo pipefail
 : "${HCI_API_BASE_URL:=https://hercules-ci.com}"
 : "${HCI_DARWIN_AGENT_CONCURRENT_TASKS:=1}"
 : "${HCI_DARWIN_AGENT_STARTUP_SECONDS:=5}"
+: "${HCI_DARWIN_FINISH_CONDITION:=darwin-toplevel}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
@@ -96,6 +97,21 @@ classify_hci_job() {
         "running"
       end
   ' <<< "$job_json"
+}
+
+should_wait_for_hci_job_done() {
+  case "$HCI_DARWIN_FINISH_CONDITION" in
+    darwin-toplevel)
+      return 1
+      ;;
+    hci-job-done)
+      return 0
+      ;;
+    *)
+      log "ERROR: HCI_DARWIN_FINISH_CONDITION must be darwin-toplevel or hci-job-done, got: $HCI_DARWIN_FINISH_CONDITION"
+      exit 1
+      ;;
+  esac
 }
 
 emit_job_status() {
@@ -361,15 +377,24 @@ try_root_darwin_toplevel() {
 monitor_darwin_toplevel() {
   local job_id="$1"
   local deadline="$2"
+  local darwin_toplevel_available=0
   local job_json status
+  local wait_for_hci_job_done=0
+
+  if should_wait_for_hci_job_done; then
+    wait_for_hci_job_done=1
+  fi
 
   log "Monitoring Hercules CI job $job_id while waiting for $DARWIN_TOPLEVEL_OUT_PATH."
   log "Note: sortie may still satisfy Darwin work; this workflow proves additive Darwin capacity and toplevel availability, not exclusive GitHub-builder execution."
 
   while [ "$SECONDS" -lt "$deadline" ]; do
-    if try_root_darwin_toplevel; then
+    if [ "$darwin_toplevel_available" -eq 0 ] && try_root_darwin_toplevel; then
+      darwin_toplevel_available=1
       log "Darwin toplevel for $DARWIN_CONFIGURATION is available."
-      return 0
+      if [ "$wait_for_hci_job_done" -eq 0 ]; then
+        return 0
+      fi
     fi
 
     if ! job_json="$(hci_api_get "/api/v1/jobs/$job_id")"; then
@@ -386,13 +411,17 @@ monitor_darwin_toplevel() {
 
     case "$status" in
       failure)
-        log "ERROR: Hercules CI job $job_id failed before Darwin toplevel became available."
+        if [ "$darwin_toplevel_available" -eq 1 ]; then
+          log "ERROR: Hercules CI job $job_id failed after Darwin toplevel became available."
+        else
+          log "ERROR: Hercules CI job $job_id failed before Darwin toplevel became available."
+        fi
         emit_job_status "$job_json"
         return 1
         ;;
       success)
-        if try_root_darwin_toplevel; then
-          log "Darwin toplevel for $DARWIN_CONFIGURATION is available after HCI job completion."
+        if [ "$darwin_toplevel_available" -eq 1 ] || try_root_darwin_toplevel; then
+          log "Hercules CI job $job_id completed successfully and Darwin toplevel for $DARWIN_CONFIGURATION is available."
           return 0
         fi
 
@@ -406,7 +435,11 @@ monitor_darwin_toplevel() {
         return 1
         ;;
       running)
-        log "Hercules CI job $job_id is still active; Darwin toplevel is not available yet."
+        if [ "$darwin_toplevel_available" -eq 1 ]; then
+          log "Hercules CI job $job_id is still active; Darwin toplevel is available."
+        else
+          log "Hercules CI job $job_id is still active; Darwin toplevel is not available yet."
+        fi
         ;;
       *)
         log "ERROR: unexpected Hercules CI job status classification: $status"
@@ -417,7 +450,11 @@ monitor_darwin_toplevel() {
     sleep "$HCI_DARWIN_POLL_SECONDS"
   done
 
-  log "ERROR: timed out waiting for Darwin toplevel for $DARWIN_CONFIGURATION."
+  if [ "$darwin_toplevel_available" -eq 1 ]; then
+    log "ERROR: timed out waiting for Hercules CI job $job_id to finish."
+  else
+    log "ERROR: timed out waiting for Darwin toplevel for $DARWIN_CONFIGURATION."
+  fi
   return 1
 }
 
@@ -452,7 +489,9 @@ main() {
 
   if try_root_darwin_toplevel; then
     log "Darwin toplevel for $DARWIN_CONFIGURATION is available before HCI job discovery."
-    return 0
+    if ! should_wait_for_hci_job_done; then
+      return 0
+    fi
   fi
 
   job_id="$(wait_for_job_id "$revision" "$deadline")"

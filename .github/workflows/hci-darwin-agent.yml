@@ -27,7 +27,7 @@ permissions:
 jobs:
   darwin-agent:
     name: "Run ephemeral Darwin HCI agent"
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 355
     steps:
       - name: Checkout repository
@@ -41,13 +41,8 @@ jobs:
         with:
           nix_conf: |
             experimental-features = nix-command flakes
-            accept-flake-config = true
-            max-jobs = 2
             narinfo-cache-negative-ttl = 0
-            keep-derivations = true
-            keep-outputs = true
-            extra-substituters = https://whitestrake.cachix.org?priority=50
-            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+            max-jobs = auto
 
       - name: Restore rolling Darwin Nix cache
         uses: nix-community/cache-nix-action@v7
@@ -81,6 +76,58 @@ jobs:
           HERCULES_CI_AGENT_SESSION_KEY_B64: ${{ secrets.HERCULES_CI_AGENT_SESSION_KEY_B64 }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
+          HCI_PROJECT: github/whitestrake/nixos
+          HCI_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          set -euo pipefail
+
+          nix shell \
+            --accept-flake-config \
+            --inputs-from . \
+            nixpkgs#curl \
+            nixpkgs#hercules-ci-agent \
+            nixpkgs#jq \
+            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+
+  darwin-agent-no-cache-no-session:
+    name: "Run ephemeral Darwin HCI agent without GHA cache or session key"
+    runs-on: macos-26
+    timeout-minutes: 355
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v35
+        with:
+          nix_conf: |
+            experimental-features = nix-command flakes
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Set HCI agent hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo scutil --set HostName github-actions-aarch64-darwin
+          sudo scutil --set LocalHostName github-actions-aarch64-darwin
+          sudo hostname github-actions-aarch64-darwin
+
+      - name: Run ephemeral Hercules CI Darwin agent without session key
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_CACHE_NAME: whitestrake
+          DARWIN_CONFIGURATION: andred
+          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
           HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
           HCI_PROJECT: github/whitestrake/nixos
