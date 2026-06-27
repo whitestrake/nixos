@@ -23,6 +23,7 @@
       cachixDeployToken = {};
       cachixPersonalToken = {};
       githubWhitestrakeNixosDeploymentsToken = {};
+      githubWhitestrakeNixosStatusReadToken = {};
       herculesClusterJoinToken.owner =
         config.systemd.services.hercules-ci-agent.serviceConfig.User;
     };
@@ -76,6 +77,11 @@
           kind = "Secret";
           data = {token = config.sops.placeholder.githubWhitestrakeNixosDeploymentsToken;};
           condition = productionBranchCondition;
+        };
+        "githubWhitestrakeNixosStatusRead" = {
+          kind = "Secret";
+          data = {token = config.sops.placeholder.githubWhitestrakeNixosStatusReadToken;};
+          condition = repoCondition;
         };
       };
     };
@@ -183,10 +189,16 @@
           exit 0
         fi
 
-        running_config="$(
-          ${pkgs.coreutils}/bin/tr '\0' '\n' < "/proc/$main_pid/cmdline" \
-            | ${pkgs.gnused}/bin/sed -n '/^--config$/ { n; p; q; }'
-        )"
+        running_config=""
+        previous_arg=""
+        while IFS= read -r arg; do
+          if [ "$previous_arg" = "--config" ]; then
+            running_config="$arg"
+            break
+          fi
+          previous_arg="$arg"
+        done < <(${pkgs.coreutils}/bin/tr '\0' '\n' < "/proc/$main_pid/cmdline")
+
         running_bin="$(${pkgs.coreutils}/bin/readlink -f "/proc/$main_pid/exe" 2>/dev/null || true)"
         expected_bin="$(${pkgs.coreutils}/bin/readlink -f "${agentBin}" 2>/dev/null || true)"
 

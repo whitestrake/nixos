@@ -60,14 +60,22 @@
       (system: !(lib.systems.elaborate system).isDarwin)
       (builtins.attrNames (self.formatter or {}));
 
+    configurationJobPrefixes = {
+      darwinConfiguration = "10";
+      nixosConfiguration = "20";
+    };
+
+    mkConfigurationJobName = kind: name: "${configurationJobPrefixes.${kind}}-${kind}-${name}";
+
     # Build per-host deployable records used for Cachix pins, HCI state, and
     # GitHub Deployment payloads with exact store paths.
     mkDeployableStateItem = pinNames: name: cfg: let
+      kind = "nixosConfiguration";
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
     in {
-      kind = "nixosConfiguration";
-      jobName = "nixosConfiguration-${name}";
+      inherit kind;
+      jobName = mkConfigurationJobName kind name;
       inherit system;
       storePath = toString systemClosure;
       buildPin = "${pinNames.host}-${name}";
@@ -78,6 +86,7 @@
 
     # Record deployable hosts plus exact paths so the HCI effect can publish
     # deployment payloads, while manual deploys can still read HCI state.
+    # The hosts object is the source of truth; scripts derive host lists from it.
     mkDeployablesStateJson = pinNames:
       builtins.unsafeDiscardStringContext (
         builtins.toJSON {
@@ -85,7 +94,6 @@
           branch = config.repo.branch;
           rev = config.repo.rev;
           shortRev = config.repo.shortRev;
-          deployables = lib.sort builtins.lessThan (builtins.attrNames deployableConfigurations);
           hosts = lib.mapAttrs (mkDeployableStateItem pinNames) deployableConfigurations;
         }
       );
@@ -114,6 +122,7 @@
         secretsMap =
           lib.genAttrs (
             ["cachixPush"]
+            ++ ["githubWhitestrakeNixosStatusRead"]
             ++ lib.optional createGitHubDeployment "githubWhitestrakeNixosDeployments"
           )
           lib.id;
@@ -124,6 +133,7 @@
           export HCI_DEPLOYABLES_MODE=${escapeShellArg mode}
           export HCI_DEPLOYABLES_STATE_NAME=${escapeShellArg stateName}
           export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
+          export HCI_DEPLOYABLES_CI_GATE_SCRIPT=${escapeShellArg ./scripts/hci-deployables-ci-gate.sh}
           export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (
             if createGitHubDeployment
             then "true"
@@ -131,9 +141,10 @@
           )}
           export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
           export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
+          export GITHUB_TOKEN="$(readSecretString githubWhitestrakeNixosStatusRead .token)"
+          export GITHUB_REPOSITORY="whitestrake/nixos"
           ${optionalString createGitHubDeployment ''
             export GITHUB_DEPLOYMENT_TOKEN="$(readSecretString githubWhitestrakeNixosDeployments .token)"
-            export GITHUB_REPOSITORY="whitestrake/nixos"
             export CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT=${./scripts/cachix-create-github-deployment.sh}
           ''}
 
@@ -143,24 +154,49 @@
 
     # Fan out each host as its own pure build job for readable GitHub status.
     mkConfigurationJob = kind: name: cfg:
-      lib.nameValuePair "${kind}-${name}" {
+      lib.nameValuePair (mkConfigurationJobName kind name) {
         outputs."${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
       };
   in {
     inherit ciSystems;
 
+    # hercules-ci-effects currently auto-populates onPush.default, and the
+    # documented onPush.default.enable = false option is not available in our
+    # pinned version. Remove it from the returned HCI config so lexical job
+    # ordering is explicit: checks/formatters first, builds next, deployment last.
+    out.onPush = lib.mkForce (builtins.removeAttrs config.onPush ["default"]);
+
     onPush = lib.foldl' (jobs: block: jobs // block) {} [
       {
         # Branch protection can key off this fast job: Linux checks plus Linux formatters.
-        default.outputs = lib.mkForce {
+        "00-checks".outputs = {
           checks.x86_64-linux = {
-            inherit (self.checks.x86_64-linux) check-flake-file treefmt;
+            inherit
+              (self.checks.x86_64-linux)
+              check-flake-file
+              treefmt
+              ;
           };
-          formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
         };
 
+        "01-formatter".outputs = {
+          formatter = lib.genAttrs linuxFormatterSystems (system: self.formatter.${system});
+        };
+      }
+
+      # Darwin configurations are separate jobs so macOS-only builds stay isolated.
+      (lib.mapAttrs'
+        (mkConfigurationJob "darwinConfiguration")
+        (self.darwinConfigurations or {}))
+
+      # NixOS configurations are separate HCI jobs for visibility and faster fanout.
+      (lib.mapAttrs'
+        (mkConfigurationJob "nixosConfiguration")
+        (self.nixosConfigurations or {}))
+
+      {
         # Build rollback aliases and publish deployable pin/state for GitHub.
-        deployables.outputs = withSystem "x86_64-linux" ({
+        "99-deployment".outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
@@ -188,16 +224,6 @@
             });
         });
       }
-
-      # NixOS configurations are separate HCI jobs for visibility and faster fanout.
-      (lib.mapAttrs'
-        (mkConfigurationJob "nixosConfiguration")
-        (self.nixosConfigurations or {}))
-
-      # Darwin configurations are separate jobs so the macOS builder wakes only for them.
-      (lib.mapAttrs'
-        (mkConfigurationJob "darwinConfiguration")
-        (self.darwinConfigurations or {}))
     ];
   };
 }

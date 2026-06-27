@@ -173,12 +173,13 @@ deployables_entry="$(
     --argjson production "$deployables_state" \
     --argjson canary "$canary_deployables_state" \
     '
-      def complete:
-        select(type == "object")
-        | select(.deployables | type == "array")
-        | select(.hosts | type == "object");
-
-      (($production[$rev] | complete) // ($canary[$rev] | complete))
+      if $production | has($rev) then
+        $production[$rev]
+      elif $canary | has($rev) then
+        $canary[$rev]
+      else
+        null
+      end
     '
 )"
 
@@ -188,18 +189,44 @@ if [ -z "$deployables_entry" ] || [ "$deployables_entry" = "null" ]; then
   exit 1
 fi
 
+if ! jq -e 'type == "object"' <<< "$deployables_entry" >/dev/null; then
+  echo "ERROR: HCI deployables state entry for $rev is malformed." >&2
+  jq . <<< "$deployables_entry" >&2 || true
+  exit 1
+fi
+
+if ! jq -e '(.ciGate | type) == "object" and .ciGate.state == "passed"' <<< "$deployables_entry" >/dev/null; then
+  echo "ERROR: deployables entry for $rev is not deployable because ciGate.state is not passed." >&2
+  jq -r '
+    if has("ciGate") | not then
+      "  ciGate is missing"
+    elif (.ciGate | type) == "object" then
+      .ciGate | "  ciGate.state: \(.state // "unknown")"
+    else
+      "  ciGate is malformed: expected object, got \(.ciGate | type)"
+    end
+  ' <<< "$deployables_entry" >&2
+  exit 1
+fi
+
+if ! jq -e '(.hosts | type) == "object" and (.hosts | length) > 0' <<< "$deployables_entry" >/dev/null; then
+  echo "ERROR: no complete deployables entry for $rev." >&2
+  echo "Checked HCI state files: deployables.json and canary-deployables.json." >&2
+  exit 1
+fi
+
 invalid_hosts_json="$(
   jq -c '
-    . as $root
-    |
     [
-      $root.deployables[] as $host
+      .hosts
+      | to_entries[]
       | select(
-          ($root.hosts[$host] | type) != "object"
-          or ($root.hosts[$host].system | type != "string" or ($root.hosts[$host].system | length) == 0)
-          or ($root.hosts[$host].storePath | type != "string" or ($root.hosts[$host].storePath | startswith("/nix/store/") | not))
-          or ($root.hosts[$host].rollbackScript | type != "string" or ($root.hosts[$host].rollbackScript | startswith("/nix/store/") | not))
+          (.value | type) != "object"
+          or (.value.system | type != "string" or (.value.system | length) == 0)
+          or (.value.storePath | type != "string" or (.value.storePath | startswith("/nix/store/") | not))
+          or (.value.rollbackScript | type != "string" or (.value.rollbackScript | startswith("/nix/store/") | not))
         )
+      | .key
     ]
   ' <<< "$deployables_entry"
 )"
@@ -210,7 +237,7 @@ if ! jq -e 'length == 0' <<< "$invalid_hosts_json" >/dev/null; then
   exit 1
 fi
 
-deployables_json="$(jq -c '.deployables | sort' <<< "$deployables_entry")"
+deployables_json="$(jq -c '.hosts | keys | sort' <<< "$deployables_entry")"
 if jq -e 'length == 0' <<< "$deployables_json" >/dev/null; then
   echo "ERROR: HCI deployables state has an empty deployables list for $rev." >&2
   echo "At least one deployable Cachix agent host is expected." >&2
@@ -223,8 +250,9 @@ proofs_json="$(
     --arg rev "$rev" \
     '
       [
-        .deployables[] as $host
-        | .hosts[$host] + {host: $host, rev: $rev}
+        .hosts
+        | to_entries[]
+        | .value + {host: .key, rev: $rev}
       ]
       | sort_by(.host)
     ' <<< "$deployables_entry"

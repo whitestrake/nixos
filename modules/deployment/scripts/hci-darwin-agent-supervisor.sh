@@ -47,7 +47,7 @@ parse_hci_project() {
 find_hci_job_id_for_revision() {
   local jobs_json="$1"
   local revision="$2"
-  local job_name="darwinConfiguration-${DARWIN_CONFIGURATION}"
+  local job_name="10-darwinConfiguration-${DARWIN_CONFIGURATION}"
 
   jq -er \
     --arg revision "$revision" \
@@ -84,7 +84,7 @@ classify_hci_job() {
 
     lower_statuses as $statuses
     | (.jobPhase? // "" | tostring | ascii_downcase) as $phase
-    | if any($statuses[]; test("fail|error|cancel|timed")) then
+    | if any($statuses[]; test("fail|error|exception|cancel|timed|abort|unsuccess")) then
         "failure"
       elif $phase == "done" then
         if (($statuses | length) > 0 and all($statuses[]; test("^(success|succeed|succeeded|successful|done|pass|passed|complete|completed)"))) then

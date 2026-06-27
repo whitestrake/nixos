@@ -12,6 +12,7 @@ github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
+ci_gate_script="${HCI_DEPLOYABLES_CI_GATE_SCRIPT:-$script_dir/hci-deployables-ci-gate.sh}"
 
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
@@ -25,6 +26,11 @@ fi
 
 if [ -z "$deployables_json" ]; then
   echo "ERROR: DEPLOYABLES_JSON is empty." >&2
+  exit 1
+fi
+
+if [ ! -r "$ci_gate_script" ]; then
+  echo "ERROR: CI gate script is not readable: $ci_gate_script" >&2
   exit 1
 fi
 
@@ -63,35 +69,31 @@ fi
 
 # shellcheck disable=SC2016
 required_filter='
-  . as $root
-  | type == "object"
+  type == "object"
     and (.rev | type == "string" and length > 0)
     and (.shortRev | type == "string" and length > 0)
     and (.branch | type == "string" and length > 0)
     and (.ref | type == "string" and length > 0)
-    and (.deployables | type == "array" and length > 0)
-    and all(.deployables[]; type == "string" and length > 0)
-    and (.hosts | type == "object")
+    and (.hosts | type == "object" and length > 0)
     and all(
-      .deployables[];
-      . as $host
-      | ($root.hosts[$host] | type == "object")
-      and ($root.hosts[$host].kind | type == "string" and length > 0)
-      and ($root.hosts[$host].jobName | type == "string" and length > 0)
-      and ($root.hosts[$host].system | type == "string" and length > 0)
-      and ($root.hosts[$host].storePath | type == "string" and startswith("/nix/store/"))
-      and ($root.hosts[$host].buildPin | type == "string")
+      .hosts[];
+      (type == "object")
+      and (.kind | type == "string" and length > 0)
+      and (.jobName | type == "string" and length > 0)
+      and (.system | type == "string" and length > 0)
+      and (.storePath | type == "string" and startswith("/nix/store/"))
+      and (.buildPin | type == "string")
       and (
-        ($root.hosts[$host].buildPin | startswith("built-host-"))
-        or ($root.hosts[$host].buildPin | startswith("canary-host-"))
+        (.buildPin | startswith("built-host-"))
+        or (.buildPin | startswith("canary-host-"))
       )
-      and ($root.hosts[$host].rollbackScript | type == "string" and startswith("/nix/store/"))
-      and ($root.hosts[$host].rollbackPin | type == "string")
+      and (.rollbackScript | type == "string" and startswith("/nix/store/"))
+      and (.rollbackPin | type == "string")
       and (
-        ($root.hosts[$host].rollbackPin | startswith("built-rollback-"))
-        or ($root.hosts[$host].rollbackPin | startswith("canary-rollback-"))
+        (.rollbackPin | startswith("built-rollback-"))
+        or (.rollbackPin | startswith("canary-rollback-"))
       )
-      and ($root.hosts[$host].deployPin | type == "string" and startswith("deployed-host-"))
+      and (.deployPin | type == "string" and startswith("deployed-host-"))
     )
 '
 
@@ -101,7 +103,9 @@ if ! printf '%s\n' "$deployables_json" | jq -e "$required_filter" >/dev/null; th
   exit 1
 fi
 
-rev="$(printf '%s\n' "$deployables_json" | jq -r '.rev')"
+IFS=$'\t' read -r rev short_rev branch < <(
+  printf '%s\n' "$deployables_json" | jq -r '[.rev, .shortRev, .branch] | @tsv'
+)
 work_dir="$(mktemp -d)"
 old_state="$work_dir/state-old.json"
 new_state="$work_dir/state-new.json"
@@ -129,6 +133,62 @@ with_retry() {
     fi
   done
 }
+
+# shellcheck source=/dev/null
+source "$ci_gate_script"
+
+record_deployables_state() {
+  local timestamp
+
+  getStateFile "$state_name" "$old_state"
+
+  if [ -e "$old_state" ] && ! jq -e 'type == "object"' "$old_state" >/dev/null; then
+    echo "Existing state $state_name is malformed; replacing it." >&2
+    rm -f "$old_state"
+  fi
+
+  if [ ! -e "$old_state" ]; then
+    jq -n '{}' > "$old_state"
+  fi
+
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  jq \
+    --argjson current "$deployables_json" \
+    --arg rev "$rev" \
+    --arg timestamp "$timestamp" \
+    --argjson limit "$state_history_limit" \
+    --argjson ciGate "$ci_gate_json" \
+    '
+      def currentRecord:
+        $current | del(.rev) + {generatedAt: $timestamp, ciGate: $ciGate};
+
+      (
+        .[$rev] = currentRecord
+        | to_entries
+        | sort_by(.value.generatedAt // "")
+        | reverse
+        | .[:$limit]
+        | from_entries
+      )
+    ' "$old_state" > "$new_state"
+
+  putStateFile "$state_name" "$new_state"
+
+  echo "Recorded HCI deployables state: $state_name"
+  jq -r --arg rev "$rev" '.[$rev] | "  \($rev) " + (.hosts | keys | sort | join(", "))' "$new_state"
+}
+
+set +e
+ci_gate_json="$(run_deployables_ci_gate "$deployables_json")"
+ci_gate_status=$?
+set -e
+
+if [ "$ci_gate_status" -ne 0 ]; then
+  record_deployables_state
+  echo "CI gate blocked deployables state side effects; state was recorded for inspection." >&2
+  exit "$ci_gate_status"
+fi
 
 fetch_pins() {
   with_retry curl -fsS \
@@ -193,9 +253,9 @@ dispatch_github_deployment() {
   matrix_file="$work_dir/deployment-matrix.json"
   printf '%s\n' "$matrix" > "$matrix_file"
 
-    CACHIX_DEPLOY_REV="$rev" \
-    CACHIX_DEPLOY_SHORT_REV="$(printf '%s\n' "$deployables_json" | jq -r '.shortRev')" \
-    CACHIX_DEPLOY_BRANCH="$(printf '%s\n' "$deployables_json" | jq -r '.branch')" \
+  CACHIX_DEPLOY_REV="$rev" \
+    CACHIX_DEPLOY_SHORT_REV="$short_rev" \
+    CACHIX_DEPLOY_BRANCH="$branch" \
     CACHIX_DEPLOY_SOURCE="hercules-ci" \
     CACHIX_DEPLOY_MATRIX_FILE="$matrix_file" \
     GITHUB_API_URL="$github_api_url" \
@@ -233,55 +293,20 @@ while IFS=$'\t' read -r host build_pin store_path rollback_pin rollback_script; 
 done < <(
   printf '%s\n' "$deployables_json" \
     | jq -r '
-        .deployables[] as $host
-        | .hosts[$host]
+        .hosts
+        | to_entries[]
         | [
-            $host,
-            .buildPin,
-            .storePath,
-            .rollbackPin,
-            .rollbackScript
+            .key,
+            .value.buildPin,
+            .value.storePath,
+            .value.rollbackPin,
+            .value.rollbackScript
           ]
         | @tsv
       '
 )
 
-getStateFile "$state_name" "$old_state"
-
-if [ -e "$old_state" ] && ! jq -e 'type == "object"' "$old_state" >/dev/null; then
-  echo "Existing state $state_name is malformed; replacing it." >&2
-  rm -f "$old_state"
-fi
-
-if [ ! -e "$old_state" ]; then
-  jq -n '{}' > "$old_state"
-fi
-
-timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-jq \
-  --argjson current "$deployables_json" \
-  --arg rev "$rev" \
-  --arg timestamp "$timestamp" \
-  --argjson limit "$state_history_limit" \
-  '
-    def currentRecord:
-      $current | del(.rev) + {generatedAt: $timestamp};
-
-    (
-      .[$rev] = currentRecord
-      | to_entries
-      | sort_by(.value.generatedAt // "")
-      | reverse
-      | .[:$limit]
-      | from_entries
-    )
-  ' "$old_state" > "$new_state"
-
-putStateFile "$state_name" "$new_state"
-
-echo "Recorded HCI deployables state: $state_name"
-jq -r --arg rev "$rev" '.[$rev] | "  \($rev) " + (.deployables | join(", "))' "$new_state"
+record_deployables_state
 
 deployment_matrix="$(
   printf '%s\n' "$deployables_json" \
@@ -294,8 +319,9 @@ deployment_matrix="$(
         {
           include: (
             [
-              .deployables[] as $host
-              | .hosts[$host] + {host: $host}
+              .hosts
+              | to_entries[]
+              | .value + {host: .key}
               | select(pinPath(.deployPin) != .storePath)
               | {
                   host,
