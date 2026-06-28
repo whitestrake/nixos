@@ -2,3 +2,4 @@
 .deploy-gc
 result
 docs/superpowers
+proxmox-jobs.sqlite3*

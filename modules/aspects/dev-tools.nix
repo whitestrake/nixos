@@ -55,6 +55,7 @@
         komodoSecret.owner = user.userName;
         homeAssistantURL.owner = user.userName;
         homeAssistantToken.owner = user.userName;
+        proxmoxMcpToken.owner = user.userName;
       };
       sops.templates."gh-hosts" = {
         owner = user.userName;
@@ -118,6 +119,19 @@
               KOMODO_API_SECRET.file = osConfig.sops.secrets.komodoSecret.path;
             };
           };
+
+          proxmox = {
+            command = "${pkgs.myPkgs.proxmox-mcp-plus}/bin/proxmox-mcp-plus";
+            env = {
+              PROXMOX_HOST = "pve.fell-monitor.ts.net";
+              PROXMOX_USER = "mcp@pve";
+              PROXMOX_TOKEN_NAME = "mcp-pve";
+              PROXMOX_TOKEN_VALUE.file = osConfig.sops.secrets.proxmoxMcpToken.path;
+              PROXMOX_PORT = "443";
+              PROXMOX_VERIFY_SSL = "true";
+              PROXMOX_JOBS_SQLITE_PATH = "${config.home.homeDirectory}/.local/state/proxmox-mcp-plus/jobs.sqlite3";
+            };
+          };
         };
       };
 
@@ -145,6 +159,8 @@
       };
 
       home.file = {
+        ".local/state/proxmox-mcp-plus/.keep".text = "";
+
         ".config/gh/hosts.yml".source =
           config.lib.file.mkOutOfStoreSymlink
           osConfig.sops.templates."gh-hosts".path;
