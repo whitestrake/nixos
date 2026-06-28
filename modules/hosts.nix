@@ -5,6 +5,7 @@
       pascal.users.whitestrake = {};
       rapier.users.whitestrake = {};
       sortie.users.whitestrake = {};
+      onager.users.whitestrake = {};
       orthus.users.whitestrake = {};
       oculus.users.whitestrake = {};
       omnius.users.whitestrake = {};
