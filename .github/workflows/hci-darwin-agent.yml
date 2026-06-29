@@ -88,10 +88,48 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Set up Namespace Nix cache
-        uses: namespacelabs/nscloud-cache-action@v1
-        with:
-          cache: nix
+      - name: Prepare Namespace Nix cache root
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cache_nix_root=/Volumes/cache/nix
+          synthetic_conf=/etc/synthetic.conf
+
+          if [ ! -d /Volumes/cache ]; then
+            echo "::error ::Namespace cache volume is not mounted at /Volumes/cache."
+            exit 1
+          fi
+
+          sudo mkdir -p "$cache_nix_root"
+          sudo touch "$synthetic_conf"
+
+          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
+            if ! grep -qx $'nix\t/Volumes/cache/nix' "$synthetic_conf"; then
+              echo "::error ::$synthetic_conf already defines nix differently."
+              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
+              exit 1
+            fi
+          else
+            printf 'nix\t%s\n' "$cache_nix_root" | sudo tee -a "$synthetic_conf" >/dev/null
+          fi
+
+          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
+          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B || true
+
+          if [ ! -e /nix ]; then
+            echo "::error ::macOS did not materialize synthetic /nix."
+            sudo cat "$synthetic_conf"
+            exit 1
+          fi
+
+          if [ "$(readlink /nix)" != "$cache_nix_root" ]; then
+            echo "::error ::/nix does not point at $cache_nix_root."
+            ls -ld /nix
+            exit 1
+          fi
+
+          echo "Prepared /nix -> $cache_nix_root"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
