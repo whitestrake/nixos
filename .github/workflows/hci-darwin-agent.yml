@@ -93,27 +93,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          cache_nix_root=/Volumes/cache/nix
+          cache_mount=/Volumes/cache
           synthetic_conf=/etc/synthetic.conf
 
-          if [ ! -d /Volumes/cache ]; then
-            echo "::error ::Namespace cache volume is not mounted at /Volumes/cache."
+          if [ ! -d "$cache_mount" ]; then
+            echo "::error ::Namespace cache volume is not mounted at $cache_mount."
             exit 1
           fi
 
-          sudo mkdir -p "$cache_nix_root"
-          sudo chown "$USER" "$cache_nix_root"
-          chmod u+rwx "$cache_nix_root"
+          cache_device="$(diskutil info -plist "$cache_mount" | plutil -extract DeviceIdentifier raw -)"
+          if [ -z "$cache_device" ]; then
+            echo "::error ::could not determine Namespace cache volume device."
+            exit 1
+          fi
+
           sudo touch "$synthetic_conf"
 
           if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
-            if ! grep -qx $'nix\t/Volumes/cache/nix' "$synthetic_conf"; then
+            if ! grep -qx 'nix' "$synthetic_conf"; then
               echo "::error ::$synthetic_conf already defines nix differently."
               grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
               exit 1
             fi
           else
-            printf 'nix\t%s\n' "$cache_nix_root" | sudo tee -a "$synthetic_conf" >/dev/null
+            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
           fi
 
           sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1 \
@@ -126,13 +129,18 @@ jobs:
             exit 1
           fi
 
-          if [ "$(readlink /nix)" != "$cache_nix_root" ]; then
-            echo "::error ::/nix does not point at $cache_nix_root."
+          if [ -L /nix ]; then
+            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
             ls -ld /nix
             exit 1
           fi
 
-          echo "Prepared /nix -> $cache_nix_root"
+          sudo diskutil unmount "$cache_mount"
+          sudo diskutil mount -mountPoint /nix "$cache_device"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+          echo "Mounted Namespace cache volume $cache_device at /nix"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
