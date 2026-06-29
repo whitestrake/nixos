@@ -36,9 +36,9 @@ python3Packages.buildPythonApplication rec {
     "paramiko"
   ];
 
-  # This deployment uses the native stdio MCP server. Upstream declares mcpo
-  # unconditionally for the OpenAPI proxy, but the stdio entrypoint does not
-  # import it and nixpkgs does not currently package it.
+  # This deployment uses the native MCP server entrypoint. Upstream declares mcpo
+  # unconditionally for the OpenAPI proxy, but the MCP entrypoint does not import
+  # it and nixpkgs does not currently package it.
   pythonRemoveDeps = [
     "mcpo"
   ];
