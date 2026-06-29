@@ -16,7 +16,6 @@
       (den.provides.user-shell "zsh")
     ];
 
-    provides.to-hosts.os.nix.settings.trusted-users = ["whitestrake"];
     provides.to-hosts.darwin = {pkgs, ...}: {
       environment.shells = with pkgs; [zsh fish];
       homebrew.enableZshIntegration = true;

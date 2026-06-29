@@ -156,17 +156,6 @@
           CURL_CA_BUNDLE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
           NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
-
-        # Determinate Nix handles nix daemon on macOS
-        nix.enable = false;
-
-        # Because we disable nix-darwin's management of the nix daemon, we must
-        # manually inject our evaluated nix.settings into Determinate's custom config
-        environment.etc."nix/nix.custom.conf".text = with lib; ''
-          trusted-users = ${concatStringsSep " " config.nix.settings.trusted-users}
-          extra-substituters = ${concatStringsSep " " config.nix.settings.substituters}
-          extra-trusted-public-keys = ${concatStringsSep " " config.nix.settings.trusted-public-keys}
-        '';
       };
 
       homeManager = {
