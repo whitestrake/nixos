@@ -102,6 +102,8 @@ jobs:
           fi
 
           sudo mkdir -p "$cache_nix_root"
+          sudo chown "$USER" "$cache_nix_root"
+          chmod u+rwx "$cache_nix_root"
           sudo touch "$synthetic_conf"
 
           if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
@@ -114,8 +116,9 @@ jobs:
             printf 'nix\t%s\n' "$cache_nix_root" | sudo tee -a "$synthetic_conf" >/dev/null
           fi
 
-          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
-          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B || true
+          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1 \
+            || sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+            || echo "::warning ::failed to materialize synthetic objects with apfs.util"
 
           if [ ! -e /nix ]; then
             echo "::error ::macOS did not materialize synthetic /nix."
