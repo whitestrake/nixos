@@ -10,12 +10,14 @@
     den.default = {
       includes = [den.provides.hostname];
 
-      provides.to-hosts = {user, ...}: {
+      wsl-host = {
+        config,
+        pkgs,
+        ...
+      }: {
         # Keep the WSL SSH agent bridge available outside interactive sessions.
-        wsl-host.users.users.${user.userName}.linger = true;
-      };
+        users.users.${config.wsl.defaultUser}.linger = true;
 
-      wsl-host = {pkgs, ...}: {
         environment.systemPackages = with pkgs; [
           powershell
         ];
