@@ -14,6 +14,7 @@
       den.aspects.docker
       den.aspects.dev-tools
       den.aspects.hercules
+      den.aspects.hercules.prewarm
     ];
 
     nixos = {config, ...}: {
