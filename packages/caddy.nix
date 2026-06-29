@@ -20,7 +20,7 @@
       caddy = overriddenCaddy;
     }).withPlugins {
       plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
-      hash = "sha256-8yZDrejNKsaUnUaTUFYbarWNmxafqp2z2rWo+XRsxV8=";
+      hash = "sha256-hEHgAG0F0ozHRAPuxEqLyTATBrE+pajeXDiSNwniorg=";
     };
 in
   # Wrap in a transparent derivation so 'position' points to this file for nix-update
