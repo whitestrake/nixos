@@ -240,6 +240,133 @@
       lib.optionals (host.system == "x86_64-linux") ["hci-x86_64-effect-runner"];
   };
 
+  den.aspects.hercules.prewarm.nixos = {
+    config,
+    pkgs,
+    ...
+  }: let
+    prewarmScript = pkgs.writeShellApplication {
+      name = "hci-prewarm-configurations";
+      runtimeInputs = with pkgs; [
+        coreutils
+        findutils
+        gitMinimal
+        gnugrep
+        jq
+        nix
+        systemd
+        util-linux
+      ];
+      text = builtins.readFile ./scripts/hci-prewarm-configurations.sh;
+    };
+
+    agentHasWorkers = pkgs.writeShellApplication {
+      name = "hci-agent-has-workers";
+      runtimeInputs = with pkgs; [
+        coreutils
+        findutils
+        systemd
+      ];
+      text = ''
+        control_group="$(systemctl show -p ControlGroup --value hercules-ci-agent.service 2>/dev/null || true)"
+        if [ -z "$control_group" ]; then
+          echo "hci-prewarm: could not determine Hercules CI agent control group; skipping prewarm."
+          exit 1
+        fi
+
+        cgroup_dir="/sys/fs/cgroup$control_group"
+        if [ ! -d "$cgroup_dir" ]; then
+          echo "hci-prewarm: cannot inspect $cgroup_dir; skipping prewarm."
+          exit 1
+        fi
+
+        found_proc_file=0
+        while IFS= read -r -d "" cgroup_procs; do
+          found_proc_file=1
+          while IFS= read -r pid; do
+            if [ -z "$pid" ] || [ ! -r "/proc/$pid/cmdline" ]; then
+              continue
+            fi
+
+            cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" || true)"
+            case "$cmdline" in
+              *hercules-ci-agent-worker*)
+                echo "hci-prewarm: active Hercules CI worker pid $pid: $cmdline"
+                exit 1
+                ;;
+            esac
+          done < "$cgroup_procs"
+        done < <(find "$cgroup_dir" -name cgroup.procs -type f -readable -print0)
+
+        if [ "$found_proc_file" = "0" ]; then
+          echo "hci-prewarm: found no readable cgroup.procs files below $cgroup_dir; skipping prewarm."
+          exit 1
+        fi
+
+        exit 0
+      '';
+    };
+  in {
+    assertions = [
+      {
+        assertion = config.services.hercules-ci-agent.enable or false;
+        message = "den.aspects.hercules.prewarm requires services.hercules-ci-agent.enable = true.";
+      }
+    ];
+
+    nix.settings = {
+      keep-derivations = true;
+      keep-outputs = true;
+    };
+
+    systemd.tmpfiles.rules = [
+      "d /var/lib/hci-prewarm 0755 root root -"
+      "d /nix/var/nix/gcroots/hci-prewarm 0755 root root -"
+    ];
+
+    systemd.services.hci-prewarm-configurations = {
+      description = "Prewarm Hercules CI configuration closures";
+      after = ["network-online.target" "hercules-ci-agent.service"];
+      wants = ["network-online.target"];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecCondition = "${agentHasWorkers}/bin/hci-agent-has-workers";
+        ExecStart = "${prewarmScript}/bin/hci-prewarm-configurations";
+        Nice = 19;
+        IOSchedulingClass = "idle";
+        IOSchedulingPriority = 7;
+        CPUWeight = 10;
+        IOWeight = 10;
+        MemoryHigh = "6G";
+        MemoryMax = "10G";
+        RuntimeMaxSec = "45min";
+        TasksMax = 256;
+        OOMPolicy = "stop";
+      };
+      environment = {
+        HCI_PREWARM_REPO_URL = "https://github.com/whitestrake/nixos.git";
+        HCI_PREWARM_BRANCH = "master";
+        HCI_PREWARM_CHECKOUT_DIR = "/var/lib/hci-prewarm/nixos";
+        HCI_PREWARM_GCROOT_DIR = "/nix/var/nix/gcroots/hci-prewarm";
+        HCI_PREWARM_KEEP_REVISIONS = "3";
+        HCI_PREWARM_SLEEP_SECONDS = "120";
+        HCI_PREWARM_LOCK_FILE = "/run/hci-prewarm-configurations.lock";
+        HCI_PREWARM_AGENT_SERVICE = "hercules-ci-agent.service";
+      };
+    };
+
+    systemd.timers.hci-prewarm-configurations = {
+      wantedBy = ["timers.target"];
+      timerConfig = {
+        OnCalendar = "hourly";
+        RandomizedDelaySec = "20min";
+        Persistent = true;
+        AccuracySec = "5min";
+        Unit = "hci-prewarm-configurations.service";
+      };
+    };
+  };
+
   den.aspects.hercules.nixbuild-linux-broker.nixos = {
     config,
     pkgs,
