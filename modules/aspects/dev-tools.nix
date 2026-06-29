@@ -4,7 +4,6 @@
   ...
 }: {
   flake-file.inputs.deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
-  flake-file.inputs.mcp-nixos-pr.url = "github:utensils/mcp-nixos/refs/pull/159/merge";
 
   den.aspects.dev-tools = {
     os = {
@@ -50,12 +49,6 @@
     }: {
       sops.secrets = {
         githubToken = {};
-        komodoURL.owner = user.userName;
-        komodoKey.owner = user.userName;
-        komodoSecret.owner = user.userName;
-        homeAssistantURL.owner = user.userName;
-        homeAssistantToken.owner = user.userName;
-        proxmoxMcpToken.owner = user.userName;
       };
       sops.templates."gh-hosts" = {
         owner = user.userName;
@@ -80,6 +73,7 @@
       osConfig,
       ...
     }: let
+      mcpServiceUrl = name: "https://mcp-${name}.${host.tailnetSuffix}/mcp";
       codexMcpServers =
         lib.mapAttrs (
           name: server:
@@ -101,37 +95,10 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos.command = "${inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos}/bin/mcp-nixos";
-
-          homeassistant = {
-            command = "${pkgs.myPkgs.ha-mcp}/bin/ha-mcp";
-            env = {
-              HOMEASSISTANT_URL.file = osConfig.sops.secrets.homeAssistantURL.path;
-              HOMEASSISTANT_TOKEN.file = osConfig.sops.secrets.homeAssistantToken.path;
-            };
-          };
-
-          komodo = {
-            command = "${pkgs.myPkgs.komodo-mcp-server}/bin/komodo-mcp-server";
-            env = {
-              KOMODO_URL.file = osConfig.sops.secrets.komodoURL.path;
-              KOMODO_API_KEY.file = osConfig.sops.secrets.komodoKey.path;
-              KOMODO_API_SECRET.file = osConfig.sops.secrets.komodoSecret.path;
-            };
-          };
-
-          proxmox = {
-            command = "${pkgs.myPkgs.proxmox-mcp-plus}/bin/proxmox-mcp-plus";
-            env = {
-              PROXMOX_HOST = "pve.fell-monitor.ts.net";
-              PROXMOX_USER = "mcp@pve";
-              PROXMOX_TOKEN_NAME = "mcp-pve";
-              PROXMOX_TOKEN_VALUE.file = osConfig.sops.secrets.proxmoxMcpToken.path;
-              PROXMOX_PORT = "443";
-              PROXMOX_VERIFY_SSL = "true";
-              PROXMOX_JOBS_SQLITE_PATH = "${config.home.homeDirectory}/.local/state/proxmox-mcp-plus/jobs.sqlite3";
-            };
-          };
+          nixos.url = mcpServiceUrl "nixos";
+          homeassistant.url = mcpServiceUrl "homeassistant";
+          komodo.url = mcpServiceUrl "komodo";
+          proxmox.url = mcpServiceUrl "proxmox";
         };
       };
 
@@ -159,8 +126,6 @@
       };
 
       home.file = {
-        ".local/state/proxmox-mcp-plus/.keep".text = "";
-
         ".config/gh/hosts.yml".source =
           config.lib.file.mkOutOfStoreSymlink
           osConfig.sops.templates."gh-hosts".path;
