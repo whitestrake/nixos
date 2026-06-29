@@ -119,9 +119,10 @@ jobs:
             printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
           fi
 
-          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1 \
-            || sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
-            || echo "::warning ::failed to materialize synthetic objects with apfs.util"
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
+          fi
 
           if [ ! -e /nix ]; then
             echo "::error ::macOS did not materialize synthetic /nix."
