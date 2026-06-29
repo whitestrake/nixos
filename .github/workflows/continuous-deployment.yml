@@ -126,11 +126,7 @@ jobs:
             }}
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
-        with:
-          nix_conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
+        uses: ./.github/actions/install-nix
 
       - name: Configure Cachix
         uses: cachix/cachix-action@v17

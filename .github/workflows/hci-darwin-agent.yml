@@ -37,10 +37,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: ./.github/actions/install-nix
         with:
-          nix_conf: |
-            experimental-features = nix-command flakes
+          extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
@@ -103,10 +102,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: ./.github/actions/install-nix
         with:
-          nix_conf: |
-            experimental-features = nix-command flakes
+          extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 

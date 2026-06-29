@@ -19,11 +19,7 @@ jobs:
       has_packages: ${{ steps.set-matrix.outputs.has_packages }}
     steps:
       - uses: actions/checkout@v7
-      - uses: nixbuild/nix-quick-install-action@v35
-        with:
-          nix_conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
+      - uses: ./.github/actions/install-nix
       - id: set-matrix
         run: |
           # shellcheck disable=SC2016
@@ -52,11 +48,7 @@ jobs:
         package: ${{ fromJson(needs.detect-packages.outputs.packages) }}
     steps:
       - uses: actions/checkout@v7
-      - uses: nixbuild/nix-quick-install-action@v35
-        with:
-          nix_conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
+      - uses: ./.github/actions/install-nix
       - name: Run nix-update
         id: update
         run: |

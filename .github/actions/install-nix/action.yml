@@ -1,0 +1,19 @@
+name: "Install Nix"
+description: "Install Nix with this repository's GitHub Actions defaults."
+
+inputs:
+  extra-nix-conf:
+    description: "Additional nix.conf lines appended to the repository defaults."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - uses: nixbuild/nix-quick-install-action@v35
+      with:
+        nix_conf: |
+          experimental-features = nix-command flakes
+          accept-flake-config = true
+          nix-path = nixpkgs=flake:nixpkgs
+          ${{ inputs.extra-nix-conf }}
