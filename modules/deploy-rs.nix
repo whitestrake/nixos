@@ -30,7 +30,7 @@
       lib.filterAttrs (name: host: host.class == "nixos" && !(isWslNode name)) allHosts;
 
     mkNode = name: host: {
-      hostname = "${name}.${config.network.tailnetSuffix}";
+      hostname = "${name}.${host.tailnetSuffix}";
       profiles.system.path = deploy-rs.lib.${host.system}.activate.nixos self.nixosConfigurations.${name};
     };
 
