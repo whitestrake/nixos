@@ -186,11 +186,12 @@ jobs:
 
   darwin-agent-namespace-artifact:
     name: "Run ephemeral Darwin HCI agent on Namespace with artifact store"
-    runs-on: namespace-profile-aarch64-darwin
+    runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     env:
       NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
+      NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -204,6 +205,8 @@ jobs:
           set -euo pipefail
 
           synthetic_conf=/etc/synthetic.conf
+          image_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-root.XXXXXX")"
+          image_path="$image_dir/nix-root.sparseimage"
 
           sudo touch "$synthetic_conf"
 
@@ -234,10 +237,22 @@ jobs:
             exit 1
           fi
 
+          hdiutil create \
+            -size "$NAMESPACE_NIX_STORE_IMAGE_SIZE" \
+            -type SPARSE \
+            -fs APFS \
+            -volname NixStore \
+            "$image_path"
+
+          sudo hdiutil attach \
+            -mountpoint /nix \
+            -nobrowse \
+            "$image_path"
+
           sudo chown "$USER" /nix
           chmod u+rwx /nix
 
-          echo "Prepared synthetic /nix for Namespace artifact store"
+          echo "Mounted ephemeral APFS image $image_path at /nix for Namespace artifact store"
 
       - name: Restore Namespace Nix store artifact
         shell: bash

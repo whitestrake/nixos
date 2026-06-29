@@ -1,5 +1,6 @@
 self-hosted-runner:
   labels:
     - namespace-profile-aarch64-darwin
+    - namespace-profile-aarch64-darwin-no-cache
 
 config-variables: null
