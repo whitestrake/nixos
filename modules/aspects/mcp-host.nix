@@ -8,6 +8,9 @@
     pkgs,
     ...
   }: let
+    tailscale = "${config.services.tailscale.package}/bin/tailscale";
+    tailnetServiceHost = name: "mcp-${name}.${host.tailnetSuffix}";
+
     services = {
       homeassistant = {
         port = 8761;
@@ -30,6 +33,8 @@
           MCP_TRANSPORT = "http";
           MCP_BIND_HOST = "127.0.0.1";
           MCP_PORT = "8762";
+          MCP_ALLOWED_HOSTS = "${tailnetServiceHost "komodo"},${tailnetServiceHost "komodo"}:443,localhost,127.0.0.1";
+          MCP_TRUST_PROXY = "loopback";
         };
         secrets = {
           KOMODO_URL = "komodoURL";
@@ -45,6 +50,9 @@
           MCP_HOST = "127.0.0.1";
           MCP_PORT = "8763";
           MCP_TRANSPORT = "STREAMABLE_HTTP";
+          MCP_ALLOWED_HOSTS = "${tailnetServiceHost "proxmox"},${tailnetServiceHost "proxmox"}:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*";
+          MCP_ALLOWED_ORIGINS = "https://${tailnetServiceHost "proxmox"}";
+          MCP_DNS_REBINDING_PROTECTION = "true";
           PROXMOX_HOST = "pve.${host.tailnetSuffix}";
           PROXMOX_USER = "mcp@pve";
           PROXMOX_TOKEN_NAME = "mcp-pve";
@@ -159,9 +167,42 @@
       '';
     };
 
-    mkTailscaleServeService = _name: service: {
-      advertised = true;
-      endpoints."tcp:443" = "http://127.0.0.1:${toString service.port}";
+    mkTailscaleUnit = name: service: let
+      mcpUnit = "mcp-host-${name}.service";
+      tailscaleService = "svc:mcp-${name}";
+      localTarget = "http://127.0.0.1:${toString service.port}";
+      lockFile = "/run/tailscale-serve-mcp.lock";
+      startScript = pkgs.writeShellScript "tailscale-serve-mcp-${name}-start" ''
+        ${pkgs.util-linux}/bin/flock ${lib.escapeShellArg lockFile} ${pkgs.bash}/bin/bash -euc ${lib.escapeShellArg ''
+          ${tailscale} serve clear ${lib.escapeShellArg tailscaleService} || true
+          ${tailscale} serve --service=${lib.escapeShellArg tailscaleService} --https=443 ${lib.escapeShellArg localTarget}
+          ${tailscale} serve advertise ${lib.escapeShellArg tailscaleService}
+        ''}
+      '';
+      stopScript = pkgs.writeShellScript "tailscale-serve-mcp-${name}-stop" ''
+        ${pkgs.util-linux}/bin/flock ${lib.escapeShellArg lockFile} ${pkgs.bash}/bin/bash -euc ${lib.escapeShellArg ''
+          ${tailscale} serve clear ${lib.escapeShellArg tailscaleService} || true
+        ''}
+      '';
+    in {
+      description = "Advertise ${tailscaleService} through Tailscale Services";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "tailscaled.service"
+        "tailscaled-autoconnect.service"
+        mcpUnit
+      ];
+      wants = ["tailscaled.service"];
+      requires = [mcpUnit];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        # Tailscale serve updates are optimistic writes to one shared config;
+        # serialize the whole clear/serve/advertise transaction to avoid etag
+        # races when systemd starts multiple MCP advertisements in parallel.
+        ExecStart = startScript;
+        ExecStop = stopScript;
+      };
     };
   in {
     assertions = [
@@ -173,14 +214,8 @@
 
     sops.secrets = secretRestartUnits;
 
-    services.tailscale.serve = {
-      enable = true;
-      services = lib.mapAttrs' (name: service:
-        lib.nameValuePair "mcp-${name}" (mkTailscaleServeService name service))
-      services;
-    };
-
     systemd.services =
-      lib.mapAttrs' (name: service: lib.nameValuePair "mcp-host-${name}" (mkMcpUnit name service)) services;
+      lib.mapAttrs' (name: service: lib.nameValuePair "mcp-host-${name}" (mkMcpUnit name service)) services
+      // lib.mapAttrs' (name: service: lib.nameValuePair "tailscale-serve-mcp-${name}" (mkTailscaleUnit name service)) services;
   };
 }
