@@ -5,6 +5,11 @@
 }: {
   config = {
     den.schema.user.classes = lib.mkDefault ["homeManager"];
+    den.schema.host.options.tailnetSuffix = lib.mkOption {
+      type = lib.types.str;
+      default = "fell-monitor.ts.net";
+      description = "Tailnet DNS suffix appended to this Den host name for tailnet-internal addressing";
+    };
 
     # Base overrides applied globally to classes
     den.default = {
@@ -179,14 +184,6 @@
         manual.manpages.enable = false;
         manual.json.enable = false;
       };
-    };
-  };
-
-  options = {
-    network.tailnetSuffix = lib.mkOption {
-      type = lib.types.str;
-      default = "fell-monitor.ts.net";
-      description = "Tailnet DNS suffix appended to host names for tailnet-internal addressing";
     };
   };
 }

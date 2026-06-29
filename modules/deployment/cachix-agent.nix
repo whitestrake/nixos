@@ -108,6 +108,7 @@
     # synthesized from other evaluated options when that is less repetitive.
     mkHostChecks = name: let
       cfg = self.nixosConfigurations.${name}.config;
+      host = config.den.hosts.${system}.${name};
       healthCfg = cfg.den.deploy.health;
 
       unitCheckBudget = unit:
@@ -162,7 +163,7 @@
       # socket check budget: 15 attempts, 2s delay
       rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
         check_or_fail "systemd unit rsync.service failed health check" "systemd-unit-rsync.service" 15 2 check_systemd_unit "rsync.service"
-        check_or_fail "rsyncd socket failed health check" "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${config.network.tailnetSuffix}/873'
+        check_or_fail "rsyncd socket failed health check" "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${host.tailnetSuffix}/873'
       '';
 
       # extra check script

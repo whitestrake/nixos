@@ -7,10 +7,12 @@
   # and routes to nixBuilders.
   den.policies.collect-nix-builders = {host, ...}: let
     inherit (den.lib.policy) pipe;
+    inherit (host) name;
   in [
     (pipe.from "nixBuilder" [
-      (pipe.collectAll ({host, ...}: true))
-      (pipe.filter (builder: builder.name != host.name))
+      (pipe.filter (_: false))
+      (pipe.collectAll ({host, ...}: host.name != name))
+      pipe.withProvenance
       (pipe.as "nixBuilders")
     ])
   ];
@@ -33,14 +35,18 @@
         sops.secrets.nixBuilderKey = {};
         nix.buildMachines =
           map
-          (builder: {
+          ({
+            value,
+            source,
+          }: {
             protocol = "ssh-ng";
             sshUser = "builder";
             sshKey = config.sops.secrets.nixBuilderKey.path;
             maxJobs = 4;
             supportedFeatures = ["nixos-test" "benchmark" "big-parallel" "kvm"];
-            hostName = "${builder.name}.${flake.config.network.tailnetSuffix}";
-            inherit (builder) system publicHostKey;
+            hostName = "${source.host.name}.${source.host.tailnetSuffix}";
+            inherit (source.host) system;
+            inherit (value) publicHostKey;
           })
           nixBuilders;
       }
