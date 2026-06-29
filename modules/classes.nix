@@ -1,3 +1,5 @@
+# Declares repo-specific Den classes and routing policies.
+# Default payloads for these classes belong in modules/defaults.nix.
 {
   den,
   lib,
