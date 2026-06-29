@@ -21,8 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  actions: write
   contents: read
+  statuses: read
 
 jobs:
   darwin-agent:
@@ -43,20 +43,6 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Restore rolling Darwin Nix cache
-        uses: nix-community/cache-nix-action@v7
-        with:
-          primary-key: nix-darwin-andred-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-prefixes-first-match: |
-            nix-darwin-andred-${{ github.ref_name }}-
-            nix-darwin-andred-master-
-          gc-max-store-size-macos: 0
-          purge: true
-          purge-prefixes: |
-            nix-darwin-andred-
-          purge-last-accessed: P1D
-          purge-primary-key: never
-
       - name: Set HCI agent hostname
         shell: bash
         run: |
@@ -72,9 +58,10 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
           DARWIN_CONFIGURATION: andred
-          HERCULES_CI_AGENT_SESSION_KEY_B64: ${{ secrets.HERCULES_CI_AGENT_SESSION_KEY_B64 }}
+          GITHUB_TOKEN: ${{ github.token }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
           HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
           HCI_PROJECT: github/whitestrake/nixos
@@ -90,9 +77,9 @@ jobs:
             nixpkgs#jq \
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
-  darwin-agent-no-cache-no-session:
-    name: "Run ephemeral Darwin HCI agent without GHA cache or session key"
-    runs-on: macos-26
+  darwin-agent-namespace:
+    name: "Run ephemeral Darwin HCI agent on Namespace"
+    runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     steps:
       - name: Checkout repository
@@ -100,6 +87,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Set up Namespace Nix cache
+        uses: namespacelabs/nscloud-cache-action@v1
+        with:
+          cache: nix
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -113,16 +105,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo scutil --set HostName github-actions-aarch64-darwin
-          sudo scutil --set LocalHostName github-actions-aarch64-darwin
-          sudo hostname github-actions-aarch64-darwin
+          sudo scutil --set HostName namespace-aarch64-darwin
+          sudo scutil --set LocalHostName namespace-aarch64-darwin
+          sudo hostname namespace-aarch64-darwin
 
-      - name: Run ephemeral Hercules CI Darwin agent without session key
+      - name: Run ephemeral Hercules CI Darwin agent
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
           DARWIN_CONFIGURATION: andred
+          GITHUB_TOKEN: ${{ github.token }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_FINISH_CONDITION: hci-job-done
