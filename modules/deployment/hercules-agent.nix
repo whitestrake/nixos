@@ -97,6 +97,7 @@
         nixVerbosity = "Notice";
       };
     };
+    den.deploy.health.requiredSystemdUnits = ["hercules-ci-agent.service"];
 
     systemd.services.hercules-ci-agent = {
       # GHC reserves 1T of virtual address space by default on 64-bit platforms.
