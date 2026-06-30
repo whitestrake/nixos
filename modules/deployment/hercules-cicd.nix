@@ -13,7 +13,7 @@
     lib,
     ...
   }: let
-    # Master records production deployables; other branches record canary deployables.
+    # Master records production deliverables; other branches record canary deliverables.
     isProductionBranch = config.repo.branch == "master";
 
     # Effects must execute on native x86_64 Linux agents, even if builds fan out.
@@ -65,12 +65,24 @@
       nixosConfiguration = "20";
     };
 
-    mkConfigurationJobName = kind: name: "${configurationJobPrefixes.${kind}}-${kind}-${name}";
+    nixosConfigurationNames = builtins.attrNames (self.nixosConfigurations or {});
+    darwinConfigurationNames = builtins.attrNames (self.darwinConfigurations or {});
+    duplicateConfigurationNames = lib.intersectLists nixosConfigurationNames darwinConfigurationNames;
+    hasDuplicateConfigurationName = name: builtins.elem name duplicateConfigurationNames;
 
-    # Build per-host deployable records used for Cachix pins, HCI state, and
-    # GitHub Deployment payloads with exact store paths.
-    mkDeployableStateItem = pinNames: name: cfg: let
-      kind = "nixosConfiguration";
+    mkConfigurationJobName = kind: name: "${configurationJobPrefixes.${kind}}-${kind}-${name}";
+    mkConfigurationRecordName = kind: name:
+      if hasDuplicateConfigurationName name
+      then "${kind}-${name}"
+      else name;
+    mkConfigurationBuildPin = pinNames: kind: name:
+      if hasDuplicateConfigurationName name
+      then "${pinNames.host}-${kind}-${name}"
+      else "${pinNames.host}-${name}";
+
+    # Configuration records cover every configuration HCI evaluates. They drive
+    # built-host-* / canary-host-* pins independently of deployability.
+    mkBuildStateItem = pinNames: kind: name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
       systemClosure = cfg.config.system.build.toplevel;
     in {
@@ -78,42 +90,65 @@
       jobName = mkConfigurationJobName kind name;
       inherit system;
       storePath = toString systemClosure;
-      buildPin = "${pinNames.host}-${name}";
-      rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
-      rollbackPin = "${pinNames.rollback}-${name}";
-      deployPin = "deployed-host-${name}";
+      buildPin = mkConfigurationBuildPin pinNames kind name;
     };
 
-    # Record deployable hosts plus exact paths so the HCI effect can publish
-    # deployment payloads, while manual deploys can still read HCI state.
-    # The hosts object is the source of truth; scripts derive host lists from it.
-    mkDeployablesStateJson = pinNames:
+    # Deployable records are the subset used for Cachix Deploy state, rollback
+    # pins, and GitHub Deployment payloads.
+    mkDeployableStateItem = pinNames: name: cfg: let
+      system = cfg.pkgs.stdenv.hostPlatform.system;
+    in
+      (mkBuildStateItem pinNames "nixosConfiguration" name cfg)
+      // {
+        rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+        rollbackPin = "${pinNames.rollback}-${name}";
+        deployPin = "deployed-host-${name}";
+      };
+
+    mkConfigurationRecords = pinNames: kind: configurations:
+      lib.mapAttrs' (
+        name: cfg:
+          lib.nameValuePair
+          (mkConfigurationRecordName kind name)
+          (mkBuildStateItem pinNames kind name cfg)
+      )
+      configurations;
+
+    mkConfigurations = pinNames:
+      (mkConfigurationRecords pinNames "nixosConfiguration" (self.nixosConfigurations or {}))
+      // (mkConfigurationRecords pinNames "darwinConfiguration" (self.darwinConfigurations or {}));
+
+    # Record all configuration deliverables plus deployable host paths. The
+    # script pins every configuration, but writes only deployables as hosts in
+    # the persisted deployables state.
+    mkDeliverablesJson = pinNames:
       builtins.unsafeDiscardStringContext (
         builtins.toJSON {
           ref = config.repo.ref;
           branch = config.repo.branch;
           rev = config.repo.rev;
           shortRev = config.repo.shortRev;
-          hosts = lib.mapAttrs (mkDeployableStateItem pinNames) deployableConfigurations;
+          configurations = mkConfigurations pinNames;
+          deployables = lib.mapAttrs (mkDeployableStateItem pinNames) deployableConfigurations;
         }
       );
 
-    productionDeployablesStateJson = mkDeployablesStateJson {
+    productionDeliverablesJson = mkDeliverablesJson {
       host = "built-host";
       rollback = "built-rollback";
     };
 
-    canaryDeployablesStateJson = mkDeployablesStateJson {
+    canaryDeliverablesJson = mkDeliverablesJson {
       host = "canary-host";
       rollback = "canary-rollback";
     };
 
-    mkRecordDeployablesEffect = {
+    mkDeliverablesEffect = {
       hci-effects,
       pkgs,
       mode,
       stateName,
-      deployablesJson,
+      deliverablesJson,
       createGitHubDeployment,
     }:
       hci-effects.mkEffect {
@@ -129,11 +164,11 @@
 
         effectScript = with lib; ''
           export CACHIX_CACHE_NAME="whitestrake"
-          export DEPLOYABLES_JSON=${escapeShellArg deployablesJson}
-          export HCI_DEPLOYABLES_MODE=${escapeShellArg mode}
-          export HCI_DEPLOYABLES_STATE_NAME=${escapeShellArg stateName}
-          export HCI_DEPLOYABLES_HISTORY_LIMIT="10"
-          export HCI_DEPLOYABLES_CI_GATE_SCRIPT=${escapeShellArg ./scripts/hci-deployables-ci-gate.sh}
+          export DELIVERABLES_JSON=${escapeShellArg deliverablesJson}
+          export HCI_DELIVERABLES_MODE=${escapeShellArg mode}
+          export HCI_DELIVERABLES_STATE_NAME=${escapeShellArg stateName}
+          export HCI_DELIVERABLES_HISTORY_LIMIT="10"
+          export HCI_DELIVERABLES_CI_GATE_SCRIPT=${escapeShellArg ./scripts/hci-deployables-ci-gate.sh}
           export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (
             if createGitHubDeployment
             then "true"
@@ -148,7 +183,7 @@
             export CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT=${./scripts/cachix-create-github-deployment.sh}
           ''}
 
-          source ${./scripts/hci-deployables-state-script.sh}
+          source ${./scripts/hci-deliverables-state-script.sh}
         '';
       };
 
@@ -163,7 +198,7 @@
     # hercules-ci-effects currently auto-populates onPush.default, and the
     # documented onPush.default.enable = false option is not available in our
     # pinned version. Remove it from the returned HCI config so lexical job
-    # ordering is explicit: checks/formatters first, builds next, deployment last.
+    # ordering is explicit: checks/formatters first, builds next, deliverables last.
     out.onPush = lib.mkForce (builtins.removeAttrs config.onPush ["default"]);
 
     onPush = lib.foldl' (jobs: block: jobs // block) {} [
@@ -195,31 +230,31 @@
         (self.nixosConfigurations or {}))
 
       {
-        # Build rollback aliases and publish deployable pin/state for GitHub.
-        "99-deployment".outputs = withSystem "x86_64-linux" ({
+        # Publish built configuration pins and deployable state for GitHub.
+        "99-deliverables".outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
         }: {
           packages = deployableRollbackPackages;
 
-          effects.record-deployables =
+          effects.production-deliverables =
             hci-effects.runIf isProductionBranch
-            (mkRecordDeployablesEffect {
+            (mkDeliverablesEffect {
               inherit hci-effects pkgs;
               mode = "production";
               stateName = "deployables.json";
-              deployablesJson = productionDeployablesStateJson;
+              deliverablesJson = productionDeliverablesJson;
               createGitHubDeployment = true;
             });
 
-          effects.record-canary-deployables =
+          effects.canary-deliverables =
             hci-effects.runIf (!isProductionBranch)
-            (mkRecordDeployablesEffect {
+            (mkDeliverablesEffect {
               inherit hci-effects pkgs;
               mode = "canary";
               stateName = "canary-deployables.json";
-              deployablesJson = canaryDeployablesStateJson;
+              deliverablesJson = canaryDeliverablesJson;
               createGitHubDeployment = false;
             });
         });
