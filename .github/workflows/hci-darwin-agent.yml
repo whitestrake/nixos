@@ -79,6 +79,9 @@ jobs:
 
   darwin-agent-namespace:
     name: "Run ephemeral Darwin HCI agent on Namespace"
+    # Re-enable after the sparsebundle artifact runner experiment; this job is already known-fast
+    # and otherwise competes for Namespace runner concurrency.
+    if: ${{ vars.ENABLE_NAMESPACE_CACHE_RUNNER == 'true' }}
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     steps:
@@ -190,10 +193,9 @@ jobs:
     timeout-minutes: 355
     env:
       NAMESPACE_ARTIFACT_API_URL: https://ord.storage.namespaceapis.com
-      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
+      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-root.sparsebundle.tar
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
-      NAMESPACE_NIX_STORE_ZSTD_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar.zst
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -201,14 +203,69 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Prepare Namespace artifact Nix root
+      - name: Prepare Namespace sparsebundle Nix root
         shell: bash
+        env:
+          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
         run: |
           set -euo pipefail
 
+          namespace_bearer_token() {
+            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
+
+            if [ -r "$token_file" ]; then
+              plutil -extract bearer_token raw "$token_file"
+              return 0
+            fi
+
+            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
+              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
+              return 0
+            fi
+
+            return 1
+          }
+
+          resolve_artifact_url() {
+            local artifact_path="$1"
+            local output_path="$2"
+            local token
+            local request_path
+
+            token="$(namespace_bearer_token)" || return 1
+            request_path="$image_parent/resolve-request.json"
+
+            printf '{"path":"%s","namespace":"main"}\n' "$artifact_path" > "$request_path"
+
+            curl --fail --location --show-error --silent \
+              --header "Authorization: Bearer $token" \
+              --header "Content-Type: application/json" \
+              --header "Connect-Protocol-Version: 1" \
+              --data-binary @"$request_path" \
+              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/ResolveArtifact" \
+              > "$output_path"
+          }
+
           synthetic_conf=/etc/synthetic.conf
-          image_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-root.XXXXXX")"
-          image_path="$image_dir/nix-root.sparseimage"
+          image_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store"
+          image_bundle="$image_parent/nix-root.sparsebundle"
+          image_archive="$image_parent/nix-root.sparsebundle.tar"
+          resolve_response="$image_parent/resolve-response.json"
+
+          mkdir -p "$image_parent"
+          rm -rf "$image_bundle" "$image_archive" "$resolve_response"
+
+          {
+            printf 'NAMESPACE_NIX_STORE_IMAGE_BUNDLE=%s\n' "$image_bundle"
+            printf 'NAMESPACE_NIX_STORE_IMAGE_ARCHIVE=%s\n' "$image_archive"
+          } >> "$GITHUB_ENV"
+
+          if zstd_path="$(command -v zstd 2>/dev/null)"; then
+            zstd_version="$("$zstd_path" --version 2>/dev/null || true)"
+            echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
+          else
+            echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=false"
+          fi
 
           sudo touch "$synthetic_conf"
 
@@ -239,22 +296,59 @@ jobs:
             exit 1
           fi
 
-          hdiutil create \
-            -size "$NAMESPACE_NIX_STORE_IMAGE_SIZE" \
-            -type SPARSE \
-            -fs APFS \
-            -volname NixStore \
-            "$image_path"
+          started="$SECONDS"
+          if resolve_artifact_url "$NAMESPACE_NIX_STORE_ARTIFACT" "$resolve_response"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESOLVE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
 
+            started="$SECONDS"
+            signed_download_url="$(plutil -extract signedDownloadUrl raw "$resolve_response")"
+            curl --fail --location --show-error --silent "$signed_download_url" \
+              | tar -xpf - -C "$image_parent"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar durationSeconds=$duration"
+          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$image_archive"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+            ls -lh "$image_archive"
+
+            started="$SECONDS"
+            tar -xpf "$image_archive" -C "$image_parent"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar durationSeconds=$duration"
+          else
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+
+            started="$SECONDS"
+            hdiutil create \
+              -size "$NAMESPACE_NIX_STORE_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$image_bundle"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_CREATED path=$image_bundle size=$NAMESPACE_NIX_STORE_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          if [ ! -d "$image_bundle" ]; then
+            echo "::error ::Namespace Nix sparsebundle is missing at $image_bundle."
+            ls -la "$image_parent"
+            exit 1
+          fi
+
+          started="$SECONDS"
           sudo hdiutil attach \
             -mountpoint /nix \
             -nobrowse \
-            "$image_path"
+            "$image_bundle"
+          duration="$((SECONDS - started))"
+          echo "NAMESPACE_ARTIFACT_IMAGE_ATTACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
 
           sudo chown "$USER" /nix
           chmod u+rwx /nix
 
-          echo "Mounted ephemeral APFS image $image_path at /nix for Namespace artifact store"
+          echo "Mounted Namespace sparsebundle $image_bundle at /nix"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -262,98 +356,6 @@ jobs:
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
-
-      - name: Restore Namespace Nix store artifact
-        shell: bash
-        env:
-          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          namespace_bearer_token() {
-            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
-
-            if [ -r "$token_file" ]; then
-              plutil -extract bearer_token raw "$token_file"
-              return 0
-            fi
-
-            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
-              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
-              return 0
-            fi
-
-            return 1
-          }
-
-          resolve_artifact_url() {
-            local artifact_path="$1"
-            local output_path="$2"
-            local token
-            local request_path
-
-            token="$(namespace_bearer_token)" || return 1
-            request_path="$artifact_dir/resolve-request.json"
-
-            printf '{"path":"%s","namespace":"main"}\n' "$artifact_path" > "$request_path"
-
-            curl --fail --location --show-error --silent \
-              --header "Authorization: Bearer $token" \
-              --header "Content-Type: application/json" \
-              --header "Connect-Protocol-Version: 1" \
-              --data-binary @"$request_path" \
-              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/ResolveArtifact" \
-              > "$output_path"
-          }
-
-          artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          trap 'rm -rf "$artifact_dir"' EXIT
-          artifact_archive="$artifact_dir/nix-store.tar"
-          zstd_archive="$artifact_dir/nix-store.tar.zst"
-          resolve_response="$artifact_dir/resolve-response.json"
-          started="$SECONDS"
-
-          if resolve_artifact_url "$NAMESPACE_NIX_STORE_ARTIFACT" "$resolve_response"; then
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESOLVE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
-
-            started="$SECONDS"
-            signed_download_url="$(plutil -extract signedDownloadUrl raw "$resolve_response")"
-            curl --fail --location --show-error --silent "$signed_download_url" \
-              | sudo tar -xpf - -C /
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
-
-            sudo chown "$USER" /nix
-            chmod u+rwx /nix
-          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$artifact_archive"; then
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
-            ls -lh "$artifact_archive"
-
-            started="$SECONDS"
-            sudo tar -xpf "$artifact_archive" -C /
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
-
-            sudo chown "$USER" /nix
-            chmod u+rwx /nix
-          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT" "$zstd_archive"; then
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_ZSTD_HIT path=$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT durationSeconds=$duration"
-            ls -lh "$zstd_archive"
-
-            started="$SECONDS"
-            nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- -dc "$zstd_archive" | sudo tar -xpf - -C /
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT compression=zstd durationSeconds=$duration"
-
-            sudo chown "$USER" /nix
-            chmod u+rwx /nix
-          else
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
-          fi
 
       - name: Set HCI agent hostname
         shell: bash
@@ -389,123 +391,47 @@ jobs:
             nixpkgs#jq \
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
-      - name: Save Namespace Nix store artifact
+      - name: Save Namespace sparsebundle Nix root artifact
         shell: bash
-        env:
-          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
         run: |
           set -euo pipefail
 
-          namespace_bearer_token() {
-            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
-
-            if [ -r "$token_file" ]; then
-              plutil -extract bearer_token raw "$token_file"
-              return 0
-            fi
-
-            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
-              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
-              return 0
-            fi
-
-            return 1
-          }
-
-          artifact_expires_at() {
-            if [[ "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY" =~ ^([0-9]+)h$ ]]; then
-              date -u -v+"${BASH_REMATCH[1]}"H '+%Y-%m-%dT%H:%M:%SZ'
-              return 0
-            fi
-
-            return 1
-          }
-
-          stream_artifact_upload() {
-            local create_request="$artifact_dir/create-request.json"
-            local create_response="$artifact_dir/create-response.json"
-            local finalize_request="$artifact_dir/finalize-request.json"
-            local finalize_response="$artifact_dir/finalize-response.json"
-            local token
-            local expires_at
-            local signed_upload_url
-            local upload_id
-            local started
-            local duration
-
-            token="$(namespace_bearer_token)" || return 1
-            expires_at="$(artifact_expires_at)" || return 1
-
-            printf '{"path":"%s","namespace":"main","expiresAt":"%s","createNewVersionIfExists":true}\n' \
-              "$NAMESPACE_NIX_STORE_ARTIFACT" \
-              "$expires_at" \
-              > "$create_request"
-
-            started="$SECONDS"
-            curl --fail --location --show-error --silent \
-              --header "Authorization: Bearer $token" \
-              --header "Content-Type: application/json" \
-              --header "Connect-Protocol-Version: 1" \
-              --data-binary @"$create_request" \
-              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/CreateArtifact" \
-              > "$create_response" \
-              || return 1
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_UPLOAD_CREATED path=$NAMESPACE_NIX_STORE_ARTIFACT expiresAt=$expires_at durationSeconds=$duration"
-
-            signed_upload_url="$(plutil -extract signedUploadUrl raw "$create_response")" || return 1
-            upload_id="$(plutil -extract uploadId raw "$create_response")" || return 1
-
-            started="$SECONDS"
-            sudo tar -cpf - -C / nix \
-              | curl --fail --location --show-error --silent \
-                  --request PUT \
-                  --upload-file - \
-                  "$signed_upload_url" \
-              || return 1
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_UPLOAD_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
-
-            printf '{"uploadId":"%s"}\n' "$upload_id" > "$finalize_request"
-
-            started="$SECONDS"
-            curl --fail --location --show-error --silent \
-              --header "Authorization: Bearer $token" \
-              --header "Content-Type: application/json" \
-              --header "Connect-Protocol-Version: 1" \
-              --data-binary @"$finalize_request" \
-              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/FinalizeArtifact" \
-              > "$finalize_response" \
-              || return 1
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=stream durationSeconds=$duration"
-          }
-
-          artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          trap 'rm -rf "$artifact_dir"' EXIT
-          artifact_archive="$artifact_dir/nix-store.tar"
-
-          du -sh /nix /nix/store /nix/var/nix || true
-
-          if stream_artifact_upload; then
-            exit 0
-          fi
-
           if ! command -v nsc >/dev/null 2>&1; then
-            echo "::error ::streaming artifact upload failed and nsc CLI is not available."
+            echo "::error ::nsc CLI is not available."
             exit 1
           fi
 
-          echo "Streaming artifact upload failed; falling back to staged nsc upload."
+          image_bundle="${NAMESPACE_NIX_STORE_IMAGE_BUNDLE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle}"
+          image_archive="${NAMESPACE_NIX_STORE_IMAGE_ARCHIVE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle.tar}"
+          image_parent="$(dirname "$image_bundle")"
+
+          du -sh /nix /nix/store /nix/var/nix || true
 
           started="$SECONDS"
-          sudo tar -cpf "$artifact_archive" -C / nix
+          sync
+          if sudo hdiutil detach /nix; then
+            :
+          else
+            sudo hdiutil detach -force /nix
+          fi
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive compression=none durationSeconds=$duration"
-          ls -lh "$artifact_archive"
+          echo "NAMESPACE_ARTIFACT_IMAGE_DETACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
+
+          if [ ! -d "$image_bundle" ]; then
+            echo "::error ::Namespace Nix sparsebundle is missing at $image_bundle."
+            ls -la "$image_parent"
+            exit 1
+          fi
 
           started="$SECONDS"
-          if nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"; then
+          rm -f "$image_archive"
+          tar -cpf "$image_archive" -C "$image_parent" "$(basename "$image_bundle")"
+          duration="$((SECONDS - started))"
+          echo "NAMESPACE_ARTIFACT_IMAGE_ARCHIVE_CREATED path=$image_archive format=sparsebundle-tar durationSeconds=$duration"
+          ls -lh "$image_archive"
+
+          started="$SECONDS"
+          if nsc artifact upload "$image_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"; then
             duration="$((SECONDS - started))"
             echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
             exit 0
@@ -515,6 +441,6 @@ jobs:
           nsc artifact expire "$NAMESPACE_NIX_STORE_ARTIFACT" || true
 
           started="$SECONDS"
-          nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"
+          nsc artifact upload "$image_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"
           duration="$((SECONDS - started))"
           echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
