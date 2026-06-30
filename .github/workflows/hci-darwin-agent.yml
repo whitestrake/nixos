@@ -77,6 +77,197 @@ jobs:
             nixpkgs#jq \
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
+  darwin-agent-github-cache:
+    name: "Run ephemeral Darwin HCI agent with GitHub sparsebundle cache"
+    runs-on: macos-26
+    timeout-minutes: 355
+    env:
+      GITHUB_NIX_CACHE_KEY_PREFIX: hci-darwin-github-sparsebundle-v1
+      GITHUB_NIX_STORE_IMAGE_SIZE: 30g
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Start GitHub sparsebundle cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_bundle="$RUNNER_TEMP/hci-darwin-nix-store/nix-root.sparsebundle"
+
+          mkdir -p "$(dirname "$image_bundle")"
+          echo "GITHUB_NIX_STORE_IMAGE_BUNDLE=$image_bundle" >> "$GITHUB_ENV"
+          echo "GITHUB_CACHE_RESTORE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Restore GitHub sparsebundle cache
+        id: github-nix-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
+          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare GitHub cached sparsebundle Nix root
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.github-nix-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.github-nix-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          synthetic_conf=/etc/synthetic.conf
+          restore_duration="$(($(date +%s) - GITHUB_CACHE_RESTORE_STARTED_AT))"
+
+          echo "GITHUB_CACHE_IMAGE_RESTORE_DONE hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          if zstd_path="$(command -v zstd 2>/dev/null)"; then
+            zstd_version="$("$zstd_path" --version 2>/dev/null || true)"
+            echo "GITHUB_CACHE_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
+          else
+            echo "GITHUB_CACHE_ZSTD_LOCAL available=false"
+          fi
+
+          sudo touch "$synthetic_conf"
+
+          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
+            if ! grep -qx 'nix' "$synthetic_conf"; then
+              echo "::error ::$synthetic_conf already defines nix differently."
+              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
+              exit 1
+            fi
+          else
+            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
+          fi
+
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
+          fi
+
+          if [ ! -e /nix ]; then
+            echo "::error ::macOS did not materialize synthetic /nix."
+            sudo cat "$synthetic_conf"
+            exit 1
+          fi
+
+          if [ -L /nix ]; then
+            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
+            ls -ld /nix
+            exit 1
+          fi
+
+          if [ -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
+            echo "GITHUB_CACHE_IMAGE_READY path=$GITHUB_NIX_STORE_IMAGE_BUNDLE source=cache"
+          else
+            started="$SECONDS"
+            hdiutil create \
+              -size "$GITHUB_NIX_STORE_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
+            duration="$((SECONDS - started))"
+            echo "GITHUB_CACHE_IMAGE_CREATED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE size=$GITHUB_NIX_STORE_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          started="$SECONDS"
+          sudo hdiutil attach \
+            -mountpoint /nix \
+            -nobrowse \
+            "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
+          duration="$((SECONDS - started))"
+          echo "GITHUB_CACHE_IMAGE_ATTACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+          echo "Mounted GitHub cache sparsebundle $GITHUB_NIX_STORE_IMAGE_BUNDLE at /nix"
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Set HCI agent hostname
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo scutil --set HostName github-cache-aarch64-darwin
+          sudo scutil --set LocalHostName github-cache-aarch64-darwin
+          sudo hostname github-cache-aarch64-darwin
+
+      - name: Run ephemeral Hercules CI Darwin agent
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_CACHE_NAME: whitestrake
+          DARWIN_CONFIGURATION: andred
+          GITHUB_TOKEN: ${{ github.token }}
+          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_DARWIN_FINISH_CONDITION: hci-job-done
+          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
+          HCI_PROJECT: github/whitestrake/nixos
+          HCI_REVISION: ${{ inputs.revision || github.sha }}
+        run: |
+          set -euo pipefail
+
+          nix shell \
+            --accept-flake-config \
+            --inputs-from . \
+            nixpkgs#curl \
+            nixpkgs#hercules-ci-agent \
+            nixpkgs#jq \
+            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+
+      - name: Prepare GitHub sparsebundle cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          sync
+          if sudo hdiutil detach /nix; then
+            :
+          else
+            sudo hdiutil detach -force /nix
+          fi
+          duration="$((SECONDS - started))"
+          echo "GITHUB_CACHE_IMAGE_DETACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          if [ ! -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
+            echo "::error ::GitHub cache Nix sparsebundle is missing at $GITHUB_NIX_STORE_IMAGE_BUNDLE."
+            ls -la "$(dirname "$GITHUB_NIX_STORE_IMAGE_BUNDLE")"
+            exit 1
+          fi
+
+          du -sh "$GITHUB_NIX_STORE_IMAGE_BUNDLE" || true
+          echo "GITHUB_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save GitHub sparsebundle cache
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
+          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report GitHub sparsebundle cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - GITHUB_CACHE_SAVE_STARTED_AT))"
+          echo "GITHUB_CACHE_UPLOAD_COMPLETE key=$GITHUB_NIX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
   darwin-agent-namespace:
     name: "Run ephemeral Darwin HCI agent on Namespace"
     # Re-enable after the sparsebundle artifact runner experiment; this job is already known-fast
