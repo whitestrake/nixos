@@ -189,11 +189,11 @@ jobs:
     runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     env:
-      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar.zst
+      NAMESPACE_ARTIFACT_API_URL: https://ord.storage.namespaceapis.com
+      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
-      NAMESPACE_NIX_STORE_LEGACY_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
-      NAMESPACE_NIX_STORE_ZSTD_LEVEL: "1"
+      NAMESPACE_NIX_STORE_ZSTD_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar.zst
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -265,40 +265,91 @@ jobs:
 
       - name: Restore Namespace Nix store artifact
         shell: bash
+        env:
+          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
         run: |
           set -euo pipefail
 
-          if ! command -v nsc >/dev/null 2>&1; then
-            echo "::error ::nsc CLI is not available on this Namespace runner."
-            exit 1
-          fi
+          namespace_bearer_token() {
+            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
+
+            if [ -r "$token_file" ]; then
+              plutil -extract bearer_token raw "$token_file"
+              return 0
+            fi
+
+            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
+              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
+              return 0
+            fi
+
+            return 1
+          }
+
+          resolve_artifact_url() {
+            local artifact_path="$1"
+            local output_path="$2"
+            local token
+            local request_path
+            local header_path
+
+            token="$(namespace_bearer_token)" || return 1
+            request_path="$artifact_dir/resolve-request.json"
+            header_path="$artifact_dir/resolve-headers"
+
+            printf '{"path":"%s","namespace":"main"}\n' "$artifact_path" > "$request_path"
+            printf 'Authorization: Bearer %s\n' "$token" > "$header_path"
+            chmod 600 "$header_path"
+
+            nix run --accept-flake-config --inputs-from . nixpkgs#buf -- curl \
+              --schema buf.build/namespace/cloud \
+              --data @"$request_path" \
+              --header @"$header_path" \
+              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/ResolveArtifact" \
+              > "$output_path"
+          }
 
           artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar.zst"
-          legacy_archive="$artifact_dir/nix-store.tar"
+          trap 'rm -rf "$artifact_dir"' EXIT
+          artifact_archive="$artifact_dir/nix-store.tar"
+          zstd_archive="$artifact_dir/nix-store.tar.zst"
+          resolve_response="$artifact_dir/resolve-response.json"
           started="$SECONDS"
 
-          if nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$artifact_archive"; then
+          if resolve_artifact_url "$NAMESPACE_NIX_STORE_ARTIFACT" "$resolve_response"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_RESOLVE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+
+            started="$SECONDS"
+            signed_download_url="$(plutil -extract signedDownloadUrl raw "$resolve_response")"
+            curl --fail --location --show-error --silent "$signed_download_url" \
+              | sudo tar -xpf - -C /
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
+
+            sudo chown "$USER" /nix
+            chmod u+rwx /nix
+          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$artifact_archive"; then
             duration="$((SECONDS - started))"
             echo "NAMESPACE_ARTIFACT_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
             ls -lh "$artifact_archive"
 
             started="$SECONDS"
-            nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- -dc "$artifact_archive" | sudo tar -xpf - -C /
+            sudo tar -xpf "$artifact_archive" -C /
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=zstd durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
 
             sudo chown "$USER" /nix
             chmod u+rwx /nix
-          elif nsc artifact download "$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT" "$legacy_archive"; then
+          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT" "$zstd_archive"; then
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_LEGACY_HIT path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT durationSeconds=$duration"
-            ls -lh "$legacy_archive"
+            echo "NAMESPACE_ARTIFACT_RESTORE_ZSTD_HIT path=$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT durationSeconds=$duration"
+            ls -lh "$zstd_archive"
 
             started="$SECONDS"
-            sudo tar -xpf "$legacy_archive" -C /
+            nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- -dc "$zstd_archive" | sudo tar -xpf - -C /
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT compression=none durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ZSTD_ARTIFACT compression=zstd durationSeconds=$duration"
 
             sudo chown "$USER" /nix
             chmod u+rwx /nix
@@ -352,15 +403,15 @@ jobs:
           fi
 
           artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar.zst"
-          zstd_level="-${NAMESPACE_NIX_STORE_ZSTD_LEVEL}"
+          trap 'rm -rf "$artifact_dir"' EXIT
+          artifact_archive="$artifact_dir/nix-store.tar"
 
           du -sh /nix /nix/store /nix/var/nix || true
 
           started="$SECONDS"
-          sudo tar -cpf - -C / nix | nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- "$zstd_level" -T0 -c > "$artifact_archive"
+          sudo tar -cpf "$artifact_archive" -C / nix
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive compression=zstd level=$NAMESPACE_NIX_STORE_ZSTD_LEVEL durationSeconds=$duration"
+          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive compression=none durationSeconds=$duration"
           ls -lh "$artifact_archive"
 
           started="$SECONDS"
