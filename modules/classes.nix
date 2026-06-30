@@ -11,6 +11,23 @@
   };
 
   den.classes.wsl-host.description = "Host-level NixOS configuration applied only to WSL hosts";
+  den.classes.hmLinux.description = "Linux-only Home Manager configuration";
+  den.classes.hmDarwin.description = "Darwin-only Home Manager configuration";
+
+  den.batteries.hmPlatforms = {
+    host,
+    user,
+    ...
+  }:
+    den.batteries.forward {
+      each = ["Linux" "Darwin"];
+      fromClass = platform: "hm${platform}";
+      intoClass = _: "homeManager";
+      intoPath = _: [];
+      fromAspect = _: den.lib.resolveEntity "user" {inherit host user;};
+      guard = {pkgs, ...}: platform: lib.mkIf pkgs.stdenv."is${platform}";
+      adaptArgs = {config, ...}: {osConfig = config;};
+    };
 
   den.policies.wsl-host-to-host = {host, ...}:
     lib.optional (
@@ -25,5 +42,6 @@
       }
     );
 
-  den.default.includes = [den.policies.wsl-host-to-host];
+  den.schema.host.includes = [den.policies.wsl-host-to-host];
+  den.schema.user.includes = [den.batteries.hmPlatforms];
 }

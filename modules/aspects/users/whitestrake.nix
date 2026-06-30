@@ -238,7 +238,7 @@
       programs.home-manager.enable = true;
     };
 
-    darwin.home-manager.users.whitestrake = {
+    hmDarwin = {
       home.sessionVariables.EDITOR = "antigravity";
       home.shellAliases = {
         tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
