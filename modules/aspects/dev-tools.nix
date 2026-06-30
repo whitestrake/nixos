@@ -99,7 +99,6 @@
           };
           tailscale.url = mcpServiceUrl "tailscale";
           cloudflare.url = "https://mcp.cloudflare.com/mcp";
-          github.url = "https://api.githubcopilot.com/mcp/insiders";
         };
       };
 

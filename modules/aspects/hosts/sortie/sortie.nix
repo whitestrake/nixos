@@ -16,7 +16,7 @@
       den.aspects.user-mediaserver
       den.aspects.dev-tools
       den.aspects.hercules
-      den.aspects.hercules.namespace-darwin-broker
+      # den.aspects.hercules.namespace-darwin-broker
     ];
 
     nixos = {
