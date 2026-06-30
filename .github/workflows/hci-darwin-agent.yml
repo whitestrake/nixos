@@ -193,7 +193,7 @@ jobs:
     timeout-minutes: 355
     env:
       NAMESPACE_ARTIFACT_API_URL: https://ord.storage.namespaceapis.com
-      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-root.sparsebundle.tar
+      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-root.sparsebundle.tar.zst
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
     steps:
@@ -249,7 +249,7 @@ jobs:
           synthetic_conf=/etc/synthetic.conf
           image_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store"
           image_bundle="$image_parent/nix-root.sparsebundle"
-          image_archive="$image_parent/nix-root.sparsebundle.tar"
+          image_archive="$image_parent/nix-root.sparsebundle.tar.zst"
           resolve_response="$image_parent/resolve-response.json"
 
           mkdir -p "$image_parent"
@@ -265,6 +265,8 @@ jobs:
             echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
           else
             echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=false"
+            echo "::error ::zstd is required for the Namespace sparsebundle artifact experiment."
+            exit 1
           fi
 
           sudo touch "$synthetic_conf"
@@ -304,18 +306,19 @@ jobs:
             started="$SECONDS"
             signed_download_url="$(plutil -extract signedDownloadUrl raw "$resolve_response")"
             curl --fail --location --show-error --silent "$signed_download_url" \
+              | zstd -dc \
               | tar -xpf - -C "$image_parent"
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar compression=zstd durationSeconds=$duration"
           elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$image_archive"; then
             duration="$((SECONDS - started))"
             echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
             ls -lh "$image_archive"
 
             started="$SECONDS"
-            tar -xpf "$image_archive" -C "$image_parent"
+            zstd -dc "$image_archive" | tar -xpf - -C "$image_parent"
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar compression=zstd durationSeconds=$duration"
           else
             duration="$((SECONDS - started))"
             echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
@@ -402,7 +405,7 @@ jobs:
           fi
 
           image_bundle="${NAMESPACE_NIX_STORE_IMAGE_BUNDLE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle}"
-          image_archive="${NAMESPACE_NIX_STORE_IMAGE_ARCHIVE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle.tar}"
+          image_archive="${NAMESPACE_NIX_STORE_IMAGE_ARCHIVE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle.tar.zst}"
           image_parent="$(dirname "$image_bundle")"
 
           du -sh /nix /nix/store /nix/var/nix || true
@@ -425,9 +428,9 @@ jobs:
 
           started="$SECONDS"
           rm -f "$image_archive"
-          tar -cpf "$image_archive" -C "$image_parent" "$(basename "$image_bundle")"
+          tar -cpf - -C "$image_parent" "$(basename "$image_bundle")" | zstd -T0 -1 > "$image_archive"
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_IMAGE_ARCHIVE_CREATED path=$image_archive format=sparsebundle-tar durationSeconds=$duration"
+          echo "NAMESPACE_ARTIFACT_IMAGE_ARCHIVE_CREATED path=$image_archive format=sparsebundle-tar compression=zstd level=1 durationSeconds=$duration"
           ls -lh "$image_archive"
 
           started="$SECONDS"
