@@ -189,9 +189,11 @@ jobs:
     runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     env:
-      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
+      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar.zst
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
+      NAMESPACE_NIX_STORE_LEGACY_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
+      NAMESPACE_NIX_STORE_ZSTD_LEVEL: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -254,6 +256,13 @@ jobs:
 
           echo "Mounted ephemeral APFS image $image_path at /nix for Namespace artifact store"
 
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
       - name: Restore Namespace Nix store artifact
         shell: bash
         run: |
@@ -265,7 +274,8 @@ jobs:
           fi
 
           artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar"
+          artifact_archive="$artifact_dir/nix-store.tar.zst"
+          legacy_archive="$artifact_dir/nix-store.tar"
           started="$SECONDS"
 
           if nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$artifact_archive"; then
@@ -274,9 +284,21 @@ jobs:
             ls -lh "$artifact_archive"
 
             started="$SECONDS"
-            sudo tar -xpf "$artifact_archive" -C /
+            nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- -dc "$artifact_archive" | sudo tar -xpf - -C /
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=zstd durationSeconds=$duration"
+
+            sudo chown "$USER" /nix
+            chmod u+rwx /nix
+          elif nsc artifact download "$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT" "$legacy_archive"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_RESTORE_LEGACY_HIT path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT durationSeconds=$duration"
+            ls -lh "$legacy_archive"
+
+            started="$SECONDS"
+            sudo tar -xpf "$legacy_archive" -C /
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT compression=none durationSeconds=$duration"
 
             sudo chown "$USER" /nix
             chmod u+rwx /nix
@@ -284,13 +306,6 @@ jobs:
             duration="$((SECONDS - started))"
             echo "NAMESPACE_ARTIFACT_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
           fi
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
 
       - name: Set HCI agent hostname
         shell: bash
@@ -337,15 +352,15 @@ jobs:
           fi
 
           artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar"
+          artifact_archive="$artifact_dir/nix-store.tar.zst"
+          zstd_level="-${NAMESPACE_NIX_STORE_ZSTD_LEVEL}"
 
           du -sh /nix /nix/store /nix/var/nix || true
 
           started="$SECONDS"
-          sudo tar -cpf "$artifact_archive" -C / nix
-          sudo chown "$USER" "$artifact_archive"
+          sudo tar -cpf - -C / nix | nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- "$zstd_level" -T0 -c > "$artifact_archive"
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive durationSeconds=$duration"
+          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive compression=zstd level=$NAMESPACE_NIX_STORE_ZSTD_LEVEL durationSeconds=$duration"
           ls -lh "$artifact_archive"
 
           started="$SECONDS"
