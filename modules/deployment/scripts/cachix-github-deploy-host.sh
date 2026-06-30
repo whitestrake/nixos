@@ -11,6 +11,9 @@ force="${CACHIX_DEPLOY_FORCE:-false}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
 deployed_pin_keep_revisions="${CACHIX_DEPLOYED_PIN_KEEP_REVISIONS:-10}"
 
+# shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
+source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/cachix-pin-functions.sh}"
+
 case "$force" in
   true|false)
     ;;
@@ -78,73 +81,9 @@ if [ -z "${CACHIX_ACTIVATE_TOKEN:-}" ]; then
   exit 1
 fi
 
-with_retry() {
-  local n=1 max=3 delay=2
-  while true; do
-    if "$@"; then
-      break
-    fi
-
-    if [[ $n -lt $max ]]; then
-      n=$((n + 1))
-      echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
-      sleep "$delay"
-      delay=$((delay * 2))
-    else
-      echo "Command failed after $n attempts." >&2
-      return 1
-    fi
-  done
-}
-
-fetch_pins() {
-  with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-    "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
-    | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
-}
-
-pin_path() {
-  local pin_name="$1"
-  jq -r \
-    --arg name "$pin_name" \
-    'map(select(.name == $name))[0].lastRevision.storePath // ""' \
-    <<< "$pins"
-}
-
-pin_deployed_state() {
-  local pin_name="$1"
-  local path="$2"
-  local payload
-
-  case "$pin_name" in
-    deployed-host-*)
-      ;;
-    *)
-      echo "ERROR: refusing to update non-deployed pin: $pin_name" >&2
-      return 1
-      ;;
-  esac
-
-  payload="$(
-    jq -n \
-      --arg name "$pin_name" \
-      --arg storePath "$path" \
-      --argjson keepRevisions "$deployed_pin_keep_revisions" \
-      '{name: $name, storePath: $storePath, artifacts: [], keep: {tag: "Revisions", contents: $keepRevisions}}'
-  )"
-
-  with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-    -H "Content-Type: application/json" \
-    --data "$payload" \
-    "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
-    >/dev/null
-}
-
-pins="$(fetch_pins)"
+pins="$(cachix_fetch_pins "$cache_name")"
 deploy_pin="deployed-host-$host"
-deployed="$(pin_path "$deploy_pin")"
+deployed="$(cachix_pin_path "$pins" "$deploy_pin")"
 
 if [ "$force" != "true" ] && [ "$deployed" = "$store_path" ]; then
   echo "$deploy_pin already matches $store_path; skipping $host."
@@ -181,4 +120,4 @@ if ! cachix deploy activate "$deploy_spec"; then
 fi
 
 echo "Cachix deploy activate succeeded for $host. Updating $deploy_pin."
-pin_deployed_state "$deploy_pin" "$store_path"
+cachix_pin_store_path "$cache_name" "$deploy_pin" "$store_path" "$deployed_pin_keep_revisions"

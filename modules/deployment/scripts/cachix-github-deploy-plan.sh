@@ -9,6 +9,9 @@ force="${CACHIX_DEPLOY_FORCE:-false}"
 event_name="${GITHUB_EVENT_NAME:-}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
 
+# shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
+source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/cachix-pin-functions.sh}"
+
 if [ -z "$rev" ]; then
   echo "ERROR: CACHIX_DEPLOY_REV or GITHUB_SHA must be set." >&2
   exit 1
@@ -60,32 +63,6 @@ setup_hci_credentials() {
     echo "ERROR: HERCULES_CI_CREDENTIALS_JSON must be a Hercules CI credentials.json document." >&2
     exit 1
   fi
-}
-
-with_retry() {
-  local n=1 max=3 delay=2
-  while true; do
-    if "$@"; then
-      break
-    fi
-
-    if [[ $n -lt $max ]]; then
-      n=$((n + 1))
-      echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
-      sleep "$delay"
-      delay=$((delay * 2))
-    else
-      echo "Command failed after $n attempts." >&2
-      return 1
-    fi
-  done
-}
-
-fetch_pins() {
-  with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-    "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
-    | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
 }
 
 get_state() {
@@ -287,7 +264,7 @@ else
   fi
 fi
 
-pins="$(fetch_pins)"
+pins="$(cachix_fetch_pins "$cache_name")"
 
 deploy_info_json="$(
   jq -cn \
