@@ -1,6 +1,4 @@
-{inputs, ...}: {
-  flake-file.inputs.mcp-nixos-pr.url = "github:utensils/mcp-nixos/refs/pull/159/merge";
-
+{
   den.aspects.mcp-host.nixos = {
     config,
     host,
@@ -67,15 +65,24 @@
         };
       };
 
-      nixos = {
-        port = 8764;
-        command = "${inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos}/bin/mcp-nixos";
-        path = [pkgs.nix];
+      tailscale = {
+        port = 8765;
+        command = "${pkgs.mcp-proxy}/bin/mcp-proxy";
+        args = [
+          "--host"
+          "127.0.0.1"
+          "--port"
+          "8765"
+          "--pass-environment"
+          "${pkgs.myPkgs."tailscale-mcp"}/bin/tailscale-mcp"
+        ];
         env = {
-          MCP_NIXOS_TRANSPORT = "http";
-          MCP_NIXOS_HOST = "127.0.0.1";
-          MCP_NIXOS_PORT = "8764";
-          MCP_NIXOS_PATH = "/mcp";
+          TAILSCALE_PROFILE = "core";
+          TAILSCALE_READONLY = "1";
+        };
+        secrets = {
+          TAILSCALE_OAUTH_CLIENT_ID = "tailscaleMcpOAuthClientId";
+          TAILSCALE_OAUTH_CLIENT_SECRET = "tailscaleMcpOAuthClientSecret";
         };
       };
     };
@@ -165,7 +172,7 @@
         ${readFileExports name service}
         ${envExports service}
         ${runtimeEnvExports service}
-        exec ${lib.escapeShellArg service.command}
+        exec ${lib.escapeShellArgs ([service.command] ++ (service.args or []))}
       '';
     };
 
