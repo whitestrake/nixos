@@ -70,6 +70,7 @@
       nixos = {
         port = 8764;
         command = "${inputs.mcp-nixos-pr.packages.${host.system}.mcp-nixos}/bin/mcp-nixos";
+        path = [pkgs.nix];
         env = {
           MCP_NIXOS_TRANSPORT = "http";
           MCP_NIXOS_HOST = "127.0.0.1";
@@ -149,6 +150,7 @@
       wantedBy = ["multi-user.target"];
       after = ["network-online.target"];
       wants = ["network-online.target"];
+      path = service.path or [];
       serviceConfig = {
         DynamicUser = true;
         LoadCredential = loadCredentials service;
