@@ -291,20 +291,17 @@ jobs:
             local output_path="$2"
             local token
             local request_path
-            local header_path
 
             token="$(namespace_bearer_token)" || return 1
             request_path="$artifact_dir/resolve-request.json"
-            header_path="$artifact_dir/resolve-headers"
 
             printf '{"path":"%s","namespace":"main"}\n' "$artifact_path" > "$request_path"
-            printf 'Authorization: Bearer %s\n' "$token" > "$header_path"
-            chmod 600 "$header_path"
 
-            nix run --accept-flake-config --inputs-from . nixpkgs#buf -- curl \
-              --schema buf.build/namespace/cloud \
-              --data @"$request_path" \
-              --header @"$header_path" \
+            curl --fail --location --show-error --silent \
+              --header "Authorization: Bearer $token" \
+              --header "Content-Type: application/json" \
+              --header "Connect-Protocol-Version: 1" \
+              --data-binary @"$request_path" \
               "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/ResolveArtifact" \
               > "$output_path"
           }
