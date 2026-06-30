@@ -1,4 +1,10 @@
-{config, ...}: {
+{
+  config,
+  inputs,
+  ...
+}: {
+  flake-file.inputs.nix-mcp.url = "github:stubbedev/nix-mcp";
+
   den.aspects.dev-tools = {
     os = {pkgs, ...}: {
       environment.systemPackages = with pkgs; [
@@ -80,10 +86,20 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos.url = mcpServiceUrl "nixos";
+          nixos = {
+            command = "${inputs.nix-mcp.packages.${host.system}.nix-mcp}/bin/nix-mcp";
+            env.PATH = lib.makeBinPath [pkgs.nix];
+          };
           homeassistant.url = mcpServiceUrl "homeassistant";
           komodo.url = mcpServiceUrl "komodo";
           proxmox.url = mcpServiceUrl "proxmox";
+          grafana = {
+            url = "https://mcp.grafana.com/mcp";
+            headers.X-Grafana-URL = "https://whitestrake.grafana.net/";
+          };
+          tailscale.url = mcpServiceUrl "tailscale";
+          cloudflare.url = "https://mcp.cloudflare.com/mcp";
+          github.url = "https://api.githubcopilot.com/mcp/insiders";
         };
       };
 
