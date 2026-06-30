@@ -1,16 +1,6 @@
-{
-  config,
-  inputs,
-  ...
-}: {
-  flake-file.inputs.deploy-rs-async.url = "github:serokell/deploy-rs/refs/pull/271/merge";
-
+{config, ...}: {
   den.aspects.dev-tools = {
-    os = {
-      host,
-      pkgs,
-      ...
-    }: {
+    os = {pkgs, ...}: {
       environment.systemPackages = with pkgs; [
         alejandra
         nil
@@ -19,14 +9,9 @@
         mdformat
         sops
         age
-        deploy-rs
         nixos-rebuild
         nix-update
       ];
-      environment.shellAliases.deploy-rs-async = let
-        system = host.system;
-        deploy-rs-async = inputs.deploy-rs-async.packages.${system}.deploy-rs;
-      in "${deploy-rs-async}/bin/deploy --remote-build";
     };
 
     wsl-host = {pkgs, ...}: {
