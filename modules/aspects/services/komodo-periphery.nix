@@ -32,6 +32,8 @@
           RestartSec = "5s";
         };
       };
+
+      den.deploy.health.requiredSystemdUnits = ["komodo-periphery.service"];
     };
   };
 }

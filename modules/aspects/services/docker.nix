@@ -12,6 +12,10 @@
       virtualisation.docker.autoPrune.enable = true;
       virtualisation.docker.liveRestore = false;
       systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
+      den.deploy.health = {
+        requiredSystemdUnits = ["docker.service"];
+        requiredCommands.docker = "${pkgs.docker_29}/bin/docker info";
+      };
 
       environment.shellAliases = {
         dps = "docker ps -as --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'";

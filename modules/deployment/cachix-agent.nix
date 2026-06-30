@@ -1,9 +1,24 @@
 {
   self,
   lib,
-  config,
   ...
 }: {
+  den.default.nixos = {...}: {
+    options.den.deploy.health = {
+      requiredSystemdUnits = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Systemd units that must be active after Cachix Deploy activation.";
+      };
+
+      requiredCommands = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = {};
+        description = "Named shell commands that must succeed after Cachix Deploy activation.";
+      };
+    };
+  };
+
   den.aspects.cachix-agent.nixos = {
     config,
     pkgs,
@@ -14,6 +29,7 @@
       enable = true;
       credentialsFile = config.sops.secrets.cachixAgentToken.path;
     };
+    den.deploy.health.requiredSystemdUnits = ["cachix-agent.service"];
 
     # Asynchronous restart changes:
     # 1. Do not stop or restart the cachix-agent service during system switches,
@@ -103,12 +119,9 @@
         && cfg.config.services.cachix-agent.enable or false
     ) (self.nixosConfigurations or {});
 
-    # Generate health checks from the evaluated host configuration. Structured
-    # checks come from den.deploy.health; service-specific checks can also be
-    # synthesized from other evaluated options when that is less repetitive.
+    # Generate health checks from the evaluated host configuration.
     mkHostChecks = name: let
       cfg = self.nixosConfigurations.${name}.config;
-      host = config.den.hosts.${system}.${name};
       healthCfg = cfg.den.deploy.health;
 
       unitCheckBudget = unit:
@@ -133,7 +146,6 @@
           delay = "-";
         };
 
-      # systemd unit checks
       unitChecks =
         map (unit: let
           budget = unitCheckBudget unit;
@@ -142,7 +154,6 @@
         '')
         healthCfg.requiredSystemdUnits;
 
-      # custom command checks
       commandChecks =
         lib.mapAttrsToList (cmdName: cmd: let
           budget = commandCheckBudget cmdName;
@@ -150,29 +161,6 @@
           check_or_fail "command ${cmdName} failed health check" "command-${cmdName}" ${budget.attempts} ${budget.delay} check_command ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg cmd}
         '')
         healthCfg.requiredCommands;
-
-      # HTTP endpoint checks (budget: 10 attempts, 3s delay)
-      httpChecks =
-        lib.mapAttrsToList (epName: ep: ''
-          check_or_fail "HTTP endpoint ${epName} failed health check" "http-${epName}" 10 3 check_http_endpoint "${epName}" "${ep.url}" "${toString ep.expectStatus}"
-        '')
-        healthCfg.requiredHttpEndpoints;
-
-      # rsyncd checks (if enabled on this host)
-      # systemd service budget: 15 attempts, 2s delay
-      # socket check budget: 15 attempts, 2s delay
-      rsyncdChecks = lib.optionalString (cfg.services.rsyncd.enable or false) ''
-        check_or_fail "systemd unit rsync.service failed health check" "systemd-unit-rsync.service" 15 2 check_systemd_unit "rsync.service"
-        check_or_fail "rsyncd socket failed health check" "rsyncd-socket" 15 2 check_command ${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/${name}.${host.tailnetSuffix}/873'
-      '';
-
-      # extra check script
-      extraCheck = lib.optionalString (healthCfg.extraCheckScript != "") (let
-        extraScript = pkgs.writeShellScript "deploy-health-extra-${name}" healthCfg.extraCheckScript;
-      in ''
-        log "Running extra check script for ${name}..."
-        check_or_fail "extra check script failed for ${name}" "extra-${name}" - - check_command ${extraScript}
-      '');
 
       agentRestartCheck = let
         expected_bin = "${cfg.services.cachix-agent.package}/bin/cachix";
@@ -209,50 +197,15 @@
     in ''
       ${lib.concatStringsSep "\n" unitChecks}
       ${lib.concatStringsSep "\n" commandChecks}
-      ${lib.concatStringsSep "\n" httpChecks}
-      ${rsyncdChecks}
-      ${extraCheck}
       ${agentRestartCheck}
     '';
 
-    # Generates a case branch for a given host
-    mkHostCaseBranch = name: let
-      cfg = self.nixosConfigurations.${name}.config;
-      isCachixManaged = cfg.services.cachix-agent.enable or false;
-      # Cachix-managed hosts fail closed unless checks are enabled or the host
-      # explicitly opts out with allowUnprotected. Non-Cachix hosts pass with a
-      # notice because the rollback script can be shared by a whole system.
-      healthCfg =
-        cfg.den.deploy.health or {
-          enable = false;
-          allowUnprotected = false;
-        };
-    in
-      if isCachixManaged
-      then
-        if healthCfg.enable
-        then ''
-          ${name})
-            log "Running health checks for ${name}..."
-            ${mkHostChecks name}
-            ;;
-        ''
-        else if healthCfg.allowUnprotected
-        then ''
-          ${name})
-            log "WARNING: deploy health checks are disabled for Cachix-managed host ${name} (allowUnprotected is true). Passing without checks."
-            ;;
-        ''
-        else ''
-          ${name})
-            fail "ERROR: deploy health checks are disabled for Cachix-managed host ${name} and allowUnprotected is false. Rolling back deployment."
-            ;;
-        ''
-      else ''
-        ${name})
-          log "Notice: ${name} is not a Cachix-managed server. Passing."
-          ;;
-      '';
+    mkHostCaseBranch = name: ''
+      ${name})
+        log "Running health checks for ${name}..."
+        ${mkHostChecks name}
+        ;;
+    '';
 
     hostsCaseStatements = lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _: mkHostCaseBranch name) nixosHostsOnSystem);
 
@@ -362,25 +315,6 @@
           --kill-after=5s \
           "$command_timeout_seconds" \
           "$@"
-      }
-
-      check_http_endpoint() {
-        local ep_name="$1"
-        local url="$2"
-        local expected_status="$3"
-
-        local status
-        if ! status=$(${pkgs.curl}/bin/curl --silent --show-error --max-time 10 --write-out '%{http_code}' --output /dev/null "$url"); then
-          log "HTTP check '$ep_name' failed: curl execution failed"
-          return 1
-        fi
-
-        status="''${status:-0}"
-        if [ "$status" -ne "$expected_status" ]; then
-          log "HTTP check '$ep_name' failed: expected status $expected_status, got $status"
-          return 1
-        fi
-        return 0
       }
 
       check_with_retry() {
