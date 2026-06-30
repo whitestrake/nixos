@@ -614,8 +614,8 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  prepare_darwin_toplevel
   start_agent
+  prepare_darwin_toplevel
 
   if try_root_darwin_toplevel; then
     emit_local_darwin_toplevel_ready
