@@ -490,14 +490,6 @@ prewarm_attr() {
     return 0
   fi
 
-  printf '%s\n' "$out_path" > "$all_drv_outputs"
-  log "event=config status=fetch_final kind=$kind name=$name path=$out_path"
-  if ! fetch_store_paths "final-output" "$all_drv_outputs"; then
-    log "event=config status=miss_final kind=$kind name=$name attr=$attr out_path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED duration_seconds=$((SECONDS - started))"
-    return 20
-  fi
-  log "event=config status=fetch_final_summary kind=$kind name=$name path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED"
-
   log "event=config status=fetch_build_outputs kind=$kind name=$name planned=$build_output_count root=$build_outputs_root"
   if ! fetch_store_paths "build-outputs" "$build_outputs"; then
     build_fetch_fetched="$FETCH_FETCHED"
@@ -515,6 +507,14 @@ prewarm_attr() {
   if [ "$build_output_count" -gt 0 ]; then
     root_store_paths "$build_outputs_root" "$build_outputs"
   fi
+
+  printf '%s\n' "$out_path" > "$all_drv_outputs"
+  log "event=config status=fetch_final kind=$kind name=$name path=$out_path"
+  if ! fetch_store_paths "final-output" "$all_drv_outputs"; then
+    log "event=config status=miss_final kind=$kind name=$name attr=$attr out_path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED duration_seconds=$((SECONDS - started))"
+    return 20
+  fi
+  log "event=config status=fetch_final_summary kind=$kind name=$name path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED"
 
   ln -sfn "$out_path" "$root"
 
