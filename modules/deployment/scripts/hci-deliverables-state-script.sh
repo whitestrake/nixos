@@ -14,6 +14,9 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
 ci_gate_script="${HCI_DELIVERABLES_CI_GATE_SCRIPT:-${HCI_DEPLOYABLES_CI_GATE_SCRIPT:-$script_dir/hci-deployables-ci-gate.sh}}"
 
+# shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
+source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$script_dir/cachix-pin-functions.sh}"
+
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
   exit 1
@@ -142,25 +145,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-with_retry() {
-  local n=1 max=3 delay=2
-  while true; do
-    if "$@"; then
-      break
-    fi
-
-    if [[ $n -lt $max ]]; then
-      n=$((n + 1))
-      echo "Command failed. Attempt $n/$max in $delay seconds:" >&2
-      sleep "$delay"
-      delay=$((delay * 2))
-    else
-      echo "Command failed after $n attempts." >&2
-      return 1
-    fi
-  done
-}
-
 # shellcheck source=/dev/null
 source "$ci_gate_script"
 
@@ -217,51 +201,6 @@ if [ "$ci_gate_status" -ne 0 ]; then
   exit "$ci_gate_status"
 fi
 
-fetch_pins() {
-  with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-    "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
-    | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
-}
-
-pin_path() {
-  local pin_name="$1"
-  jq -r \
-    --arg name "$pin_name" \
-    'map(select(.name == $name))[0].lastRevision.storePath // ""' \
-    <<< "$pins"
-}
-
-pin_state() {
-  local pin_name="$1"
-  local path="$2"
-  local payload
-
-  case "$deliverables_mode:$pin_name" in
-    production:built-host-*|production:built-rollback-*|canary:canary-host-*|canary:canary-rollback-*)
-      ;;
-    *)
-      echo "ERROR: refusing to update unexpected pin: $pin_name" >&2
-      return 1
-      ;;
-  esac
-
-  payload="$(
-    jq -n \
-      --arg name "$pin_name" \
-      --arg storePath "$path" \
-      --argjson keepRevisions "$built_pin_keep_revisions" \
-      '{name: $name, storePath: $storePath, artifacts: [], keep: {tag: "Revisions", contents: $keepRevisions}}'
-  )"
-
-  with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
-    -H "Content-Type: application/json" \
-    --data "$payload" \
-    "https://app.cachix.org/api/v1/cache/$cache_name/pin" \
-    >/dev/null
-}
-
 dispatch_github_deployment() {
   local matrix="$1"
   local selected_count="$2"
@@ -291,10 +230,10 @@ dispatch_github_deployment() {
     bash "$create_github_deployment_script"
 }
 
-pins="$(fetch_pins)"
+pins="$(cachix_fetch_pins "$cache_name")"
 
 while IFS=$'\t' read -r host build_pin store_path; do
-  previous_built="$(pin_path "$build_pin")"
+  previous_built="$(cachix_pin_path "$pins" "$build_pin")"
   if [ "$previous_built" = "$store_path" ]; then
     echo "Built state already pinned for $host:"
     echo "  $build_pin -> $store_path"
@@ -303,7 +242,7 @@ while IFS=$'\t' read -r host build_pin store_path; do
     echo "  previous: ${previous_built:-[none]}"
     echo "  current:  $store_path"
     echo "Pinning built state: $build_pin -> $store_path"
-    pin_state "$build_pin" "$store_path"
+    cachix_pin_store_path "$cache_name" "$build_pin" "$store_path" "$built_pin_keep_revisions"
   fi
 done < <(
   printf '%s\n' "$deliverables_json" \
@@ -320,7 +259,7 @@ done < <(
 )
 
 while IFS=$'\t' read -r host rollback_pin rollback_script; do
-  previous_rollback="$(pin_path "$rollback_pin")"
+  previous_rollback="$(cachix_pin_path "$pins" "$rollback_pin")"
   if [ "$previous_rollback" = "$rollback_script" ]; then
     echo "Rollback script already pinned for $host:"
     echo "  $rollback_pin -> $rollback_script"
@@ -329,7 +268,7 @@ while IFS=$'\t' read -r host rollback_pin rollback_script; do
     echo "  previous: ${previous_rollback:-[none]}"
     echo "  current:  $rollback_script"
     echo "Pinning rollback script: $rollback_pin -> $rollback_script"
-    pin_state "$rollback_pin" "$rollback_script"
+    cachix_pin_store_path "$cache_name" "$rollback_pin" "$rollback_script" "$built_pin_keep_revisions"
   fi
 done < <(
   printf '%s\n' "$deployables_json" \
