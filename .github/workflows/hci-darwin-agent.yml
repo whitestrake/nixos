@@ -233,8 +233,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          du -sh /nix /nix/store /nix/var/nix || true
-
           started="$SECONDS"
           sync
           if sudo hdiutil detach /nix; then
