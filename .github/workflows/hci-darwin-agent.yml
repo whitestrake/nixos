@@ -24,9 +24,22 @@ permissions:
   contents: read
   statuses: read
 
+# Notes from the Darwin HCI runner trial:
+# - Plain GitHub substitution and Magic Nix Cache both lost to sparsebundle-backed
+#   runners for time-to-useful HCI capacity; Magic was removed after it still had
+#   to materialize the same large closure through its local proxy.
+# - The current comparison keeps the useful paths only: GitHub sparsebundle cache,
+#   Namespace cache volume, and Namespace artifact-backed sparsebundle storage.
+# - The goal is an ephemeral runner that behaves like a warm permanent Darwin
+#   agent: attach a populated /nix sparsebundle, come online quickly, then let HCI
+#   assign any delta work.
+# - If Namespace cache-volume pricing is acceptable, the likely end-state is a
+#   hybrid: keep the sparsebundle on the cache volume, restore the artifact only
+#   on cache-volume miss/corruption, and always upload the final sparsebundle
+#   artifact as the durable fallback.
 jobs:
   darwin-agent-github-cache:
-    name: "Run ephemeral Darwin HCI agent with GitHub sparsebundle cache"
+    name: "GitHub Sparsebundle Cache Runner"
     runs-on: macos-26
     timeout-minutes: 355
     env:
@@ -215,7 +228,7 @@ jobs:
           echo "GITHUB_CACHE_UPLOAD_COMPLETE key=$GITHUB_NIX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
   darwin-agent-namespace:
-    name: "Run ephemeral Darwin HCI agent on Namespace"
+    name: "Namespace Cache Volume Runner"
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     steps:
@@ -322,7 +335,7 @@ jobs:
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
   darwin-agent-namespace-artifact:
-    name: "Run ephemeral Darwin HCI agent on Namespace with artifact store"
+    name: "Namespace Artifact Runner"
     runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     env:
