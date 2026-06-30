@@ -391,19 +391,112 @@ jobs:
 
       - name: Save Namespace Nix store artifact
         shell: bash
+        env:
+          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
         run: |
           set -euo pipefail
 
-          if ! command -v nsc >/dev/null 2>&1; then
-            echo "::error ::nsc CLI is not available on this Namespace runner."
-            exit 1
-          fi
+          namespace_bearer_token() {
+            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
+
+            if [ -r "$token_file" ]; then
+              plutil -extract bearer_token raw "$token_file"
+              return 0
+            fi
+
+            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
+              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
+              return 0
+            fi
+
+            return 1
+          }
+
+          artifact_expires_at() {
+            if [[ "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY" =~ ^([0-9]+)h$ ]]; then
+              date -u -v+"${BASH_REMATCH[1]}"H '+%Y-%m-%dT%H:%M:%SZ'
+              return 0
+            fi
+
+            return 1
+          }
+
+          stream_artifact_upload() {
+            local create_request="$artifact_dir/create-request.json"
+            local create_response="$artifact_dir/create-response.json"
+            local finalize_request="$artifact_dir/finalize-request.json"
+            local finalize_response="$artifact_dir/finalize-response.json"
+            local token
+            local expires_at
+            local signed_upload_url
+            local upload_id
+            local started
+            local duration
+
+            token="$(namespace_bearer_token)" || return 1
+            expires_at="$(artifact_expires_at)" || return 1
+
+            printf '{"path":"%s","namespace":"main","expiresAt":"%s","createNewVersionIfExists":true}\n' \
+              "$NAMESPACE_NIX_STORE_ARTIFACT" \
+              "$expires_at" \
+              > "$create_request"
+
+            started="$SECONDS"
+            curl --fail --location --show-error --silent \
+              --header "Authorization: Bearer $token" \
+              --header "Content-Type: application/json" \
+              --header "Connect-Protocol-Version: 1" \
+              --data-binary @"$create_request" \
+              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/CreateArtifact" \
+              > "$create_response" \
+              || return 1
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_UPLOAD_CREATED path=$NAMESPACE_NIX_STORE_ARTIFACT expiresAt=$expires_at durationSeconds=$duration"
+
+            signed_upload_url="$(plutil -extract signedUploadUrl raw "$create_response")" || return 1
+            upload_id="$(plutil -extract uploadId raw "$create_response")" || return 1
+
+            started="$SECONDS"
+            sudo tar -cpf - -C / nix \
+              | curl --fail --location --show-error --silent \
+                  --request PUT \
+                  --upload-file - \
+                  "$signed_upload_url" \
+              || return 1
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_UPLOAD_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=none durationSeconds=$duration"
+
+            printf '{"uploadId":"%s"}\n' "$upload_id" > "$finalize_request"
+
+            started="$SECONDS"
+            curl --fail --location --show-error --silent \
+              --header "Authorization: Bearer $token" \
+              --header "Content-Type: application/json" \
+              --header "Connect-Protocol-Version: 1" \
+              --data-binary @"$finalize_request" \
+              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/FinalizeArtifact" \
+              > "$finalize_response" \
+              || return 1
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=stream durationSeconds=$duration"
+          }
 
           artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
           trap 'rm -rf "$artifact_dir"' EXIT
           artifact_archive="$artifact_dir/nix-store.tar"
 
           du -sh /nix /nix/store /nix/var/nix || true
+
+          if stream_artifact_upload; then
+            exit 0
+          fi
+
+          if ! command -v nsc >/dev/null 2>&1; then
+            echo "::error ::streaming artifact upload failed and nsc CLI is not available."
+            exit 1
+          fi
+
+          echo "Streaming artifact upload failed; falling back to staged nsc upload."
 
           started="$SECONDS"
           sudo tar -cpf "$artifact_archive" -C / nix
@@ -414,7 +507,7 @@ jobs:
           started="$SECONDS"
           if nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"; then
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
             exit 0
           fi
 
@@ -424,4 +517,4 @@ jobs:
           started="$SECONDS"
           nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY durationSeconds=$duration"
+          echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
