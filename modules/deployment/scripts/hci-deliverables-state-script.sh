@@ -2,17 +2,17 @@
 set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-}"
-deployables_json="${DEPLOYABLES_JSON:-}"
-deployables_mode="${HCI_DEPLOYABLES_MODE:-production}"
-state_name="${HCI_DEPLOYABLES_STATE_NAME:-deployables.json}"
-state_history_limit="${HCI_DEPLOYABLES_HISTORY_LIMIT:-10}"
+deliverables_json="${DELIVERABLES_JSON:-${DEPLOYABLES_JSON:-}}"
+deliverables_mode="${HCI_DELIVERABLES_MODE:-${HCI_DEPLOYABLES_MODE:-production}}"
+state_name="${HCI_DELIVERABLES_STATE_NAME:-${HCI_DEPLOYABLES_STATE_NAME:-deployables.json}}"
+state_history_limit="${HCI_DELIVERABLES_HISTORY_LIMIT:-${HCI_DEPLOYABLES_HISTORY_LIMIT:-10}}"
 built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
 create_github_deployment="${HCI_CREATE_GITHUB_DEPLOYMENT:-true}"
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
-ci_gate_script="${HCI_DEPLOYABLES_CI_GATE_SCRIPT:-$script_dir/hci-deployables-ci-gate.sh}"
+ci_gate_script="${HCI_DELIVERABLES_CI_GATE_SCRIPT:-${HCI_DEPLOYABLES_CI_GATE_SCRIPT:-$script_dir/hci-deployables-ci-gate.sh}}"
 
 if [ -z "$cache_name" ]; then
   echo "ERROR: CACHIX_CACHE_NAME is empty." >&2
@@ -24,8 +24,8 @@ if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   exit 1
 fi
 
-if [ -z "$deployables_json" ]; then
-  echo "ERROR: DEPLOYABLES_JSON is empty." >&2
+if [ -z "$deliverables_json" ]; then
+  echo "ERROR: DELIVERABLES_JSON is empty." >&2
   exit 1
 fi
 
@@ -34,11 +34,11 @@ if [ ! -r "$ci_gate_script" ]; then
   exit 1
 fi
 
-case "$deployables_mode" in
+case "$deliverables_mode" in
   production|canary)
     ;;
   *)
-    echo "ERROR: HCI_DEPLOYABLES_MODE must be production or canary." >&2
+    echo "ERROR: HCI_DELIVERABLES_MODE must be production or canary." >&2
     exit 1
     ;;
 esac
@@ -58,7 +58,7 @@ if [ "$create_github_deployment" = "true" ] && [ -z "${GITHUB_DEPLOYMENT_TOKEN:-
 fi
 
 if ! [[ "$state_history_limit" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: HCI_DEPLOYABLES_HISTORY_LIMIT must be a positive integer." >&2
+  echo "ERROR: HCI_DELIVERABLES_HISTORY_LIMIT must be a positive integer." >&2
   exit 1
 fi
 
@@ -74,9 +74,10 @@ required_filter='
     and (.shortRev | type == "string" and length > 0)
     and (.branch | type == "string" and length > 0)
     and (.ref | type == "string" and length > 0)
-    and (.hosts | type == "object" and length > 0)
+    and (.configurations | type == "object" and length > 0)
+    and (.deployables | type == "object")
     and all(
-      .hosts[];
+      .configurations[];
       (type == "object")
       and (.kind | type == "string" and length > 0)
       and (.jobName | type == "string" and length > 0)
@@ -84,28 +85,54 @@ required_filter='
       and (.storePath | type == "string" and startswith("/nix/store/"))
       and (.buildPin | type == "string")
       and (
-        (.buildPin | startswith("built-host-"))
-        or (.buildPin | startswith("canary-host-"))
+        if $mode == "production" then
+          (.buildPin | startswith("built-host-"))
+        else
+          (.buildPin | startswith("canary-host-"))
+        end
+      )
+    )
+    and all(
+      .deployables[];
+      (type == "object")
+      and (.kind | type == "string" and length > 0)
+      and (.jobName | type == "string" and length > 0)
+      and (.system | type == "string" and length > 0)
+      and (.storePath | type == "string" and startswith("/nix/store/"))
+      and (.buildPin | type == "string")
+      and (
+        if $mode == "production" then
+          (.buildPin | startswith("built-host-"))
+        else
+          (.buildPin | startswith("canary-host-"))
+        end
       )
       and (.rollbackScript | type == "string" and startswith("/nix/store/"))
       and (.rollbackPin | type == "string")
       and (
-        (.rollbackPin | startswith("built-rollback-"))
-        or (.rollbackPin | startswith("canary-rollback-"))
+        if $mode == "production" then
+          (.rollbackPin | startswith("built-rollback-"))
+        else
+          (.rollbackPin | startswith("canary-rollback-"))
+        end
       )
       and (.deployPin | type == "string" and startswith("deployed-host-"))
     )
 '
 
-if ! printf '%s\n' "$deployables_json" | jq -e "$required_filter" >/dev/null; then
-  echo "ERROR: DEPLOYABLES_JSON is malformed." >&2
-  printf '%s\n' "$deployables_json" | jq . >&2 || printf '%s\n' "$deployables_json" >&2
+if ! printf '%s\n' "$deliverables_json" | jq -e --arg mode "$deliverables_mode" "$required_filter" >/dev/null; then
+  echo "ERROR: DELIVERABLES_JSON is malformed." >&2
+  printf '%s\n' "$deliverables_json" | jq . >&2 || printf '%s\n' "$deliverables_json" >&2
   exit 1
 fi
 
 IFS=$'\t' read -r rev short_rev branch < <(
-  printf '%s\n' "$deployables_json" | jq -r '[.rev, .shortRev, .branch] | @tsv'
+  printf '%s\n' "$deliverables_json" | jq -r '[.rev, .shortRev, .branch] | @tsv'
 )
+deployables_json="$(
+  printf '%s\n' "$deliverables_json" \
+    | jq -c '{ref, branch, rev, shortRev, hosts: .deployables}'
+)"
 work_dir="$(mktemp -d)"
 old_state="$work_dir/state-old.json"
 new_state="$work_dir/state-new.json"
@@ -180,7 +207,7 @@ record_deployables_state() {
 }
 
 set +e
-ci_gate_json="$(run_deployables_ci_gate "$deployables_json")"
+ci_gate_json="$(run_deployables_ci_gate "$deliverables_json")"
 ci_gate_status=$?
 set -e
 
@@ -210,7 +237,7 @@ pin_state() {
   local path="$2"
   local payload
 
-  case "$deployables_mode:$pin_name" in
+  case "$deliverables_mode:$pin_name" in
     production:built-host-*|production:built-rollback-*|canary:canary-host-*|canary:canary-rollback-*)
       ;;
     *)
@@ -246,7 +273,7 @@ dispatch_github_deployment() {
   fi
 
   if [ "$create_github_deployment" = "false" ]; then
-    echo "GitHub Deployment creation disabled for $deployables_mode deployables."
+    echo "GitHub Deployment creation disabled for $deliverables_mode deliverables."
     return 0
   fi
 
@@ -266,19 +293,7 @@ dispatch_github_deployment() {
 
 pins="$(fetch_pins)"
 
-while IFS=$'\t' read -r host build_pin store_path rollback_pin rollback_script; do
-  previous_rollback="$(pin_path "$rollback_pin")"
-  if [ "$previous_rollback" = "$rollback_script" ]; then
-    echo "Rollback script already pinned for $host:"
-    echo "  $rollback_pin -> $rollback_script"
-  else
-    echo "Rollback script differs for $host:"
-    echo "  previous: ${previous_rollback:-[none]}"
-    echo "  current:  $rollback_script"
-    echo "Pinning rollback script: $rollback_pin -> $rollback_script"
-    pin_state "$rollback_pin" "$rollback_script"
-  fi
-
+while IFS=$'\t' read -r host build_pin store_path; do
   previous_built="$(pin_path "$build_pin")"
   if [ "$previous_built" = "$store_path" ]; then
     echo "Built state already pinned for $host:"
@@ -291,14 +306,38 @@ while IFS=$'\t' read -r host build_pin store_path rollback_pin rollback_script; 
     pin_state "$build_pin" "$store_path"
   fi
 done < <(
+  printf '%s\n' "$deliverables_json" \
+    | jq -r '
+        .configurations
+        | to_entries[]
+        | [
+            .key,
+            .value.buildPin,
+            .value.storePath
+          ]
+        | @tsv
+      '
+)
+
+while IFS=$'\t' read -r host rollback_pin rollback_script; do
+  previous_rollback="$(pin_path "$rollback_pin")"
+  if [ "$previous_rollback" = "$rollback_script" ]; then
+    echo "Rollback script already pinned for $host:"
+    echo "  $rollback_pin -> $rollback_script"
+  else
+    echo "Rollback script differs for $host:"
+    echo "  previous: ${previous_rollback:-[none]}"
+    echo "  current:  $rollback_script"
+    echo "Pinning rollback script: $rollback_pin -> $rollback_script"
+    pin_state "$rollback_pin" "$rollback_script"
+  fi
+done < <(
   printf '%s\n' "$deployables_json" \
     | jq -r '
         .hosts
         | to_entries[]
         | [
             .key,
-            .value.buildPin,
-            .value.storePath,
             .value.rollbackPin,
             .value.rollbackScript
           ]

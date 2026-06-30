@@ -67,13 +67,20 @@ ci_gate_validate_config() {
 }
 
 ci_gate_required_jobs() {
-  jq -c '[.hosts[]?.jobName | select(type == "string" and length > 0)] | unique' <<< "$1"
+  jq -c '
+    [
+      (.configurations[]?.jobName),
+      (.deployables[]?.jobName)
+    ]
+    | map(select(type == "string" and length > 0))
+    | unique
+  ' <<< "$1"
 }
 
 ci_gate_required_contexts() {
   local jobs="$1"
   local prefix="${HCI_CI_GATE_GITHUB_CONTEXT_PREFIX:-ci/hercules/onPush/}"
-  local deployment_context="${prefix}${HCI_DEPLOYMENT_JOB_NAME:-99-deployment}"
+  local deployment_context="${prefix}${HCI_DEPLOYMENT_JOB_NAME:-99-deliverables}"
   local gate_context="${HCI_CI_GATE_STATUS_CONTEXT:-ci/hercules/deployables-ci-gate}"
 
   jq -c \
