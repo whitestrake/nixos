@@ -24,17 +24,129 @@ permissions:
   contents: read
   statuses: read
 
+# Notes from the Darwin HCI runner trial:
+# - Plain GitHub substitution and Magic Nix Cache both lost to sparsebundle-backed
+#   runners for time-to-useful HCI capacity; Magic was removed after it still had
+#   to materialize the same large closure through its local proxy.
+# - The current comparison keeps the useful paths only: GitHub sparsebundle cache,
+#   Namespace cache volume, and Namespace artifact-backed sparsebundle storage.
+# - The goal is an ephemeral runner that behaves like a warm permanent Darwin
+#   agent: attach a populated /nix sparsebundle, come online quickly, then let HCI
+#   assign any delta work.
+# - If Namespace cache-volume pricing is acceptable, the likely end-state is a
+#   hybrid: keep the sparsebundle on the cache volume, restore the artifact only
+#   on cache-volume miss/corruption, and always upload the final sparsebundle
+#   artifact as the durable fallback.
 jobs:
-  darwin-agent:
-    name: "Run ephemeral Darwin HCI agent"
+  darwin-agent-github-cache:
+    name: "GitHub Sparsebundle Cache Runner"
     runs-on: macos-26
     timeout-minutes: 355
+    env:
+      GITHUB_NIX_CACHE_KEY_PREFIX: hci-darwin-github-sparsebundle-v1
+      GITHUB_NIX_STORE_IMAGE_SIZE: 30g
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Start GitHub sparsebundle cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_bundle="$RUNNER_TEMP/hci-darwin-nix-store/nix-root.sparsebundle"
+
+          mkdir -p "$(dirname "$image_bundle")"
+          echo "GITHUB_NIX_STORE_IMAGE_BUNDLE=$image_bundle" >> "$GITHUB_ENV"
+          echo "GITHUB_CACHE_RESTORE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Restore GitHub sparsebundle cache
+        id: github-nix-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
+          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare GitHub cached sparsebundle Nix root
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.github-nix-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.github-nix-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          synthetic_conf=/etc/synthetic.conf
+          restore_duration="$(($(date +%s) - GITHUB_CACHE_RESTORE_STARTED_AT))"
+
+          echo "GITHUB_CACHE_IMAGE_RESTORE_DONE hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          if zstd_path="$(command -v zstd 2>/dev/null)"; then
+            zstd_version="$("$zstd_path" --version 2>/dev/null || true)"
+            echo "GITHUB_CACHE_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
+          else
+            echo "GITHUB_CACHE_ZSTD_LOCAL available=false"
+          fi
+
+          sudo touch "$synthetic_conf"
+
+          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
+            if ! grep -qx 'nix' "$synthetic_conf"; then
+              echo "::error ::$synthetic_conf already defines nix differently."
+              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
+              exit 1
+            fi
+          else
+            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
+          fi
+
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
+          fi
+
+          if [ ! -e /nix ]; then
+            echo "::error ::macOS did not materialize synthetic /nix."
+            sudo cat "$synthetic_conf"
+            exit 1
+          fi
+
+          if [ -L /nix ]; then
+            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
+            ls -ld /nix
+            exit 1
+          fi
+
+          if [ -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
+            echo "GITHUB_CACHE_IMAGE_READY path=$GITHUB_NIX_STORE_IMAGE_BUNDLE source=cache"
+          else
+            started="$SECONDS"
+            hdiutil create \
+              -size "$GITHUB_NIX_STORE_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
+            duration="$((SECONDS - started))"
+            echo "GITHUB_CACHE_IMAGE_CREATED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE size=$GITHUB_NIX_STORE_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          started="$SECONDS"
+          sudo hdiutil attach \
+            -mountpoint /nix \
+            -nobrowse \
+            "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
+          duration="$((SECONDS - started))"
+          echo "GITHUB_CACHE_IMAGE_ATTACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+          echo "Mounted GitHub cache sparsebundle $GITHUB_NIX_STORE_IMAGE_BUNDLE at /nix"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -48,9 +160,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo scutil --set HostName github-actions-aarch64-darwin
-          sudo scutil --set LocalHostName github-actions-aarch64-darwin
-          sudo hostname github-actions-aarch64-darwin
+          sudo scutil --set HostName github-cache-aarch64-darwin
+          sudo scutil --set LocalHostName github-cache-aarch64-darwin
+          sudo hostname github-cache-aarch64-darwin
 
       - name: Run ephemeral Hercules CI Darwin agent
         shell: bash
@@ -77,8 +189,46 @@ jobs:
             nixpkgs#jq \
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
+      - name: Prepare GitHub sparsebundle cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          sync
+          if sudo hdiutil detach /nix; then
+            :
+          else
+            sudo hdiutil detach -force /nix
+          fi
+          duration="$((SECONDS - started))"
+          echo "GITHUB_CACHE_IMAGE_DETACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          if [ ! -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
+            echo "::error ::GitHub cache Nix sparsebundle is missing at $GITHUB_NIX_STORE_IMAGE_BUNDLE."
+            ls -la "$(dirname "$GITHUB_NIX_STORE_IMAGE_BUNDLE")"
+            exit 1
+          fi
+
+          du -sh "$GITHUB_NIX_STORE_IMAGE_BUNDLE" || true
+          echo "GITHUB_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save GitHub sparsebundle cache
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
+          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report GitHub sparsebundle cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - GITHUB_CACHE_SAVE_STARTED_AT))"
+          echo "GITHUB_CACHE_UPLOAD_COMPLETE key=$GITHUB_NIX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
   darwin-agent-namespace:
-    name: "Run ephemeral Darwin HCI agent on Namespace"
+    name: "Namespace Cache Volume Runner"
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     steps:
@@ -185,15 +335,14 @@ jobs:
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
   darwin-agent-namespace-artifact:
-    name: "Run ephemeral Darwin HCI agent on Namespace with artifact store"
+    name: "Namespace Artifact Runner"
     runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     env:
-      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar.zst
+      NAMESPACE_ARTIFACT_API_URL: https://ord.storage.namespaceapis.com
+      NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-root.sparsebundle.tar.zst
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
-      NAMESPACE_NIX_STORE_LEGACY_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-store.tar
-      NAMESPACE_NIX_STORE_ZSTD_LEVEL: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -201,14 +350,71 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Prepare Namespace artifact Nix root
+      - name: Prepare Namespace sparsebundle Nix root
         shell: bash
+        env:
+          NAMESPACE_BEARER_TOKEN: ${{ secrets.NAMESPACE_BEARER_TOKEN }}
         run: |
           set -euo pipefail
 
+          namespace_bearer_token() {
+            local token_file="${NSC_TOKEN_FILE:-/var/run/nsc/token.json}"
+
+            if [ -r "$token_file" ]; then
+              plutil -extract bearer_token raw "$token_file"
+              return 0
+            fi
+
+            if [ -n "${NAMESPACE_BEARER_TOKEN:-}" ]; then
+              printf '%s\n' "$NAMESPACE_BEARER_TOKEN"
+              return 0
+            fi
+
+            return 1
+          }
+
+          resolve_artifact_url() {
+            local artifact_path="$1"
+            local output_path="$2"
+            local token
+            local request_path
+
+            token="$(namespace_bearer_token)" || return 1
+            request_path="$image_parent/resolve-request.json"
+
+            printf '{"path":"%s","namespace":"main"}\n' "$artifact_path" > "$request_path"
+
+            curl --fail --location --show-error --silent \
+              --header "Authorization: Bearer $token" \
+              --header "Content-Type: application/json" \
+              --header "Connect-Protocol-Version: 1" \
+              --data-binary @"$request_path" \
+              "$NAMESPACE_ARTIFACT_API_URL/namespace.cloud.storage.v1beta.ArtifactsService/ResolveArtifact" \
+              > "$output_path"
+          }
+
           synthetic_conf=/etc/synthetic.conf
-          image_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-root.XXXXXX")"
-          image_path="$image_dir/nix-root.sparseimage"
+          image_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store"
+          image_bundle="$image_parent/nix-root.sparsebundle"
+          image_archive="$image_parent/nix-root.sparsebundle.tar.zst"
+          resolve_response="$image_parent/resolve-response.json"
+
+          mkdir -p "$image_parent"
+          rm -rf "$image_bundle" "$image_archive" "$resolve_response"
+
+          {
+            printf 'NAMESPACE_NIX_STORE_IMAGE_BUNDLE=%s\n' "$image_bundle"
+            printf 'NAMESPACE_NIX_STORE_IMAGE_ARCHIVE=%s\n' "$image_archive"
+          } >> "$GITHUB_ENV"
+
+          if zstd_path="$(command -v zstd 2>/dev/null)"; then
+            zstd_version="$("$zstd_path" --version 2>/dev/null || true)"
+            echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
+          else
+            echo "NAMESPACE_ARTIFACT_ZSTD_LOCAL available=false"
+            echo "::error ::zstd is required for the Namespace sparsebundle artifact experiment."
+            exit 1
+          fi
 
           sudo touch "$synthetic_conf"
 
@@ -239,22 +445,60 @@ jobs:
             exit 1
           fi
 
-          hdiutil create \
-            -size "$NAMESPACE_NIX_STORE_IMAGE_SIZE" \
-            -type SPARSE \
-            -fs APFS \
-            -volname NixStore \
-            "$image_path"
+          started="$SECONDS"
+          if resolve_artifact_url "$NAMESPACE_NIX_STORE_ARTIFACT" "$resolve_response"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESOLVE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
 
+            started="$SECONDS"
+            signed_download_url="$(plutil -extract signedDownloadUrl raw "$resolve_response")"
+            curl --fail --location --show-error --silent "$signed_download_url" \
+              | zstd -dc \
+              | tar -xpf - -C "$image_parent"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_STREAMED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar compression=zstd durationSeconds=$duration"
+          elif command -v nsc >/dev/null 2>&1 && nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$image_archive"; then
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+            ls -lh "$image_archive"
+
+            started="$SECONDS"
+            zstd -dc "$image_archive" | tar -xpf - -C "$image_parent"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT format=sparsebundle-tar compression=zstd durationSeconds=$duration"
+          else
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
+
+            started="$SECONDS"
+            hdiutil create \
+              -size "$NAMESPACE_NIX_STORE_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$image_bundle"
+            duration="$((SECONDS - started))"
+            echo "NAMESPACE_ARTIFACT_IMAGE_CREATED path=$image_bundle size=$NAMESPACE_NIX_STORE_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          if [ ! -d "$image_bundle" ]; then
+            echo "::error ::Namespace Nix sparsebundle is missing at $image_bundle."
+            ls -la "$image_parent"
+            exit 1
+          fi
+
+          started="$SECONDS"
           sudo hdiutil attach \
             -mountpoint /nix \
             -nobrowse \
-            "$image_path"
+            "$image_bundle"
+          duration="$((SECONDS - started))"
+          echo "NAMESPACE_ARTIFACT_IMAGE_ATTACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
 
           sudo chown "$USER" /nix
           chmod u+rwx /nix
 
-          echo "Mounted ephemeral APFS image $image_path at /nix for Namespace artifact store"
+          echo "Mounted Namespace sparsebundle $image_bundle at /nix"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -262,50 +506,6 @@ jobs:
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
-
-      - name: Restore Namespace Nix store artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if ! command -v nsc >/dev/null 2>&1; then
-            echo "::error ::nsc CLI is not available on this Namespace runner."
-            exit 1
-          fi
-
-          artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar.zst"
-          legacy_archive="$artifact_dir/nix-store.tar"
-          started="$SECONDS"
-
-          if nsc artifact download "$NAMESPACE_NIX_STORE_ARTIFACT" "$artifact_archive"; then
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_HIT path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
-            ls -lh "$artifact_archive"
-
-            started="$SECONDS"
-            nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- -dc "$artifact_archive" | sudo tar -xpf - -C /
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_ARTIFACT compression=zstd durationSeconds=$duration"
-
-            sudo chown "$USER" /nix
-            chmod u+rwx /nix
-          elif nsc artifact download "$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT" "$legacy_archive"; then
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_LEGACY_HIT path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT durationSeconds=$duration"
-            ls -lh "$legacy_archive"
-
-            started="$SECONDS"
-            sudo tar -xpf "$legacy_archive" -C /
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_EXTRACTED path=$NAMESPACE_NIX_STORE_LEGACY_ARTIFACT compression=none durationSeconds=$duration"
-
-            sudo chown "$USER" /nix
-            chmod u+rwx /nix
-          else
-            duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_RESTORE_MISS path=$NAMESPACE_NIX_STORE_ARTIFACT durationSeconds=$duration"
-          fi
 
       - name: Set HCI agent hostname
         shell: bash
@@ -341,32 +541,49 @@ jobs:
             nixpkgs#jq \
             -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
-      - name: Save Namespace Nix store artifact
+      - name: Save Namespace sparsebundle Nix root artifact
         shell: bash
         run: |
           set -euo pipefail
 
           if ! command -v nsc >/dev/null 2>&1; then
-            echo "::error ::nsc CLI is not available on this Namespace runner."
+            echo "::error ::nsc CLI is not available."
             exit 1
           fi
 
-          artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/hci-darwin-nix-store.XXXXXX")"
-          artifact_archive="$artifact_dir/nix-store.tar.zst"
-          zstd_level="-${NAMESPACE_NIX_STORE_ZSTD_LEVEL}"
+          image_bundle="${NAMESPACE_NIX_STORE_IMAGE_BUNDLE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle}"
+          image_archive="${NAMESPACE_NIX_STORE_IMAGE_ARCHIVE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hci-darwin-nix-store/nix-root.sparsebundle.tar.zst}"
+          image_parent="$(dirname "$image_bundle")"
 
           du -sh /nix /nix/store /nix/var/nix || true
 
           started="$SECONDS"
-          sudo tar -cpf - -C / nix | nix run --accept-flake-config --inputs-from . nixpkgs#zstd -- "$zstd_level" -T0 -c > "$artifact_archive"
+          sync
+          if sudo hdiutil detach /nix; then
+            :
+          else
+            sudo hdiutil detach -force /nix
+          fi
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_ARCHIVE_CREATED path=$artifact_archive compression=zstd level=$NAMESPACE_NIX_STORE_ZSTD_LEVEL durationSeconds=$duration"
-          ls -lh "$artifact_archive"
+          echo "NAMESPACE_ARTIFACT_IMAGE_DETACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
+
+          if [ ! -d "$image_bundle" ]; then
+            echo "::error ::Namespace Nix sparsebundle is missing at $image_bundle."
+            ls -la "$image_parent"
+            exit 1
+          fi
 
           started="$SECONDS"
-          if nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"; then
+          rm -f "$image_archive"
+          tar -cpf - -C "$image_parent" "$(basename "$image_bundle")" | zstd -T0 -1 > "$image_archive"
+          duration="$((SECONDS - started))"
+          echo "NAMESPACE_ARTIFACT_IMAGE_ARCHIVE_CREATED path=$image_archive format=sparsebundle-tar compression=zstd level=1 durationSeconds=$duration"
+          ls -lh "$image_archive"
+
+          started="$SECONDS"
+          if nsc artifact upload "$image_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"; then
             duration="$((SECONDS - started))"
-            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY durationSeconds=$duration"
+            echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
             exit 0
           fi
 
@@ -374,6 +591,6 @@ jobs:
           nsc artifact expire "$NAMESPACE_NIX_STORE_ARTIFACT" || true
 
           started="$SECONDS"
-          nsc artifact upload "$artifact_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"
+          nsc artifact upload "$image_archive" "$NAMESPACE_NIX_STORE_ARTIFACT" --expires_in "$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY"
           duration="$((SECONDS - started))"
-          echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY durationSeconds=$duration"
+          echo "NAMESPACE_ARTIFACT_UPLOAD_COMPLETE path=$NAMESPACE_NIX_STORE_ARTIFACT expiresIn=$NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY mode=nsc durationSeconds=$duration"
