@@ -25,58 +25,6 @@ permissions:
   statuses: read
 
 jobs:
-  darwin-agent:
-    name: "Run ephemeral Darwin HCI agent"
-    runs-on: macos-26
-    timeout-minutes: 355
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
-
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo scutil --set HostName github-actions-aarch64-darwin
-          sudo scutil --set LocalHostName github-actions-aarch64-darwin
-          sudo hostname github-actions-aarch64-darwin
-
-      - name: Run ephemeral Hercules CI Darwin agent
-        shell: bash
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          CACHIX_CACHE_NAME: whitestrake
-          DARWIN_CONFIGURATION: andred
-          GITHUB_TOKEN: ${{ github.token }}
-          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
-          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_DARWIN_FINISH_CONDITION: hci-job-done
-          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
-          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
-          HCI_PROJECT: github/whitestrake/nixos
-          HCI_REVISION: ${{ inputs.revision || github.sha }}
-        run: |
-          set -euo pipefail
-
-          nix shell \
-            --accept-flake-config \
-            --inputs-from . \
-            nixpkgs#curl \
-            nixpkgs#hercules-ci-agent \
-            nixpkgs#jq \
-            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
-
   darwin-agent-github-cache:
     name: "Run ephemeral Darwin HCI agent with GitHub sparsebundle cache"
     runs-on: macos-26
@@ -266,85 +214,8 @@ jobs:
           save_duration="$(($(date +%s) - GITHUB_CACHE_SAVE_STARTED_AT))"
           echo "GITHUB_CACHE_UPLOAD_COMPLETE key=$GITHUB_NIX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
-  darwin-agent-magic-cache:
-    name: "Run ephemeral Darwin HCI agent with Magic Nix Cache"
-    runs-on: macos-26
-    timeout-minutes: 355
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
-
-      - name: Start Magic Nix Cache timing
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "MAGIC_NIX_CACHE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Set up Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diagnostic-endpoint: ""
-
-      - name: Report Magic Nix Cache startup
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          duration="$(($(date +%s) - MAGIC_NIX_CACHE_STARTED_AT))"
-          echo "MAGIC_NIX_CACHE_READY durationSeconds=$duration"
-
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo scutil --set HostName magic-cache-aarch64-darwin
-          sudo scutil --set LocalHostName magic-cache-aarch64-darwin
-          sudo hostname magic-cache-aarch64-darwin
-
-      - name: Run ephemeral Hercules CI Darwin agent
-        shell: bash
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          CACHIX_CACHE_NAME: whitestrake
-          DARWIN_CONFIGURATION: andred
-          GITHUB_TOKEN: ${{ github.token }}
-          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
-          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_DARWIN_FINISH_CONDITION: hci-job-done
-          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
-          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
-          HCI_PROJECT: github/whitestrake/nixos
-          HCI_REVISION: ${{ inputs.revision || github.sha }}
-        run: |
-          set -euo pipefail
-
-          nix shell \
-            --accept-flake-config \
-            --inputs-from . \
-            nixpkgs#curl \
-            nixpkgs#hercules-ci-agent \
-            nixpkgs#jq \
-            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
-
   darwin-agent-namespace:
     name: "Run ephemeral Darwin HCI agent on Namespace"
-    # Re-enable after the sparsebundle artifact runner experiment; this job is already known-fast
-    # and otherwise competes for Namespace runner concurrency.
-    if: ${{ vars.ENABLE_NAMESPACE_CACHE_RUNNER == 'true' }}
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     steps:
