@@ -240,6 +240,48 @@
 
     hmDarwin = {pkgs, ...}: {
       programs.git.ignores = [".DS_Store"];
+      programs.ghostty = {
+        enable = true;
+        package = null;
+        settings = {
+          auto-update = "download";
+          auto-update-channel = "stable";
+          background = "#040405";
+          foreground = "#a2a2a2";
+          bold-color = "#cecece";
+          palette = [
+            "0=#020202"
+            "1=#a41702"
+            "2=#009f0a"
+            "3=#a19f07"
+            "4=#2744cf"
+            "5=#a327a2"
+            "6=#00a0a1"
+            "7=#a2a2a2"
+            "8=#545454"
+            "9=#d15955"
+            "10=#4ecb54"
+            "11=#cecc53"
+            "12=#555ccf"
+            "13=#d060ce"
+            "14=#4fcdcf"
+            "15=#cecece"
+          ];
+          font-family = "MesloLGS Nerd Font Mono";
+          font-size = 13;
+          font-thicken = true;
+          font-thicken-strength = 64;
+          mouse-hide-while-typing = true;
+          split-divider-color = "#4b5563";
+          split-inherit-working-directory = true;
+          unfocused-split-opacity = 0.9;
+          window-padding-x = 8;
+          window-padding-y = 8;
+          window-padding-balance = true;
+          window-inherit-font-size = true;
+          window-save-state = "always";
+        };
+      };
       home.packages = [
         (pkgs.writeShellApplication {
           name = "agy-ide";

@@ -145,10 +145,9 @@
           casks = [
             "music-decoy"
             "finetune"
-            "visual-studio-code"
             "iina"
             "raycast"
-            "warp"
+            "ghostty"
             "obsidian"
             "soduto"
             "kando"
