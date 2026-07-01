@@ -338,9 +338,8 @@
         IOSchedulingPriority = 7;
         CPUWeight = 10;
         IOWeight = 10;
-        MemoryHigh = "6G";
-        MemoryMax = "10G";
-        RuntimeMaxSec = "45min";
+        MemoryHigh = "512M";
+        MemoryMax = "2G";
         TasksMax = 256;
         OOMPolicy = "stop";
       };
