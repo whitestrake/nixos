@@ -230,15 +230,16 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1782541382,
-        "narHash": "sha256-twQ+oTN86A9/DlO8xdfY8f2393aP4BZRuTXIAiOQ1Hs=",
-        "owner": "stubbedev",
+        "lastModified": 1782871872,
+        "narHash": "sha256-ZQm0bkENXLbG98kJ92g4ljDywAEQKvc8efFUNvYl+Q0=",
+        "owner": "whitestrake",
         "repo": "nix-mcp",
-        "rev": "86a78e0c71eecfb23b341291184cc5cbdef56f21",
+        "rev": "34e4ea90ff849a9f3272c049a89d2b18d9c5a005",
         "type": "github"
       },
       "original": {
-        "owner": "stubbedev",
+        "owner": "whitestrake",
+        "ref": "feat/nix-mcp-hm-live-index",
         "repo": "nix-mcp",
         "type": "github"
       }

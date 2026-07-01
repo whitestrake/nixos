@@ -3,7 +3,7 @@
   inputs,
   ...
 }: {
-  flake-file.inputs.nix-mcp.url = "github:stubbedev/nix-mcp";
+  flake-file.inputs.nix-mcp.url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
 
   den.aspects.dev-tools = {
     os = {pkgs, ...}: {
