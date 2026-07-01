@@ -8,16 +8,12 @@ set -euo pipefail
 : "${HCI_API_BASE_URL:=https://hercules-ci.com}"
 : "${HCI_DARWIN_AGENT_CONCURRENT_TASKS:=1}"
 : "${HCI_DARWIN_AGENT_STARTUP_SECONDS:=5}"
-: "${HCI_DARWIN_DEPLOYED_PIN_NAME:=deployed-host-$DARWIN_CONFIGURATION}"
 : "${HCI_DARWIN_FINISH_CONDITION:=darwin-toplevel}"
 : "${HCI_DARWIN_GCROOT_KEEP_REVISIONS:=3}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
 : "${HCI_PROJECT:=github/whitestrake/nixos}"
-
-# shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
-source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/cachix-pin-functions.sh}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -481,7 +477,7 @@ prepare_darwin_toplevel() {
   DARWIN_GCROOT_LINK="$DARWIN_REV_DIR/$DARWIN_CONFIGURATION"
   DARWIN_CURRENT_LINK="$DARWIN_GCROOT_DIR/current"
   DARWIN_LEGACY_FLAT_LINK="$DARWIN_GCROOT_DIR/$DARWIN_CONFIGURATION"
-  DARWIN_DEPLOYED_PIN_LINK="$DARWIN_GCROOT_DIR/$HCI_DARWIN_DEPLOYED_PIN_NAME"
+  DARWIN_MASTER_LINK="$DARWIN_GCROOT_DIR/master"
 }
 
 try_root_darwin_toplevel() {
@@ -526,60 +522,6 @@ try_root_darwin_toplevel() {
   return 1
 }
 
-root_deployed_darwin_pin() {
-  local pins store_path
-
-  if ! ensure_replaceable_symlink "$DARWIN_DEPLOYED_PIN_LINK"; then
-    return 1
-  fi
-
-  if ! pins="$(cachix_fetch_pins "$CACHIX_CACHE_NAME")"; then
-    log "ERROR: failed to fetch Cachix pins for $CACHIX_CACHE_NAME."
-    return 1
-  fi
-
-  store_path="$(cachix_pin_path "$pins" "$HCI_DARWIN_DEPLOYED_PIN_NAME")"
-  if [ -z "$store_path" ]; then
-    if [ -L "$DARWIN_DEPLOYED_PIN_LINK" ]; then
-      if ! rm -f -- "$DARWIN_DEPLOYED_PIN_LINK"; then
-        log "ERROR: failed to remove stale deployed pin root: $DARWIN_DEPLOYED_PIN_LINK"
-        return 1
-      fi
-      log "Removed stale deployed pin root because Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path."
-    else
-      log "Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path; deployed pin root skipped."
-    fi
-    return 0
-  fi
-
-  case "$store_path" in
-    /nix/store/*) ;;
-    *)
-      log "ERROR: Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME does not point at /nix/store: $store_path"
-      return 1
-      ;;
-  esac
-
-  if ! nix path-info "$store_path" >/dev/null 2>&1; then
-    log "Deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME is not local; attempting substitute-only realisation..."
-    if ! nix-store \
-      --option max-jobs 0 \
-      --option extra-substituters "https://$CACHIX_CACHE_NAME.cachix.org" \
-      --option extra-trusted-public-keys "$CACHIX_PUBLIC_KEY" \
-      --realise "$store_path" \
-      >/dev/null; then
-      log "ERROR: failed to realise deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME at $store_path."
-      return 1
-    fi
-  fi
-
-  if ! ln -sfn "$store_path" "$DARWIN_DEPLOYED_PIN_LINK"; then
-    log "ERROR: failed to root deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME at $DARWIN_DEPLOYED_PIN_LINK."
-    return 1
-  fi
-  log "Rooted deployed pin: $DARWIN_DEPLOYED_PIN_LINK -> $store_path"
-}
-
 remove_legacy_flat_root() {
   if ! ensure_replaceable_symlink "$DARWIN_LEGACY_FLAT_LINK"; then
     return 1
@@ -603,14 +545,52 @@ promote_current_revision_root() {
   log "Promoted current Darwin gcroot: $DARWIN_CURRENT_LINK -> $(basename "$DARWIN_REV_DIR")"
 }
 
+promote_master_revision_root() {
+  if [ "${GITHUB_REF:-}" != "refs/heads/master" ] \
+    || [ -z "${GITHUB_SHA:-}" ] \
+    || [ "${HCI_REVISION:-$GITHUB_SHA}" != "$GITHUB_SHA" ]; then
+    return 0
+  fi
+
+  if ! ensure_replaceable_symlink "$DARWIN_MASTER_LINK"; then
+    return 1
+  fi
+
+  (cd "$DARWIN_GCROOT_DIR" && ln -sfn "$(basename "$DARWIN_REV_DIR")" master) || return 1
+  log "Promoted master Darwin gcroot: $DARWIN_MASTER_LINK -> $(basename "$DARWIN_REV_DIR")"
+}
+
 prune_old_revision_roots() {
   local count=0
+  local keep_previous
+  local master_rev_dir
+  local master_target
   local rev_dir
   local stale_dir
 
+  if ! ensure_replaceable_symlink "$DARWIN_MASTER_LINK"; then
+    return 1
+  fi
+
+  if [ -L "$DARWIN_MASTER_LINK" ]; then
+    master_target="$(readlink "$DARWIN_MASTER_LINK")" || return 1
+    case "$master_target" in
+      rev-*)
+        master_rev_dir="$DARWIN_GCROOT_DIR/$master_target"
+        ;;
+    esac
+  fi
+
+  keep_previous=$((HCI_DARWIN_GCROOT_KEEP_REVISIONS - 1))
+
   while IFS= read -r stale_dir; do
+    if [ "$stale_dir" = "$DARWIN_REV_DIR" ] \
+      || { [ -n "$master_rev_dir" ] && [ "$stale_dir" = "$master_rev_dir" ]; }; then
+      continue
+    fi
+
     count=$((count + 1))
-    if [ "$count" -le "$HCI_DARWIN_GCROOT_KEEP_REVISIONS" ]; then
+    if [ "$count" -le "$keep_previous" ]; then
       continue
     fi
 
@@ -642,9 +622,9 @@ finalize_darwin_cache_roots() {
   stop_agent
 
   try_root_darwin_toplevel || return 1
-  root_deployed_darwin_pin || return 1
   remove_legacy_flat_root || return 1
   promote_current_revision_root || return 1
+  promote_master_revision_root || return 1
   prune_old_revision_roots || return 1
 
   log "Running Nix garbage collection for persisted Darwin runner store..."

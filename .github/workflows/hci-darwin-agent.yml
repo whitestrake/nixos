@@ -49,7 +49,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
       - name: Start GitHub sparsebundle cache restore
@@ -235,7 +235,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
       - name: Prepare Namespace Nix cache root
@@ -347,7 +347,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
       - name: Prepare Namespace sparsebundle Nix root
