@@ -238,11 +238,19 @@
       programs.home-manager.enable = true;
     };
 
-    hmDarwin = {
-      home.sessionVariables.EDITOR = "antigravity";
+    hmDarwin = {pkgs, ...}: {
+      programs.git.ignores = [".DS_Store"];
+      home.packages = [
+        (pkgs.writeShellApplication {
+          name = "agy-ide";
+          text = ''
+            exec "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" "$@"
+          '';
+        })
+      ];
+      home.sessionVariables.EDITOR = "agy-ide --wait";
       home.shellAliases = {
         tailscale = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-        agy = "/Applications/Antigravity.app/Contents/Resources/app/bin/antigravity";
       };
     };
   };
