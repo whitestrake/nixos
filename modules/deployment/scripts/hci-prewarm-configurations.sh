@@ -10,6 +10,17 @@ sleep_seconds="${HCI_PREWARM_SLEEP_SECONDS:-120}"
 lock_file="${HCI_PREWARM_LOCK_FILE:-/run/hci-prewarm-configurations.lock}"
 dry_run_only="${HCI_PREWARM_DRY_RUN_ONLY:-false}"
 agent_service="${HCI_PREWARM_AGENT_SERVICE:-}"
+hci_project="${HCI_PREWARM_HCI_PROJECT:-${HCI_PROJECT:-github/whitestrake/nixos}}"
+hci_master_ref="${HCI_PREWARM_HCI_MASTER_REF:-refs/heads/$branch}"
+hci_latest_jobs="${HCI_PREWARM_HCI_LATEST_JOBS:-200}"
+hci_api_base_url="${HCI_PREWARM_HCI_API_BASE_URL:-${HERCULES_CI_API_BASE_URL:-https://hercules-ci.com}}"
+hci_api_url="${HCI_PREWARM_HCI_API_URL:-${HCI_API_URL:-${hci_api_base_url%/}/api/v1}}"
+hci_jobs_file="${HCI_PREWARM_HCI_JOBS_FILE:-}"
+hci_headers_file="${HCI_PREWARM_HCI_HEADERS_FILE:-${herculesCIHeaders:-}}"
+hci_api_token="${HCI_PREWARM_HCI_API_TOKEN:-}"
+hci_allow_env_token="${HCI_PREWARM_HCI_ALLOW_ENV_TOKEN:-false}"
+hci_connect_timeout="${HCI_PREWARM_HCI_CONNECT_TIMEOUT_SECONDS:-10}"
+hci_request_timeout="${HCI_PREWARM_HCI_REQUEST_TIMEOUT_SECONDS:-60}"
 run_started="$SECONDS"
 tmp_files=()
 nix_common_options=(
@@ -47,6 +58,18 @@ if ! [[ "$sleep_seconds" =~ ^[0-9]+$ ]]; then
   fail "HCI_PREWARM_SLEEP_SECONDS must be a non-negative integer, got: $sleep_seconds"
 fi
 
+if ! [[ "$hci_latest_jobs" =~ ^[1-9][0-9]*$ ]]; then
+  fail "HCI_PREWARM_HCI_LATEST_JOBS must be a positive integer, got: $hci_latest_jobs"
+fi
+
+if ! [[ "$hci_connect_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  fail "HCI_PREWARM_HCI_CONNECT_TIMEOUT_SECONDS must be a positive integer, got: $hci_connect_timeout"
+fi
+
+if ! [[ "$hci_request_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  fail "HCI_PREWARM_HCI_REQUEST_TIMEOUT_SECONDS must be a positive integer, got: $hci_request_timeout"
+fi
+
 mkdir -p "$(dirname "$lock_file")"
 exec 9> "$lock_file"
 if ! flock -n 9; then
@@ -55,25 +78,36 @@ if ! flock -n 9; then
 fi
 log "event=lock status=acquired lock_file=$lock_file"
 
-log "event=start repo_url=$repo_url branch=$branch checkout_dir=$checkout_dir gcroot_dir=$gcroot_dir keep_revisions=$keep_revisions sleep_seconds=$sleep_seconds dry_run_only=$dry_run_only agent_service=${agent_service:-none}"
+log "event=start repo_url=$repo_url branch=$branch checkout_dir=$checkout_dir gcroot_dir=$gcroot_dir keep_revisions=$keep_revisions sleep_seconds=$sleep_seconds dry_run_only=$dry_run_only agent_service=${agent_service:-none} hci_project=$hci_project hci_master_ref=$hci_master_ref hci_latest_jobs=$hci_latest_jobs"
 
 update_checkout() {
+  local ref="${1:-refs/heads/$branch}"
+  local target_rev="${2:-}"
   local before_rev="none"
   local after_rev
 
   if [ -d "$checkout_dir/.git" ]; then
     before_rev="$(git -C "$checkout_dir" rev-parse --verify HEAD 2>/dev/null || printf 'unknown')"
-    log "event=checkout action=fetch status=start checkout_dir=$checkout_dir before_rev=$before_rev branch=$branch"
-    git -C "$checkout_dir" fetch --prune origin "$branch"
-    git -C "$checkout_dir" reset --hard "origin/$branch"
+    log "event=checkout action=fetch status=start checkout_dir=$checkout_dir before_rev=$before_rev ref=$ref target_rev=${target_rev:-FETCH_HEAD}"
   else
-    log "event=checkout action=clone status=start repo_url=$repo_url branch=$branch checkout_dir=$checkout_dir"
+    log "event=checkout action=clone status=start repo_url=$repo_url checkout_dir=$checkout_dir ref=$ref target_rev=${target_rev:-FETCH_HEAD}"
     mkdir -p "$(dirname "$checkout_dir")"
-    git clone --branch "$branch" --single-branch "$repo_url" "$checkout_dir"
+    git clone --no-checkout "$repo_url" "$checkout_dir"
+  fi
+
+  git -C "$checkout_dir" fetch --prune origin "$ref"
+  if [ -n "$target_rev" ]; then
+    if ! git -C "$checkout_dir" cat-file -e "$target_rev^{commit}" 2> /dev/null; then
+      log "event=checkout action=fetch_revision status=start checkout_dir=$checkout_dir target_rev=$target_rev"
+      git -C "$checkout_dir" fetch origin "$target_rev" || true
+    fi
+    git -C "$checkout_dir" reset --hard "$target_rev"
+  else
+    git -C "$checkout_dir" reset --hard FETCH_HEAD
   fi
 
   after_rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
-  log "event=checkout status=complete checkout_dir=$checkout_dir before_rev=$before_rev after_rev=$after_rev"
+  log "event=checkout status=complete checkout_dir=$checkout_dir before_rev=$before_rev after_rev=$after_rev ref=$ref"
 }
 
 enumerate_names() {
@@ -524,6 +558,280 @@ prewarm_attr() {
   return 0
 }
 
+hci_discovery_configured() {
+  [ -n "$hci_jobs_file" ] \
+    || [ -n "$hci_headers_file" ] \
+    || [ -n "$hci_api_token" ] \
+    || { [ "$hci_allow_env_token" = "true" ] && [ -n "${HERCULES_CI_API_TOKEN:-${HCI_API_TOKEN:-${HERCULES_CI_TOKEN:-}}}" ]; }
+}
+
+hci_curl() {
+  local path="$1"
+  local token="$hci_api_token"
+
+  if [ -n "$hci_headers_file" ]; then
+    [ -r "$hci_headers_file" ] || {
+      log "event=hci_lookup status=failed reason=headers-file-unreadable path=$hci_headers_file"
+      return 1
+    }
+    curl -fsS --connect-timeout "$hci_connect_timeout" --max-time "$hci_request_timeout" -H @"$hci_headers_file" "${hci_api_url%/}$path"
+    return
+  fi
+
+  if [ -z "$token" ] && [ "$hci_allow_env_token" = "true" ]; then
+    token="${HERCULES_CI_API_TOKEN:-${HCI_API_TOKEN:-${HERCULES_CI_TOKEN:-}}}"
+  fi
+
+  [ -n "$token" ] || {
+    log "event=hci_lookup status=disabled reason=no-hci-api-token"
+    return 1
+  }
+
+  curl -fsS --connect-timeout "$hci_connect_timeout" --max-time "$hci_request_timeout" -H "Authorization: Bearer $token" "${hci_api_url%/}$path"
+}
+
+fetch_hci_latest_jobs() {
+  if [ -n "$hci_jobs_file" ]; then
+    [ -r "$hci_jobs_file" ] || {
+      log "event=hci_lookup status=failed reason=jobs-file-unreadable path=$hci_jobs_file"
+      return 1
+    }
+    cat "$hci_jobs_file"
+    return
+  fi
+
+  hci_curl "/jobs?latest=$hci_latest_jobs"
+}
+
+select_hci_prewarm_candidates() {
+  local jobs_file="$1"
+  local project="$2"
+  local master_ref="$3"
+  local site owner repo extra
+
+  IFS=/ read -r site owner repo extra <<< "$project"
+  [ -n "${site:-}" ] && [ -n "${owner:-}" ] && [ -n "${repo:-}" ] && [ -z "${extra:-}" ] || {
+    printf 'ERROR: HCI project must have the form site/owner/repo, got: %s\n' "$project" >&2
+    return 1
+  }
+
+  jq -r \
+    --arg site "$site" \
+    --arg owner "$owner" \
+    --arg repo "$repo" \
+    --arg masterRef "$master_ref" \
+    '
+      def green:
+        ((.isCancelled // false) | not)
+        and ((.jobPhase // "" | tostring | ascii_downcase) == "done")
+        and (
+          [
+            .jobStatus?,
+            .evaluationStatus?,
+            .derivationStatus?,
+            .effectsStatus?
+          ]
+          | map(select(. != null) | tostring | ascii_downcase)
+          | length > 0
+          and all(.[]; test("^(success|succeed|succeeded|successful|done|pass|passed|complete|completed)$"))
+        );
+
+      [
+        .[]?
+        | select(.project.siteSlug == $site)
+        | select(.project.ownerSlug == $owner)
+        | select(.project.slug == $repo)
+        | .jobs[]?
+        | select((.jobName // "") | test("^(10-darwinConfiguration-|20-nixosConfiguration-)"))
+        | select((.source.ref // "") != "" and (.source.revision // "") != "")
+        | {
+            ref: .source.ref,
+            revision: .source.revision,
+            index: ((.index // 0) | tonumber? // 0),
+            green: green
+          }
+      ]
+      | sort_by(.ref, .revision)
+      | group_by([.ref, .revision])
+      | map({
+          ref: .[0].ref,
+          revision: .[0].revision,
+          index: (map(.index) | max),
+          green: all(.[]; .green)
+        })
+      | map(select(.green))
+      | map(. + {slot: (if .ref == $masterRef then "master" else "non-master" end)})
+      | sort_by(.slot, .index)
+      | group_by(.slot)
+      | map(sort_by(.index) | last)
+      | sort_by(if .slot == "master" then 0 else 1 end)
+      | .[]
+      | [.slot, .ref, .revision, (.index | tostring)]
+      | @tsv
+    ' "$jobs_file"
+}
+
+current_root_has_revision() {
+  local current_root="$1"
+  local rev="$2"
+  local target
+
+  target="$(readlink -f "$current_root" 2> /dev/null || true)"
+  [ "$target" = "$gcroot_dir/rev-$rev" ] && [ -d "$target" ]
+}
+
+promote_current_root() {
+  local current_root="$1"
+  local rev="$2"
+  local rev_dir="$3"
+
+  if [ -e "$current_root" ] && [ ! -L "$current_root" ]; then
+    fail "refusing to replace non-symlink current root: $current_root"
+  fi
+
+  mkdir -p "$(dirname "$current_root")"
+  log "event=promotion status=start rev=$rev rev_dir=$rev_dir current=$current_root"
+  ln -sfn "$rev_dir" "$current_root"
+  log "event=promotion status=complete rev=$rev current=$current_root"
+}
+
+prewarm_revision() {
+  local slot="$1"
+  local ref="$2"
+  local rev="$3"
+  local current_root="$4"
+  local rev_dir="$gcroot_dir/rev-$rev"
+  local warmed=0
+  local skipped=0
+  local missed=0
+  local total=0
+  local stopped_for_workers=0
+  local kind names_file kind_count name status
+  local checkout_rev
+
+  if current_root_has_revision "$current_root" "$rev"; then
+    log "event=revision status=skip_current slot=$slot ref=$ref rev=$rev current=$current_root rev_dir=$rev_dir"
+    return 0
+  fi
+
+  checkout_rev="$(git -C "$checkout_dir" rev-parse --verify HEAD 2> /dev/null || true)"
+  if [ "$checkout_rev" = "$rev" ]; then
+    log "event=checkout status=skip_current checkout_dir=$checkout_dir rev=$rev"
+  else
+    update_checkout "$ref" "$rev"
+  fi
+  mkdir -p "$rev_dir"
+  log "event=revision status=active slot=$slot ref=$ref rev=$rev rev_dir=$rev_dir"
+
+  for kind in nixosConfigurations darwinConfigurations; do
+    names_file="$(mktemp)"
+    tmp_files+=("$names_file")
+    log "event=enumerate status=start slot=$slot kind=$kind"
+    if ! enumerate_names "$kind" > "$names_file"; then
+      rm -f "$names_file"
+      fail "failed to enumerate $kind"
+    fi
+    kind_count="$(grep -c . "$names_file" || true)"
+    log "event=enumerate status=complete slot=$slot kind=$kind count=$kind_count"
+
+    while IFS= read -r name; do
+      if [ -z "$name" ]; then
+        continue
+      fi
+
+      set +e
+      ensure_agent_idle
+      status=$?
+      set -e
+      if [ "$status" -ne 0 ]; then
+        log "event=idle status=stop slot=$slot kind=$kind name=$name reason=worker-check-failed worker_check_status=$status"
+        stopped_for_workers=1
+        break 2
+      fi
+
+      total=$((total + 1))
+      set +e
+      prewarm_attr "$kind" "$name" "$rev_dir"
+      status=$?
+      set -e
+
+      case "$status" in
+        0)
+          warmed=$((warmed + 1))
+          ;;
+        10)
+          skipped=$((skipped + 1))
+          ;;
+        20)
+          missed=$((missed + 1))
+          ;;
+        *)
+          fail "unexpected prewarm status $status for $kind.$name"
+          ;;
+      esac
+
+      if [ "$sleep_seconds" -gt 0 ]; then
+        log "event=pace status=sleep slot=$slot kind=$kind name=$name sleep_seconds=$sleep_seconds"
+        sleep "$sleep_seconds"
+      fi
+    done < "$names_file"
+    rm -f "$names_file"
+  done
+
+  log "event=summary status=complete slot=$slot warmed=$warmed skipped=$skipped missed=$missed total=$total duration_seconds=$((SECONDS - run_started))"
+
+  if [ "$stopped_for_workers" = "1" ]; then
+    log "event=promotion status=skipped slot=$slot reason=agent-became-busy rev=$rev rev_dir=$rev_dir"
+    return 30
+  fi
+
+  if [ "$missed" -gt 0 ]; then
+    log "event=promotion status=skipped slot=$slot reason=misses rev=$rev rev_dir=$rev_dir missed=$missed"
+    return 20
+  fi
+
+  promote_current_root "$current_root" "$rev" "$rev_dir"
+}
+
+prune_slot_roots() {
+  local current rev_dir protected stale_dir
+  local -a protected_dirs
+
+  protected_dirs=()
+  for current in "$gcroot_dir/current" "$gcroot_dir/master/current" "$gcroot_dir/non-master/current"; do
+    rev_dir="$(readlink -f "$current" 2> /dev/null || true)"
+    case "$rev_dir" in
+      "$gcroot_dir"/rev-*)
+        protected_dirs+=("$rev_dir")
+        ;;
+    esac
+  done
+
+  while IFS= read -r stale_dir; do
+    [ -n "$stale_dir" ] || continue
+    protected=0
+    for rev_dir in "${protected_dirs[@]}"; do
+      if [ "$stale_dir" = "$rev_dir" ]; then
+        protected=1
+        break
+      fi
+    done
+    if [ "$protected" = "1" ]; then
+      continue
+    fi
+
+    case "$stale_dir" in
+      "$gcroot_dir"/rev-*)
+        log "event=prune status=remove stale_dir=$stale_dir"
+        rm -rf "$stale_dir"
+        ;;
+      *)
+        fail "refusing to prune unexpected path: $stale_dir"
+        ;;
+    esac
+  done < <(find "$gcroot_dir" -maxdepth 1 -mindepth 1 -type d -name 'rev-*' | sort)
+}
+
 prune_old_roots() {
   local current_rev_dir="$1"
   local promoted_rev_dir
@@ -586,91 +894,87 @@ prune_old_roots() {
   done
 }
 
-update_checkout
+if hci_discovery_configured; then
+  jobs_file="$(mktemp)"
+  candidates_file="$(mktemp)"
+  tmp_files+=("$jobs_file" "$candidates_file")
 
-rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
-rev_dir="$gcroot_dir/rev-$rev"
-mkdir -p "$rev_dir"
-
-log "event=revision status=active branch=$branch rev=$rev rev_dir=$rev_dir"
-
-warmed=0
-skipped=0
-missed=0
-total=0
-stopped_for_workers=0
-
-for kind in nixosConfigurations darwinConfigurations; do
-  names_file="$(mktemp)"
-  tmp_files+=("$names_file")
-  log "event=enumerate status=start kind=$kind"
-  if ! enumerate_names "$kind" > "$names_file"; then
-    rm -f "$names_file"
-    fail "failed to enumerate $kind"
+  if ! fetch_hci_latest_jobs > "$jobs_file"; then
+    log "event=hci_lookup status=failed message=preserving-existing-roots"
+    exit 0
   fi
-  kind_count="$(grep -c . "$names_file" || true)"
-  log "event=enumerate status=complete kind=$kind count=$kind_count"
 
-  while IFS= read -r name; do
-    if [ -z "$name" ]; then
-      continue
-    fi
+  if ! select_hci_prewarm_candidates "$jobs_file" "$hci_project" "$hci_master_ref" > "$candidates_file"; then
+    fail "failed to select HCI prewarm candidates"
+  fi
 
+  candidate_count="$(grep -c . "$candidates_file" || true)"
+  log "event=hci_lookup status=complete candidates=$candidate_count"
+  if [ "$candidate_count" -eq 0 ]; then
+    log "event=finish status=success reason=no-hci-candidates duration_seconds=$((SECONDS - run_started))"
+    exit 0
+  fi
+
+  while IFS=$'\t' read -r slot ref rev index; do
+    [ -n "$slot" ] || continue
+    case "$slot" in
+      master | non-master) ;;
+      *) fail "unexpected HCI prewarm slot: $slot" ;;
+    esac
+
+    log "event=hci_candidate slot=$slot ref=$ref rev=$rev index=$index"
     set +e
-    ensure_agent_idle
-    status=$?
-    set -e
-    if [ "$status" -ne 0 ]; then
-      log "event=idle status=stop kind=$kind name=$name reason=worker-check-failed worker_check_status=$status"
-      stopped_for_workers=1
-      break 2
-    fi
-
-    total=$((total + 1))
-    set +e
-    prewarm_attr "$kind" "$name" "$rev_dir"
+    prewarm_revision "$slot" "$ref" "$rev" "$gcroot_dir/$slot/current"
     status=$?
     set -e
 
     case "$status" in
       0)
-        warmed=$((warmed + 1))
-        ;;
-      10)
-        skipped=$((skipped + 1))
         ;;
       20)
-        missed=$((missed + 1))
+        log "event=finish status=failed slot=$slot reason=misses rev=$rev duration_seconds=$((SECONDS - run_started))"
+        exit 1
+        ;;
+      30)
+        log "event=finish status=deferred slot=$slot reason=agent-became-busy rev=$rev duration_seconds=$((SECONDS - run_started))"
+        exit 0
         ;;
       *)
-        fail "unexpected prewarm status $status for $kind.$name"
+        fail "unexpected prewarm revision status $status for slot $slot"
         ;;
     esac
+  done < "$candidates_file"
 
-    if [ "$sleep_seconds" -gt 0 ]; then
-      log "event=pace status=sleep kind=$kind name=$name sleep_seconds=$sleep_seconds"
-      sleep "$sleep_seconds"
-    fi
-  done < "$names_file"
-  rm -f "$names_file"
-done
-
-log "event=summary status=complete warmed=$warmed skipped=$skipped missed=$missed total=$total duration_seconds=$((SECONDS - run_started))"
-
-if [ "$stopped_for_workers" = "1" ]; then
-  log "event=promotion status=skipped reason=agent-became-busy rev=$rev rev_dir=$rev_dir"
-  prune_old_roots "$rev_dir"
+  prune_slot_roots
+  log "event=finish status=success mode=hci-discovery duration_seconds=$((SECONDS - run_started))"
   exit 0
 fi
 
-if [ "$missed" -gt 0 ]; then
-  log "event=promotion status=skipped reason=misses rev=$rev rev_dir=$rev_dir missed=$missed"
-  prune_old_roots "$rev_dir"
-  exit 1
-fi
+log "event=hci_lookup status=disabled reason=no-hci-source message=falling-back-to-branch-prewarm"
+update_checkout
 
-log "event=promotion status=start rev=$rev rev_dir=$rev_dir current=$gcroot_dir/current"
-ln -sfn "$rev_dir" "$gcroot_dir/current"
-log "event=promotion status=complete rev=$rev current=$gcroot_dir/current"
-prune_old_roots "$rev_dir"
-log "event=finish status=success rev=$rev duration_seconds=$((SECONDS - run_started))"
+rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
+rev_dir="$gcroot_dir/rev-$rev"
+
+set +e
+prewarm_revision "legacy" "refs/heads/$branch" "$rev" "$gcroot_dir/current"
+status=$?
+set -e
+
+case "$status" in
+  0)
+    prune_old_roots "$rev_dir"
+    log "event=finish status=success rev=$rev duration_seconds=$((SECONDS - run_started))"
+    ;;
+  20)
+    prune_old_roots "$rev_dir"
+    exit 1
+    ;;
+  30)
+    prune_old_roots "$rev_dir"
+    exit 0
+    ;;
+  *)
+    fail "unexpected prewarm revision status $status"
+    ;;
+esac
