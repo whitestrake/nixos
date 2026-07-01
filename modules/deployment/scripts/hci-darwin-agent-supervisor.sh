@@ -540,8 +540,16 @@ root_deployed_darwin_pin() {
 
   store_path="$(cachix_pin_path "$pins" "$HCI_DARWIN_DEPLOYED_PIN_NAME")"
   if [ -z "$store_path" ]; then
-    log "ERROR: Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path."
-    return 1
+    if [ -L "$DARWIN_DEPLOYED_PIN_LINK" ]; then
+      if ! rm -f -- "$DARWIN_DEPLOYED_PIN_LINK"; then
+        log "ERROR: failed to remove stale deployed pin root: $DARWIN_DEPLOYED_PIN_LINK"
+        return 1
+      fi
+      log "Removed stale deployed pin root because Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path."
+    else
+      log "Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path; deployed pin root skipped."
+    fi
+    return 0
   fi
 
   case "$store_path" in
