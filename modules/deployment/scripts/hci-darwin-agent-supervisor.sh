@@ -8,11 +8,16 @@ set -euo pipefail
 : "${HCI_API_BASE_URL:=https://hercules-ci.com}"
 : "${HCI_DARWIN_AGENT_CONCURRENT_TASKS:=1}"
 : "${HCI_DARWIN_AGENT_STARTUP_SECONDS:=5}"
+: "${HCI_DARWIN_DEPLOYED_PIN_NAME:=deployed-host-$DARWIN_CONFIGURATION}"
 : "${HCI_DARWIN_FINISH_CONDITION:=darwin-toplevel}"
+: "${HCI_DARWIN_GCROOT_KEEP_REVISIONS:=3}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
 : "${HCI_PROJECT:=github/whitestrake/nixos}"
+
+# shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
+source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/cachix-pin-functions.sh}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -373,6 +378,7 @@ stop_agent() {
 
   if ! kill -0 "$pid" 2>/dev/null; then
     wait "$pid" 2>/dev/null || true
+    HCI_AGENT_PID=""
     return 0
   fi
 
@@ -382,6 +388,7 @@ stop_agent() {
   for _ in $(seq 1 30); do
     if ! kill -0 "$pid" 2>/dev/null; then
       wait "$pid" 2>/dev/null || true
+      HCI_AGENT_PID=""
       return 0
     fi
     sleep 1
@@ -390,6 +397,7 @@ stop_agent() {
   log "Agent did not exit after TERM; killing PID $pid."
   kill -KILL "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+  HCI_AGENT_PID=""
 }
 
 cleanup() {
@@ -436,7 +444,30 @@ wait_for_job_id() {
   return 1
 }
 
+ensure_replaceable_symlink() {
+  local path="$1"
+
+  if { [ -e "$path" ] || [ -L "$path" ]; } && [ ! -L "$path" ]; then
+    log "ERROR: refusing to replace non-symlink path: $path"
+    return 1
+  fi
+}
+
 prepare_darwin_toplevel() {
+  local revision="$1"
+
+  if ! [[ "$HCI_DARWIN_GCROOT_KEEP_REVISIONS" =~ ^[1-9][0-9]*$ ]]; then
+    log "ERROR: HCI_DARWIN_GCROOT_KEEP_REVISIONS must be a positive integer, got: $HCI_DARWIN_GCROOT_KEEP_REVISIONS"
+    return 1
+  fi
+
+  case "$revision" in
+    "" | */* | *..*)
+      log "ERROR: unsafe HCI revision for gcroot path: $revision"
+      return 1
+      ;;
+  esac
+
   DARWIN_TOPLEVEL_ATTR=".#darwinConfigurations.${DARWIN_CONFIGURATION}.config.system.build.toplevel"
 
   log "Evaluating Darwin toplevel path for $DARWIN_CONFIGURATION..."
@@ -446,35 +477,40 @@ prepare_darwin_toplevel() {
   fi
 
   DARWIN_GCROOT_DIR="${HCI_DARWIN_GCROOT_DIR:-/nix/var/nix/gcroots/hci-darwin-agent}"
-  DARWIN_GCROOT_LINK="$DARWIN_GCROOT_DIR/$DARWIN_CONFIGURATION"
+  DARWIN_REV_DIR="$DARWIN_GCROOT_DIR/rev-$revision"
+  DARWIN_GCROOT_LINK="$DARWIN_REV_DIR/$DARWIN_CONFIGURATION"
+  DARWIN_CURRENT_LINK="$DARWIN_GCROOT_DIR/current"
+  DARWIN_LEGACY_FLAT_LINK="$DARWIN_GCROOT_DIR/$DARWIN_CONFIGURATION"
+  DARWIN_DEPLOYED_PIN_LINK="$DARWIN_GCROOT_DIR/$HCI_DARWIN_DEPLOYED_PIN_NAME"
 }
 
 try_root_darwin_toplevel() {
   if [ -z "${DARWIN_TOPLEVEL_OUT_PATH:-}" ] \
     || [ -z "${DARWIN_TOPLEVEL_ATTR:-}" ] \
     || [ -z "${DARWIN_GCROOT_DIR:-}" ] \
+    || [ -z "${DARWIN_REV_DIR:-}" ] \
     || [ -z "${DARWIN_GCROOT_LINK:-}" ]; then
     log "ERROR: Darwin toplevel root state is not initialised."
     return 1
   fi
 
-  if ! mkdir -p "$DARWIN_GCROOT_DIR" 2>/dev/null; then
-    if nix path-info "$DARWIN_TOPLEVEL_OUT_PATH" >/dev/null 2>&1; then
-      log "WARNING: Darwin toplevel is local, but $DARWIN_GCROOT_DIR is not writable; cache root finalization skipped."
-      return 0
-    fi
+  if ! mkdir -p "$DARWIN_REV_DIR" 2>/dev/null; then
+    log "WARNING: $DARWIN_REV_DIR is not writable."
+    return 1
+  fi
 
-    log "WARNING: $DARWIN_GCROOT_DIR is not writable yet and Darwin toplevel is not local."
+  if ! ensure_replaceable_symlink "$DARWIN_GCROOT_LINK"; then
     return 1
   fi
 
   if nix path-info "$DARWIN_TOPLEVEL_OUT_PATH" >/dev/null 2>&1; then
     if ln -sfn "$DARWIN_TOPLEVEL_OUT_PATH" "$DARWIN_GCROOT_LINK"; then
       log "Rooted existing Darwin toplevel: $DARWIN_GCROOT_LINK -> $DARWIN_TOPLEVEL_OUT_PATH"
-    else
-      log "WARNING: Darwin toplevel is local, but $DARWIN_GCROOT_LINK could not be updated; cache root finalization skipped."
+      return 0
     fi
-    return 0
+
+    log "WARNING: Darwin toplevel is local, but $DARWIN_GCROOT_LINK could not be updated."
+    return 1
   fi
 
   log "Darwin toplevel is not local; attempting substitute-only realisation for cache root..."
@@ -487,12 +523,125 @@ try_root_darwin_toplevel() {
     return 0
   fi
 
-  if nix path-info "$DARWIN_TOPLEVEL_OUT_PATH" >/dev/null 2>&1; then
-    log "WARNING: Darwin toplevel became local, but cache root finalization failed."
-    return 0
+  return 1
+}
+
+root_deployed_darwin_pin() {
+  local pins store_path
+
+  if ! ensure_replaceable_symlink "$DARWIN_DEPLOYED_PIN_LINK"; then
+    return 1
   fi
 
-  return 1
+  if ! pins="$(cachix_fetch_pins "$CACHIX_CACHE_NAME")"; then
+    log "ERROR: failed to fetch Cachix pins for $CACHIX_CACHE_NAME."
+    return 1
+  fi
+
+  store_path="$(cachix_pin_path "$pins" "$HCI_DARWIN_DEPLOYED_PIN_NAME")"
+  if [ -z "$store_path" ]; then
+    log "ERROR: Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME has no store path."
+    return 1
+  fi
+
+  case "$store_path" in
+    /nix/store/*) ;;
+    *)
+      log "ERROR: Cachix pin $HCI_DARWIN_DEPLOYED_PIN_NAME does not point at /nix/store: $store_path"
+      return 1
+      ;;
+  esac
+
+  if ! nix path-info "$store_path" >/dev/null 2>&1; then
+    log "Deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME is not local; attempting substitute-only realisation..."
+    if ! nix-store \
+      --option max-jobs 0 \
+      --option extra-substituters "https://$CACHIX_CACHE_NAME.cachix.org" \
+      --option extra-trusted-public-keys "$CACHIX_PUBLIC_KEY" \
+      --realise "$store_path" \
+      >/dev/null; then
+      log "ERROR: failed to realise deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME at $store_path."
+      return 1
+    fi
+  fi
+
+  if ! ln -sfn "$store_path" "$DARWIN_DEPLOYED_PIN_LINK"; then
+    log "ERROR: failed to root deployed pin $HCI_DARWIN_DEPLOYED_PIN_NAME at $DARWIN_DEPLOYED_PIN_LINK."
+    return 1
+  fi
+  log "Rooted deployed pin: $DARWIN_DEPLOYED_PIN_LINK -> $store_path"
+}
+
+remove_legacy_flat_root() {
+  if ! ensure_replaceable_symlink "$DARWIN_LEGACY_FLAT_LINK"; then
+    return 1
+  fi
+
+  if [ -L "$DARWIN_LEGACY_FLAT_LINK" ]; then
+    if ! rm -f -- "$DARWIN_LEGACY_FLAT_LINK"; then
+      log "ERROR: failed to remove legacy flat Darwin gcroot: $DARWIN_LEGACY_FLAT_LINK"
+      return 1
+    fi
+    log "Removed legacy flat Darwin gcroot: $DARWIN_LEGACY_FLAT_LINK"
+  fi
+}
+
+promote_current_revision_root() {
+  if ! ensure_replaceable_symlink "$DARWIN_CURRENT_LINK"; then
+    return 1
+  fi
+
+  (cd "$DARWIN_GCROOT_DIR" && ln -sfn "$(basename "$DARWIN_REV_DIR")" current) || return 1
+  log "Promoted current Darwin gcroot: $DARWIN_CURRENT_LINK -> $(basename "$DARWIN_REV_DIR")"
+}
+
+prune_old_revision_roots() {
+  local count=0
+  local rev_dir
+  local stale_dir
+
+  while IFS= read -r stale_dir; do
+    count=$((count + 1))
+    if [ "$count" -le "$HCI_DARWIN_GCROOT_KEEP_REVISIONS" ]; then
+      continue
+    fi
+
+    case "$stale_dir" in
+      "$DARWIN_GCROOT_DIR"/rev-*)
+        log "Pruning stale Darwin gcroot revision: $stale_dir"
+        if ! rm -rf -- "$stale_dir"; then
+          log "ERROR: failed to prune stale Darwin gcroot revision: $stale_dir"
+          return 1
+        fi
+        ;;
+      *)
+        log "ERROR: refusing to prune unexpected path: $stale_dir"
+        return 1
+        ;;
+    esac
+  done < <(
+    for rev_dir in "$DARWIN_GCROOT_DIR"/rev-*; do
+      [ -d "$rev_dir" ] || continue
+      printf '%s\t%s\n' "$(stat -f '%m' "$rev_dir" 2>/dev/null || stat -c '%Y' "$rev_dir")" "$rev_dir"
+    done | sort -rn | cut -f2-
+  )
+}
+
+finalize_darwin_cache_roots() {
+  local revision="$1"
+
+  log "Finalizing Darwin gcroots for $DARWIN_CONFIGURATION revision $revision..."
+  stop_agent
+
+  try_root_darwin_toplevel || return 1
+  root_deployed_darwin_pin || return 1
+  remove_legacy_flat_root || return 1
+  promote_current_revision_root || return 1
+  prune_old_revision_roots || return 1
+
+  log "Running Nix garbage collection for persisted Darwin runner store..."
+  nix store gc || return 1
+  log "Finished Darwin gcroot finalization and garbage collection."
 }
 
 emit_local_darwin_toplevel_ready() {
@@ -615,18 +764,20 @@ main() {
   trap 'exit 143' TERM
 
   start_agent
-  prepare_darwin_toplevel
+  prepare_darwin_toplevel "$revision"
 
   if try_root_darwin_toplevel; then
     emit_local_darwin_toplevel_ready
     log "Darwin toplevel for $DARWIN_CONFIGURATION is available before HCI job discovery."
     if ! should_wait_for_hci_job_done; then
+      finalize_darwin_cache_roots "$revision"
       return 0
     fi
   fi
 
   job_id="$(wait_for_job_id "$revision" "$deadline")"
   monitor_darwin_toplevel "$job_id" "$deadline"
+  finalize_darwin_cache_roots "$revision"
 }
 
 if [ "${HCI_DARWIN_SUPERVISOR_LIB_ONLY:-}" != "1" ]; then
