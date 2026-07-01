@@ -130,6 +130,10 @@
         enable = true;
         dotDir = config.home.homeDirectory;
         initContent = lib.mkOrder 500 ''
+          if [[ -n ''${CODEX_SHELL:-} ]]; then
+            typeset -g _ZSH_AUTOSUGGEST_DISABLED
+          fi
+
           if [[ -z ''${TERM:-} ]]; then
             export TERM=xterm-256color
           fi
