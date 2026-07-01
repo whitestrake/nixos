@@ -82,6 +82,25 @@
             }
         )
         config.programs.mcp.servers;
+      antigravityMcpServers =
+        lib.mapAttrs (
+          name: server: let
+            transformed = lib.hm.mcp.transformMcpServer {
+              inherit server;
+              exclude = [
+                "enabled"
+                "type"
+              ];
+              extraTransforms = [
+                (lib.hm.mcp.wrapEnvFilesCommand {inherit pkgs name;})
+              ];
+            };
+          in
+            # transformMcpServer drops serverUrl after extraTransforms, so rename after it returns.
+            builtins.removeAttrs transformed ["url"]
+            // lib.optionalAttrs (transformed ? url) {serverUrl = transformed.url;}
+        )
+        config.programs.mcp.servers;
     in {
       programs.mcp = {
         enable = true;
@@ -111,13 +130,6 @@
       programs.antigravity-cli = {
         enable = true;
         package = pkgs.unstable.antigravity-cli;
-        enableMcpIntegration = true;
-      };
-
-      programs.antigravity = {
-        enable = (lib.systems.elaborate host.system).isDarwin;
-        package = null;
-        profiles.default.enableMcpIntegration = true;
       };
 
       programs.gh = {
@@ -149,6 +161,11 @@
             };
             mcp_servers = codexMcpServers;
           };
+
+        ".gemini/config/mcp_config.json".source =
+          (pkgs.formats.json {}).generate
+          "antigravity-mcp-config"
+          {mcpServers = antigravityMcpServers;};
       };
     };
   };
