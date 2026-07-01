@@ -47,6 +47,7 @@
         home-manager.useGlobalPkgs = true;
         home-manager.useUserPackages = true;
         nixpkgs.config.allowUnfree = true;
+        environment.enableAllTerminfo = true;
         environment.systemPackages = with pkgs; [
           fish
           helix

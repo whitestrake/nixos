@@ -129,6 +129,11 @@
       programs.zsh = {
         enable = true;
         dotDir = config.home.homeDirectory;
+        initContent = lib.mkOrder 500 ''
+          if [[ -z ''${TERM:-} ]]; then
+            export TERM=xterm-256color
+          fi
+        '';
         autosuggestion = {
           enable = true;
           strategy = ["history" "completion"];
@@ -246,6 +251,7 @@
         settings = {
           auto-update = "download";
           auto-update-channel = "stable";
+          shell-integration-features = "ssh-env,ssh-terminfo";
           background = "#040405";
           foreground = "#a2a2a2";
           bold-color = "#cecece";
