@@ -10,6 +10,7 @@ set -euo pipefail
 : "${HCI_DARWIN_AGENT_STARTUP_SECONDS:=5}"
 : "${HCI_DARWIN_FINISH_CONDITION:=darwin-toplevel}"
 : "${HCI_DARWIN_GCROOT_KEEP_REVISIONS:=3}"
+: "${HCI_DARWIN_JOB_NAME:=}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
@@ -52,7 +53,7 @@ find_hci_job_id_for_revision() {
   local revision="$2"
   local job_name
 
-  job_name="$(hci_darwin_job_name)"
+  job_name="$(hci_job_name)"
 
   jq -er \
     --arg revision "$revision" \
@@ -74,12 +75,17 @@ find_hci_job_id_for_revision() {
     ' <<< "$jobs_json"
 }
 
-hci_darwin_job_name() {
+hci_job_name() {
+  if [ -n "${HCI_DARWIN_JOB_NAME:-}" ]; then
+    printf '%s\n' "$HCI_DARWIN_JOB_NAME"
+    return 0
+  fi
+
   printf '10-darwinConfiguration-%s\n' "$DARWIN_CONFIGURATION"
 }
 
 hci_github_status_context() {
-  printf 'ci/hercules/onPush/%s\n' "$(hci_darwin_job_name)"
+  printf 'ci/hercules/onPush/%s\n' "$(hci_job_name)"
 }
 
 github_repository() {
@@ -119,7 +125,7 @@ find_hci_job_id_for_index() {
   local revision="$3"
   local job_name
 
-  job_name="$(hci_darwin_job_name)"
+  job_name="$(hci_job_name)"
 
   jq -er \
     --arg index "$index" \
@@ -411,6 +417,15 @@ wait_for_job_id() {
   local jobs_json job_id
 
   if [ -n "${HCI_JOB_ID:-}" ]; then
+    case "$HCI_JOB_ID" in
+      *[!0-9]*)
+        ;;
+      *)
+        log "ERROR: HCI_JOB_ID must be the internal Hercules CI API id, not a public /jobs/<index> value. Leave it empty to discover the job from HCI_REVISION."
+        return 1
+        ;;
+    esac
+
     printf '%s\n' "$HCI_JOB_ID"
     return 0
   fi
@@ -432,7 +447,7 @@ wait_for_job_id() {
       return 0
     fi
 
-    log "Waiting for Hercules CI job for $HCI_PROJECT revision $revision..."
+    log "Waiting for Hercules CI job $(hci_job_name) for $HCI_PROJECT revision $revision..."
     sleep "$HCI_DARWIN_POLL_SECONDS"
   done
 

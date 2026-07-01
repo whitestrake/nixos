@@ -8,7 +8,6 @@ permissions:
 jobs:
   nix-flake-update:
     permissions:
-      issues: write
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
@@ -19,16 +18,20 @@ jobs:
       - name: Install Nix
         uses: ./.github/actions/install-nix
       - name: Update flake.lock
-        uses: DeterminateSystems/update-flake-lock@main
-        id: update
+        run: nix flake update --accept-flake-config
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v8
         with:
-          commit-msg: "chore: bump flake.lock"
-          pr-title: "chore: bump flake.lock"
-          pr-labels: |
+          token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          branch: nix-update/flake-lock
+          title: "chore: bump flake.lock"
+          body: |
+            Automated update of `flake.lock`.
+
+            ---
+            _This PR was created automatically by the flake lock update workflow._
+          labels: |
             dependencies
             automated
-      - name: Enable auto-merge
-        if: steps.update.outputs.pull-request-number != ''
-        run: gh pr merge "${{ steps.update.outputs.pull-request-number }}" --auto --rebase
-        env:
-          GH_TOKEN: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          commit-message: "chore: bump flake.lock"
+          delete-branch: true

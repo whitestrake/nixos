@@ -87,6 +87,7 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
+          token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           branch: nix-update/${{ matrix.package }}
           title: "chore(pkgs): update ${{ matrix.package }}${{ steps.update.outputs.title_suffix }}"
           body: |

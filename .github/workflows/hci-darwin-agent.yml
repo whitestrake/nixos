@@ -10,11 +10,6 @@ on:
         required: false
         default: ""
         type: string
-      hci_job_id:
-        description: "Optional Hercules CI job id to monitor instead of discovering by revision."
-        required: false
-        default: ""
-        type: string
 
 concurrency:
   group: hci-darwin-agent
@@ -155,6 +150,34 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
+      - name: Resolve Hercules CI final gate job
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          final_job="$(
+            nix eval --accept-flake-config --raw .#herculesCI --apply '
+              herculesCI:
+                let
+                  hci = herculesCI {
+                    primaryRepo = {
+                      branch = "master";
+                      ref = "refs/heads/master";
+                      rev = "0000000000000000000000000000000000000000";
+                      shortRev = "0000000";
+                    };
+                    herculesCI = {};
+                  };
+                  effectJobNames =
+                    builtins.filter
+                    (name: ((builtins.getAttr name hci.onPush).outputs.effects or {}) != {})
+                    (builtins.attrNames hci.onPush);
+                in builtins.elemAt effectJobNames ((builtins.length effectJobNames) - 1)
+            '
+          )"
+          printf 'HCI_DARWIN_JOB_NAME=%s\n' "$final_job" >> "$GITHUB_ENV"
+          printf 'HCI_FINAL_GATE_JOB_NAME=%s\n' "$final_job"
+
       - name: Set HCI agent hostname
         shell: bash
         run: |
@@ -175,7 +198,6 @@ jobs:
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
-          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
           HCI_PROJECT: github/whitestrake/nixos
           HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
@@ -320,7 +342,6 @@ jobs:
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
-          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
           HCI_PROJECT: github/whitestrake/nixos
           HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
@@ -527,7 +548,6 @@ jobs:
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
-          HCI_JOB_ID: ${{ inputs.hci_job_id || '' }}
           HCI_PROJECT: github/whitestrake/nixos
           HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
