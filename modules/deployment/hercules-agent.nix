@@ -250,6 +250,7 @@
       name = "hci-prewarm-configurations";
       runtimeInputs = with pkgs; [
         coreutils
+        curl
         findutils
         gitMinimal
         gnugrep
@@ -349,6 +350,9 @@
         HCI_PREWARM_CHECKOUT_DIR = "/var/lib/hci-prewarm/nixos";
         HCI_PREWARM_GCROOT_DIR = "/nix/var/nix/gcroots/hci-prewarm";
         HCI_PREWARM_KEEP_REVISIONS = "3";
+        HCI_PREWARM_HCI_PROJECT = "github/whitestrake/nixos";
+        HCI_PREWARM_HCI_MASTER_REF = "refs/heads/master";
+        HCI_PREWARM_HCI_LATEST_JOBS = "200";
         HCI_PREWARM_SLEEP_SECONDS = "120";
         HCI_PREWARM_LOCK_FILE = "/run/hci-prewarm-configurations.lock";
         HCI_PREWARM_AGENT_SERVICE = "hercules-ci-agent.service";
