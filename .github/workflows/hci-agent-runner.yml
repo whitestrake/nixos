@@ -368,7 +368,7 @@ jobs:
 
           if mountpoint -q /nix; then
             df -h /nix
-            du -sh /nix /nix/store /nix/var/nix || true
+            sudo du -sh /nix /nix/store /nix/var/nix || true
           fi
 
       - name: Unmount aarch64-linux Nix image
@@ -378,7 +378,6 @@ jobs:
           set -euo pipefail
 
           if mountpoint -q /nix; then
-            sudo systemctl stop nix-daemon.service nix-daemon.socket || true
             sync
             started="$SECONDS"
             if sudo umount /nix; then
@@ -556,7 +555,7 @@ jobs:
           fi
 
           df -h /nix
-          du -sh /nix /nix/store /nix/var/nix || true
+          sudo du -sh /nix /nix/store /nix/var/nix || true
 
           started="$SECONDS"
           nix store gc
@@ -564,7 +563,6 @@ jobs:
           echo "AARCH64_LINUX_STORE_GC_COMPLETE durationSeconds=$duration"
 
           sudo fstrim -v /nix || true
-          sudo systemctl stop nix-daemon.service nix-daemon.socket || true
 
           started="$SECONDS"
           sync
@@ -603,7 +601,6 @@ jobs:
           set -euo pipefail
 
           if mountpoint -q /nix; then
-            sudo systemctl stop nix-daemon.service nix-daemon.socket || true
             sync
             started="$SECONDS"
             if sudo umount /nix; then
