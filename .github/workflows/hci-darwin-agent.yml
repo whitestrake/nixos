@@ -170,78 +170,14 @@ jobs:
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
           HCI_DARWIN_FINISH_CONDITION: hci-job-done
           HCI_DARWIN_JOB_NAME_FILE: ${{ runner.temp }}/hci-final-gate-job-name
+          HCI_DARWIN_RESOLVE_FINAL_GATE_JOB_NAME: "1"
           HCI_DARWIN_TIMEOUT_SECONDS: "18000"
           HCI_PROJECT: github/whitestrake/nixos
           HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
 
-          nix shell \
-            --accept-flake-config \
-            --inputs-from . \
-            nixpkgs#curl \
-            nixpkgs#hercules-ci-agent \
-            nixpkgs#jq \
-            -c bash -s <<'BASH'
-          set -euo pipefail
-          : "${HCI_DARWIN_JOB_NAME_WAIT_SECONDS:=600}"
-
-          resolve_final_gate_job() {
-            local nix_pid tmp watchdog_pid
-
-            tmp="${HCI_DARWIN_JOB_NAME_FILE}.$$"
-            rm -f "$HCI_DARWIN_JOB_NAME_FILE" "$HCI_DARWIN_JOB_NAME_FILE.failed" "$tmp"
-
-            nix eval --accept-flake-config --raw .#herculesCI --apply '
-              herculesCI:
-                let
-                  hci = herculesCI {
-                    primaryRepo = {
-                      branch = "master";
-                      ref = "refs/heads/master";
-                      rev = "0000000000000000000000000000000000000000";
-                      shortRev = "0000000";
-                    };
-                    herculesCI = {};
-                  };
-                  effectJobNames =
-                    builtins.filter
-                    (name: ((builtins.getAttr name hci.onPush).outputs.effects or {}) != {})
-                    (builtins.attrNames hci.onPush);
-                in builtins.elemAt effectJobNames ((builtins.length effectJobNames) - 1)
-            ' > "$tmp" &
-            nix_pid="$!"
-
-            (
-              sleep "$HCI_DARWIN_JOB_NAME_WAIT_SECONDS"
-              if kill -0 "$nix_pid" 2>/dev/null; then
-                kill "$nix_pid" 2>/dev/null || true
-                : > "$HCI_DARWIN_JOB_NAME_FILE.failed"
-              fi
-            ) &
-            watchdog_pid="$!"
-
-            trap 'kill "$nix_pid" "$watchdog_pid" 2>/dev/null || true' EXIT
-            trap 'kill "$nix_pid" "$watchdog_pid" 2>/dev/null || true; exit 143' TERM INT
-
-            if wait "$nix_pid" && [ -s "$tmp" ]; then
-              kill "$watchdog_pid" 2>/dev/null || true
-              mv "$tmp" "$HCI_DARWIN_JOB_NAME_FILE"
-              printf 'HCI_FINAL_GATE_JOB_NAME=%s\n' "$(cat "$HCI_DARWIN_JOB_NAME_FILE")"
-            else
-              kill "$watchdog_pid" 2>/dev/null || true
-              rm -f "$tmp"
-              : > "$HCI_DARWIN_JOB_NAME_FILE.failed"
-              return 1
-            fi
-          }
-
-          resolve_final_gate_job &
-          final_gate_pid="$!"
-          trap 'kill "$final_gate_pid" 2>/dev/null || true' EXIT
-
           bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
-          BASH
       - name: Prepare GitHub sparsebundle cache save
         shell: bash
         run: |
@@ -378,13 +314,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          nix shell \
-            --accept-flake-config \
-            --inputs-from . \
-            nixpkgs#curl \
-            nixpkgs#hercules-ci-agent \
-            nixpkgs#jq \
-            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+          bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
   darwin-agent-namespace-artifact:
     name: "Namespace Artifact Runner"
@@ -584,13 +514,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          nix shell \
-            --accept-flake-config \
-            --inputs-from . \
-            nixpkgs#curl \
-            nixpkgs#hercules-ci-agent \
-            nixpkgs#jq \
-            -c bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+          bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
       - name: Save Namespace sparsebundle Nix root artifact
         shell: bash

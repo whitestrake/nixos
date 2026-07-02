@@ -14,12 +14,69 @@ set -euo pipefail
 : "${HCI_DARWIN_JOB_NAME_FILE:=}"
 : "${HCI_DARWIN_JOB_NAME_WAIT_SECONDS:=600}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
+: "${HCI_DARWIN_RESOLVE_FINAL_GATE_JOB_NAME:=0}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
+: "${HCI_DARWIN_TOOLS_BOOTSTRAPPED:=0}"
+: "${HCI_DARWIN_TOOLS_GCROOT_DIR:=/nix/var/nix/gcroots/hci-darwin-agent/tools}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
 : "${HCI_PROJECT:=github/whitestrake/nixos}"
 
 log() {
   printf '%s\n' "$*" >&2
+}
+
+hci_darwin_rooted_tools_available() {
+  local tool
+
+  for tool in curl jq hercules-ci-agent; do
+    [ -x "$HCI_DARWIN_TOOLS_GCROOT_DIR/$tool/bin/$tool" ] || return 1
+  done
+}
+
+prepend_hci_darwin_tool_path() {
+  PATH="$HCI_DARWIN_TOOLS_GCROOT_DIR/curl/bin:$HCI_DARWIN_TOOLS_GCROOT_DIR/jq/bin:$HCI_DARWIN_TOOLS_GCROOT_DIR/hercules-ci-agent/bin:$PATH"
+  export PATH
+}
+
+hci_darwin_tools_in_path() {
+  local tool
+
+  for tool in curl jq hercules-ci-agent; do
+    command -v "$tool" >/dev/null 2>&1 || return 1
+  done
+}
+
+bootstrap_hci_darwin_tools() {
+  if [ "${HCI_DARWIN_SUPERVISOR_LIB_ONLY:-}" = "1" ]; then
+    return 0
+  fi
+
+  if hci_darwin_rooted_tools_available; then
+    prepend_hci_darwin_tool_path
+    log "Using persisted HCI Darwin runner tools from $HCI_DARWIN_TOOLS_GCROOT_DIR."
+    return 0
+  fi
+
+  if [ "$HCI_DARWIN_TOOLS_BOOTSTRAPPED" = "1" ]; then
+    if hci_darwin_tools_in_path; then
+      return 0
+    fi
+
+    log "ERROR: required HCI Darwin runner tools are still unavailable after nix shell fallback."
+    exit 1
+  fi
+
+  log "Persisted HCI Darwin runner tools are incomplete; entering nix shell fallback."
+  HCI_DARWIN_TOOLS_BOOTSTRAPPED=1 exec nix shell \
+    --accept-flake-config \
+    --inputs-from . \
+    nixpkgs#curl \
+    nixpkgs#hercules-ci-agent \
+    nixpkgs#jq \
+    -c bash "$0" "$@"
+
+  log "ERROR: failed to exec nix shell fallback."
+  exit 1
 }
 
 require_env() {
@@ -118,6 +175,82 @@ hci_job_name() {
   else
     printf '10-darwinConfiguration-%s\n' "$DARWIN_CONFIGURATION"
   fi
+}
+
+resolve_final_gate_job_name() {
+  local nix_pid tmp watchdog_pid
+
+  tmp="${HCI_DARWIN_JOB_NAME_FILE}.$$"
+  rm -f "$HCI_DARWIN_JOB_NAME_FILE" "$HCI_DARWIN_JOB_NAME_FILE.failed" "$tmp"
+
+  nix eval --accept-flake-config --raw .#herculesCI --apply '
+    herculesCI:
+      let
+        hci = herculesCI {
+          primaryRepo = {
+            branch = "master";
+            ref = "refs/heads/master";
+            rev = "0000000000000000000000000000000000000000";
+            shortRev = "0000000";
+          };
+          herculesCI = {};
+        };
+        effectJobNames =
+          builtins.filter
+          (name: ((builtins.getAttr name hci.onPush).outputs.effects or {}) != {})
+          (builtins.attrNames hci.onPush);
+      in builtins.elemAt effectJobNames ((builtins.length effectJobNames) - 1)
+  ' > "$tmp" &
+  nix_pid="$!"
+
+  (
+    sleep "$HCI_DARWIN_JOB_NAME_WAIT_SECONDS"
+    if kill -0 "$nix_pid" 2>/dev/null; then
+      kill "$nix_pid" 2>/dev/null || true
+      : > "$HCI_DARWIN_JOB_NAME_FILE.failed"
+    fi
+  ) &
+  watchdog_pid="$!"
+
+  trap 'kill "$nix_pid" "$watchdog_pid" 2>/dev/null || true; rm -f "$tmp"' EXIT
+  trap 'kill "$nix_pid" "$watchdog_pid" 2>/dev/null || true; rm -f "$tmp"; exit 143' TERM INT
+
+  if wait "$nix_pid" && [ -s "$tmp" ]; then
+    kill "$watchdog_pid" 2>/dev/null || true
+    mv "$tmp" "$HCI_DARWIN_JOB_NAME_FILE"
+    printf 'HCI_FINAL_GATE_JOB_NAME=%s\n' "$(cat "$HCI_DARWIN_JOB_NAME_FILE")"
+  else
+    kill "$watchdog_pid" 2>/dev/null || true
+    rm -f "$tmp"
+    : > "$HCI_DARWIN_JOB_NAME_FILE.failed"
+    return 1
+  fi
+}
+
+start_final_gate_job_name_resolver() {
+  if [ "$HCI_DARWIN_RESOLVE_FINAL_GATE_JOB_NAME" != "1" ]; then
+    return 0
+  fi
+
+  if [ -z "${HCI_DARWIN_JOB_NAME_FILE:-}" ]; then
+    log "ERROR: HCI_DARWIN_JOB_NAME_FILE is required when HCI_DARWIN_RESOLVE_FINAL_GATE_JOB_NAME=1."
+    return 1
+  fi
+
+  resolve_final_gate_job_name &
+  HCI_DARWIN_JOB_NAME_RESOLVER_PID="$!"
+}
+
+stop_final_gate_job_name_resolver() {
+  local pid="${HCI_DARWIN_JOB_NAME_RESOLVER_PID:-}"
+
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  HCI_DARWIN_JOB_NAME_RESOLVER_PID=""
 }
 
 hci_github_status_context() {
@@ -504,6 +637,7 @@ cleanup() {
   local status=$?
 
   trap - EXIT
+  stop_final_gate_job_name_resolver
   wait_for_agent_workers_on_failure "$status"
   stop_agent
   cleanup_agent_files
@@ -732,6 +866,63 @@ prune_old_revision_roots() {
   )
 }
 
+refresh_hci_darwin_tool_roots() {
+  local out_path
+  local refresh_failed=0
+  local tool
+  local tool_root
+
+  if { [ -e "$HCI_DARWIN_TOOLS_GCROOT_DIR" ] || [ -L "$HCI_DARWIN_TOOLS_GCROOT_DIR" ]; } \
+    && [ ! -d "$HCI_DARWIN_TOOLS_GCROOT_DIR" ]; then
+    log "ERROR: refusing to use non-directory HCI Darwin tools gcroot path: $HCI_DARWIN_TOOLS_GCROOT_DIR"
+    return 1
+  fi
+
+  if ! mkdir -p "$HCI_DARWIN_TOOLS_GCROOT_DIR" 2>/dev/null; then
+    log "WARNING: could not create HCI Darwin tools gcroot directory: $HCI_DARWIN_TOOLS_GCROOT_DIR"
+    return 0
+  fi
+
+  for tool in curl jq hercules-ci-agent; do
+    tool_root="$HCI_DARWIN_TOOLS_GCROOT_DIR/$tool"
+    ensure_replaceable_symlink "$tool_root" || return 1
+  done
+
+  for tool in curl jq hercules-ci-agent; do
+    tool_root="$HCI_DARWIN_TOOLS_GCROOT_DIR/$tool"
+
+    if ! out_path="$(nix build \
+      --accept-flake-config \
+      --inputs-from . \
+      --no-link \
+      --print-out-paths \
+      "nixpkgs#$tool")"; then
+      log "WARNING: could not refresh HCI Darwin tool root for $tool."
+      refresh_failed=1
+      continue
+    fi
+
+    out_path="${out_path%%$'\n'*}"
+    if [ -z "$out_path" ] || [ ! -x "$out_path/bin/$tool" ]; then
+      log "WARNING: refreshed HCI Darwin tool $tool does not expose $out_path/bin/$tool."
+      refresh_failed=1
+      continue
+    fi
+
+    if ! ln -sfn "$out_path" "$tool_root"; then
+      log "WARNING: could not update HCI Darwin tool root: $tool_root"
+      refresh_failed=1
+      continue
+    fi
+
+    log "Rooted HCI Darwin runner tool: $tool_root -> $out_path"
+  done
+
+  if [ "$refresh_failed" -eq 1 ]; then
+    log "WARNING: HCI Darwin tool roots are incomplete; next run may use nix shell fallback."
+  fi
+}
+
 finalize_darwin_cache_roots() {
   local revision="$1"
 
@@ -743,6 +934,7 @@ finalize_darwin_cache_roots() {
   promote_current_revision_root || return 1
   promote_master_revision_root || return 1
   prune_old_revision_roots || return 1
+  refresh_hci_darwin_tool_roots || return 1
 
   log "Running Nix garbage collection for persisted Darwin runner store..."
   nix store gc || return 1
@@ -868,6 +1060,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
+  start_final_gate_job_name_resolver
   start_agent
   prepare_darwin_toplevel "$revision"
 
@@ -886,5 +1079,6 @@ main() {
 }
 
 if [ "${HCI_DARWIN_SUPERVISOR_LIB_ONLY:-}" != "1" ]; then
+  bootstrap_hci_darwin_tools "$@"
   main "$@"
 fi
