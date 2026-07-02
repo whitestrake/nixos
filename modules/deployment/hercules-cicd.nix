@@ -168,8 +168,8 @@
           export HCI_DELIVERABLES_MODE=${escapeShellArg mode}
           export HCI_DELIVERABLES_STATE_NAME=${escapeShellArg stateName}
           export HCI_DELIVERABLES_HISTORY_LIMIT="10"
-          export HCI_DELIVERABLES_CI_GATE_SCRIPT=${escapeShellArg ./scripts/hci-deployables-ci-gate.sh}
-          export CACHIX_PIN_FUNCTIONS_SCRIPT=${escapeShellArg ./scripts/cachix-pin-functions.sh}
+          export HCI_DELIVERABLES_CI_GATE_SCRIPT="${./scripts/hci-deployables-ci-gate.sh}"
+          export CACHIX_PIN_FUNCTIONS_SCRIPT="${./scripts/cachix-pin-functions.sh}"
           export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (
             if createGitHubDeployment
             then "true"
