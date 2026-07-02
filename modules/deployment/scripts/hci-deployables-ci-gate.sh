@@ -99,7 +99,7 @@ ci_gate_fetch_github() {
   local connect_timeout="${HCI_CI_GATE_CONNECT_TIMEOUT_SECONDS:-10}"
   local max_time="${HCI_CI_GATE_REQUEST_TIMEOUT_SECONDS:-60}"
   local max_pages="${HCI_CI_GATE_GITHUB_STATUS_PAGES:-5}"
-  local page page_body count all_statuses
+  local page page_body count all_statuses_file status
   local curl_args=(
     curl -fsS
     --connect-timeout "$connect_timeout"
@@ -127,25 +127,39 @@ ci_gate_fetch_github() {
   }
 
   curl_args+=(-H "Authorization: Bearer $token")
-  all_statuses='[]'
+  all_statuses_file="$(mktemp "${TMPDIR:-/tmp}/ci-gate-github-statuses.XXXXXX")" || return
+  : > "$all_statuses_file"
   for ((page = 1; page <= max_pages; page++)); do
-    page_body="$("${curl_args[@]}" "${api_url%/}/repos/$repository/commits/$revision/statuses?per_page=100&page=$page")" || return
-    all_statuses="$(jq -c -n --argjson current "$all_statuses" --argjson page "$page_body" '$current + $page')" || return
-    count="$(jq -er 'if type == "array" then length else error("GitHub statuses response was not an array") end' <<< "$page_body")" || return
+    if ! page_body="$("${curl_args[@]}" "${api_url%/}/repos/$repository/commits/$revision/statuses?per_page=100&page=$page")"; then
+      rm -f "$all_statuses_file"
+      return 1
+    fi
+    if ! count="$(jq -er 'if type == "array" then length else error("GitHub statuses response was not an array") end' <<< "$page_body")"; then
+      rm -f "$all_statuses_file"
+      return 1
+    fi
+    printf '%s\n' "$page_body" >> "$all_statuses_file"
 
     if [ "$count" -lt 100 ]; then
       break
     fi
   done
 
-  printf '%s\n' "$all_statuses"
+  if jq -s -c 'add' "$all_statuses_file"; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$all_statuses_file"
+  return "$status"
 }
 
 ci_gate_eval_github() {
-  jq -c -n \
-    --argjson statuses "$1" \
-    --argjson required "$2" \
+  jq -c \
+    --argjson required "$1" \
     '
+      . as $statuses
+      |
       def latest($context): [$statuses[]? | select(.context == $context)] | sort_by(.updated_at // .created_at // "") | last;
       [$required[] as $context | latest($context) as $status | {
         context: $context,
@@ -171,23 +185,27 @@ ci_gate_poll_github() {
   local revision="$2"
   local timeout="${HCI_CI_GATE_TIMEOUT_SECONDS:-3600}"
   local interval="${HCI_CI_GATE_POLL_INTERVAL_SECONDS:-30}"
-  local started attempt=1 body result state
+  local started attempt=1 body result state error
 
   started="$(date +%s)"
   result='{"state":"api-error","error":"not queried yet","contexts":[],"failedContexts":[],"pendingContexts":[]}'
 
   while true; do
-    if body="$(ci_gate_fetch_github "$revision" 2>&1)" \
-      && result="$(ci_gate_eval_github "$body" "$required_contexts" 2>&1)"; then
+    if ! body="$(ci_gate_fetch_github "$revision" 2>&1)"; then
+      error="$body"
+      result="$(jq -c -n --arg error "$error" '{state: "api-error", error: $error, contexts: [], failedContexts: [], pendingContexts: []}')"
+      ci_gate_event "github-api-error" "$(jq -c -n --argjson attempt "$attempt" --arg error "$error" '{attempt: $attempt, error: $error}')"
+    elif ! result="$(ci_gate_eval_github "$required_contexts" <<< "$body" 2>&1)"; then
+      error="$result"
+      result="$(jq -c -n --arg error "$error" '{state: "api-error", error: $error, contexts: [], failedContexts: [], pendingContexts: []}')"
+      ci_gate_event "github-api-error" "$(jq -c -n --argjson attempt "$attempt" --arg error "$error" '{attempt: $attempt, error: $error}')"
+    else
       ci_gate_event "github-poll" "$(jq -c -n --argjson attempt "$attempt" --argjson github "$result" '{attempt: $attempt, github: $github}')"
       state="$(jq -r '.state' <<< "$result")"
       if [ "$state" = "green" ] || [ "$state" = "red" ]; then
         printf '%s\n' "$result"
         return
       fi
-    else
-      result="$(jq -c -n --arg error "$body" '{state: "api-error", error: $error, contexts: [], failedContexts: [], pendingContexts: []}')"
-      ci_gate_event "github-api-error" "$(jq -c -n --argjson attempt "$attempt" --arg error "$body" '{attempt: $attempt, error: $error}')"
     fi
 
     if [ $(( $(date +%s) - started )) -ge "$timeout" ]; then
