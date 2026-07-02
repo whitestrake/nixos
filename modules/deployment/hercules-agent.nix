@@ -397,12 +397,6 @@
       };
     };
 
-    # Let HCI treat nixbuild.net as capable of Linux work matching local features.
-    services.hercules-ci-agent.settings.remotePlatformsWithSameFeatures = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
-
     nix = {
       distributedBuilds = true;
       settings.builders-use-substitutes = true;
@@ -412,6 +406,7 @@
           systems = ["x86_64-linux" "aarch64-linux"];
           maxJobs = 100;
           supportedFeatures = ["benchmark" "big-parallel"];
+          mandatoryFeatures = ["big-parallel"];
         }
       ];
     };

@@ -28,6 +28,7 @@ in
       };
     # Local version is newer than nixpkgs; inherited upstream patches no longer apply.
     patches = [];
+    requiredSystemFeatures = (oldAttrs.requiredSystemFeatures or []) ++ ["big-parallel"];
     nativeBuildInputs = lib.unique ((oldAttrs.nativeBuildInputs or []) ++ [pkgs.pkg-config]);
     buildInputs = lib.unique ((oldAttrs.buildInputs or []) ++ [pkgs.openssl]);
   })
