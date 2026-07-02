@@ -252,6 +252,7 @@
         coreutils
         curl
         findutils
+        gawk
         gitMinimal
         gnugrep
         jq
