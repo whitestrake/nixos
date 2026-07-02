@@ -13,7 +13,6 @@
       den.aspects.server.lab
       den.aspects.docker
       den.aspects.i915-sriov
-      den.aspects.user-mediaserver
     ];
 
     nixos = {

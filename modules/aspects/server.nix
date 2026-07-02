@@ -135,6 +135,13 @@
       config = {
         networking.domain = "lab.whitestrake.net";
 
+        users.users.mediaserver = {
+          isSystemUser = true;
+          group = "mediaserver";
+          uid = 1001;
+        };
+        users.groups.mediaserver.gid = 1001;
+
         fileSystems =
           lib.mapAttrs (path: mount: {
             inherit (mount) device;
