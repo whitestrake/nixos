@@ -11,6 +11,8 @@ set -euo pipefail
 : "${HCI_DARWIN_FINISH_CONDITION:=darwin-toplevel}"
 : "${HCI_DARWIN_GCROOT_KEEP_REVISIONS:=3}"
 : "${HCI_DARWIN_JOB_NAME:=}"
+: "${HCI_DARWIN_JOB_NAME_FILE:=}"
+: "${HCI_DARWIN_JOB_NAME_WAIT_SECONDS:=600}"
 : "${HCI_DARWIN_POLL_SECONDS:=30}"
 : "${HCI_DARWIN_TIMEOUT_SECONDS:=18000}"
 : "${HCI_LATEST_JOBS_LIMIT:=20}"
@@ -75,17 +77,54 @@ find_hci_job_id_for_revision() {
     ' <<< "$jobs_json"
 }
 
+hci_job_name_from_file() {
+  local deadline job_name path
+
+  path="$HCI_DARWIN_JOB_NAME_FILE"
+  if ! [[ "$HCI_DARWIN_JOB_NAME_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+    log "ERROR: HCI_DARWIN_JOB_NAME_WAIT_SECONDS must be a positive integer, got: $HCI_DARWIN_JOB_NAME_WAIT_SECONDS"
+    return 1
+  fi
+
+  deadline=$((SECONDS + HCI_DARWIN_JOB_NAME_WAIT_SECONDS))
+  log "Waiting for HCI job name file: $path"
+
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if [ -s "$path" ]; then
+      IFS= read -r job_name < "$path" || true
+      if [ -n "$job_name" ]; then
+        printf '%s\n' "$job_name"
+        return 0
+      fi
+    fi
+
+    if [ -e "$path.failed" ]; then
+      log "ERROR: HCI job name resolver failed."
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  log "ERROR: timed out waiting for HCI job name file: $path"
+  return 1
+}
+
 hci_job_name() {
   if [ -n "${HCI_DARWIN_JOB_NAME:-}" ]; then
     printf '%s\n' "$HCI_DARWIN_JOB_NAME"
-    return 0
+  elif [ -n "${HCI_DARWIN_JOB_NAME_FILE:-}" ]; then
+    hci_job_name_from_file
+  else
+    printf '10-darwinConfiguration-%s\n' "$DARWIN_CONFIGURATION"
   fi
-
-  printf '10-darwinConfiguration-%s\n' "$DARWIN_CONFIGURATION"
 }
 
 hci_github_status_context() {
-  printf 'ci/hercules/onPush/%s\n' "$(hci_job_name)"
+  local job_name
+
+  job_name="$(hci_job_name)" || return 1
+  printf 'ci/hercules/onPush/%s\n' "$job_name"
 }
 
 github_repository() {
@@ -402,10 +441,70 @@ stop_agent() {
   HCI_AGENT_PID=""
 }
 
+agent_worker_processes() {
+  local pid="${HCI_AGENT_PID:-}"
+
+  if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+
+  ps -axo pid=,ppid=,command= 2>/dev/null \
+    | awk -v root="$pid" '
+      {
+        pid = $1
+        ppid = $2
+        $1 = ""
+        $2 = ""
+        sub(/^[[:space:]]+/, "", $0)
+        parent[pid] = ppid
+        command[pid] = $0
+      }
+      END {
+        for (pid in command) {
+          if (command[pid] !~ /hercules-ci-agent-worker/) {
+            continue
+          }
+
+          ancestor = pid
+          while (ancestor in parent && ancestor != "0") {
+            if (ancestor == root) {
+              print pid "\t" command[pid]
+              break
+            }
+            ancestor = parent[ancestor]
+          }
+        }
+      }
+    '
+}
+
+wait_for_agent_workers_on_failure() {
+  local status="$1"
+  local workers
+
+  case "$status" in
+    0 | 130 | 143)
+      return 0
+      ;;
+  esac
+
+  if [ -z "${HCI_DARWIN_JOB_NAME_FILE:-}" ]; then
+    return 0
+  fi
+
+  while workers="$(agent_worker_processes)" && [ -n "$workers" ]; do
+    log "Hercules CI agent has active workers:"
+    log "$workers"
+    log "Supervisor is failing, but Hercules CI workers are active; keeping agent online."
+    sleep "$HCI_DARWIN_POLL_SECONDS"
+  done
+}
+
 cleanup() {
   local status=$?
 
   trap - EXIT
+  wait_for_agent_workers_on_failure "$status"
   stop_agent
   cleanup_agent_files
   exit "$status"
@@ -430,6 +529,9 @@ wait_for_job_id() {
     return 0
   fi
 
+  HCI_DARWIN_JOB_NAME="$(hci_job_name)" || return 1
+  export HCI_DARWIN_JOB_NAME
+
   while [ "$SECONDS" -lt "$deadline" ]; do
     if job_id="$(find_hci_job_id_for_revision_status "$revision")" && [ -n "$job_id" ]; then
       printf '%s\n' "$job_id"
@@ -447,7 +549,7 @@ wait_for_job_id() {
       return 0
     fi
 
-    log "Waiting for Hercules CI job $(hci_job_name) for $HCI_PROJECT revision $revision..."
+    log "Waiting for Hercules CI job $HCI_DARWIN_JOB_NAME for $HCI_PROJECT revision $revision..."
     sleep "$HCI_DARWIN_POLL_SECONDS"
   done
 
