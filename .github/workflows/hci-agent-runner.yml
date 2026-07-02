@@ -1,5 +1,5 @@
-name: "HCI Darwin Agent"
-run-name: "HCI Darwin Agent"
+name: "HCI Agent Runners"
+run-name: "HCI Agent Runners"
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
         type: string
 
 concurrency:
-  group: hci-darwin-agent
+  group: hci-agent-runner
   cancel-in-progress: false
 
 permissions:
@@ -155,9 +155,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          sudo scutil --set HostName github-cache-aarch64-darwin
-          sudo scutil --set LocalHostName github-cache-aarch64-darwin
-          sudo hostname github-cache-aarch64-darwin
+          sudo scutil --set HostName github-aarch64-darwin
+          sudo scutil --set LocalHostName github-aarch64-darwin
+          sudo hostname github-aarch64-darwin
 
       - name: Run ephemeral Hercules CI Darwin agent
         shell: bash
