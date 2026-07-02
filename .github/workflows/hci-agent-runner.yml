@@ -16,7 +16,7 @@ permissions:
   statuses: read
 
 env:
-  AARCH64_LINUX_CACHE_KEY_PREFIX: ${{ github.ref == 'refs/heads/master' && 'hci-aarch64-linux-ext4-v1-master' || 'hci-aarch64-linux-ext4-v1-non-master' }}
+  AARCH64_LINUX_CACHE_KEY_PREFIX: nix-root-aarch64-linux-ext4-v1
   AARCH64_LINUX_NIX_ATTR: .#nixosConfigurations.jaeger.config.system.build.toplevel
   AARCH64_LINUX_NIX_IMAGE_SIZE: 8G
 
@@ -38,11 +38,15 @@ jobs:
     name: "GitHub Sparsebundle Cache Runner"
     runs-on: macos-26
     timeout-minutes: 355
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
     concurrency:
       group: hci-agent-runner-github-aarch64-darwin
       cancel-in-progress: false
     env:
-      GITHUB_NIX_CACHE_KEY_PREFIX: hci-darwin-github-sparsebundle-v1
+      GITHUB_NIX_CACHE_KEY_PREFIX: nix-root-aarch64-darwin-sparsebundle-v1
       GITHUB_NIX_STORE_IMAGE_SIZE: 30g
     steps:
       - name: Checkout repository
@@ -182,6 +186,24 @@ jobs:
           set -euo pipefail
 
           bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+
+      - name: Test GitHub sparsebundle Nix store optimisation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          df -h /nix
+          du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          duration="$((SECONDS - started))"
+          echo "GITHUB_CACHE_STORE_OPTIMISE_COMPLETE status=$optimise_status durationSeconds=$duration"
+
+          df -h /nix
+          du -sh /nix /nix/store /nix/var/nix || true
+
       - name: Prepare GitHub sparsebundle cache save
         shell: bash
         run: |
@@ -204,6 +226,28 @@ jobs:
           fi
 
           du -sh "$GITHUB_NIX_STORE_IMAGE_BUNDLE" || true
+
+      - name: Prune previous GitHub sparsebundle caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$GITHUB_NIX_CACHE_KEY_PREFIX-" \
+            --limit 100 \
+            --json id,key \
+            --jq '.[] | [.id, .key] | @tsv' \
+            | while IFS=$'\t' read -r cache_id cache_key; do
+                [ -n "$cache_id" ] || continue
+
+                echo "GITHUB_CACHE_PRUNE_DELETE ref=$GITHUB_REF id=$cache_id key=$cache_key"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+              done
+
           echo "GITHUB_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Save GitHub sparsebundle cache
@@ -562,6 +606,18 @@ jobs:
           duration="$((SECONDS - started))"
           echo "AARCH64_LINUX_STORE_GC_COMPLETE durationSeconds=$duration"
 
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          duration="$((SECONDS - started))"
+          echo "AARCH64_LINUX_STORE_OPTIMISE_COMPLETE status=$optimise_status durationSeconds=$duration"
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
           sudo fstrim -v /nix || true
 
           started="$SECONDS"
@@ -591,6 +647,28 @@ jobs:
           ls -lh "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
           du -h "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
           du -h --apparent-size "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
+
+      - name: Prune previous aarch64-linux ext4 caches
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$AARCH64_LINUX_CACHE_KEY_PREFIX-" \
+            --limit 100 \
+            --json id,key \
+            --jq '.[] | [.id, .key] | @tsv' \
+            | while IFS=$'\t' read -r cache_id cache_key; do
+                [ -n "$cache_id" ] || continue
+
+                echo "AARCH64_LINUX_CACHE_PRUNE_DELETE ref=$GITHUB_REF id=$cache_id key=$cache_key"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+              done
 
           echo "AARCH64_LINUX_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
@@ -627,30 +705,6 @@ jobs:
 
           save_duration="$(($(date +%s) - AARCH64_LINUX_CACHE_SAVE_STARTED_AT))"
           echo "AARCH64_LINUX_CACHE_UPLOAD_COMPLETE key=$AARCH64_LINUX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
-
-      - name: Prune older aarch64-linux ext4 caches
-        if: success()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          current_key="${AARCH64_LINUX_CACHE_KEY_PREFIX}-${{ github.run_id }}-${{ github.run_attempt }}"
-
-          gh cache list \
-            --repo "$GITHUB_REPOSITORY" \
-            --key "$AARCH64_LINUX_CACHE_KEY_PREFIX-" \
-            --limit 100 \
-            --json id,key,createdAt \
-            --jq 'sort_by(.createdAt) | reverse | .[1:][] | [.id, .key] | @tsv' \
-            | while IFS=$'\t' read -r cache_id cache_key; do
-                [ -n "$cache_id" ] || continue
-                [ "$cache_key" != "$current_key" ] || continue
-
-                echo "AARCH64_LINUX_CACHE_PRUNE_DELETE id=$cache_id key=$cache_key"
-                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
-              done
 
   aarch64-linux-nixbuild-remote-store:
     name: "GitHub aarch64-linux nixbuild Remote Store"
