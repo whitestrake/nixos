@@ -38,10 +38,6 @@ jobs:
     name: "GitHub Sparsebundle Cache Runner"
     runs-on: macos-26
     timeout-minutes: 355
-    permissions:
-      actions: write
-      contents: read
-      statuses: read
     concurrency:
       group: hci-agent-runner-github-aarch64-darwin
       cancel-in-progress: false
@@ -60,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          image_bundle="$RUNNER_TEMP/hci-darwin-nix-store/nix-root.sparsebundle"
+          image_bundle="$RUNNER_TEMP/nix-root-aarch64-darwin/nix-root.sparsebundle"
 
           mkdir -p "$(dirname "$image_bundle")"
           echo "GITHUB_NIX_STORE_IMAGE_BUNDLE=$image_bundle" >> "$GITHUB_ENV"
@@ -70,7 +66,7 @@ jobs:
         id: github-nix-cache-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
+          path: ${{ runner.temp }}/nix-root-aarch64-darwin/nix-root.sparsebundle
           key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-
@@ -187,93 +183,28 @@ jobs:
 
           bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
 
-      - name: Test GitHub sparsebundle Nix store optimisation
+      - name: Detach GitHub sparsebundle cache
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
 
-          df -h /nix
-          du -sh /nix /nix/store /nix/var/nix || true
-
-          started="$SECONDS"
-          optimise_status=0
-          nix store optimise || optimise_status=$?
-          duration="$((SECONDS - started))"
-          echo "GITHUB_CACHE_STORE_OPTIMISE_COMPLETE status=$optimise_status durationSeconds=$duration"
-
-          df -h /nix
-          du -sh /nix /nix/store /nix/var/nix || true
-
-      - name: Prepare GitHub sparsebundle cache save
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          started="$SECONDS"
-          sync
-          if sudo hdiutil detach /nix; then
-            :
-          else
-            sudo hdiutil detach -force /nix
-          fi
-          duration="$((SECONDS - started))"
-          echo "GITHUB_CACHE_IMAGE_DETACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
-
-          if [ ! -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
-            echo "::error ::GitHub cache Nix sparsebundle is missing at $GITHUB_NIX_STORE_IMAGE_BUNDLE."
-            ls -la "$(dirname "$GITHUB_NIX_STORE_IMAGE_BUNDLE")"
-            exit 1
+          if mount | grep -q ' on /nix '; then
+            started="$SECONDS"
+            sync
+            if sudo hdiutil detach /nix; then
+              :
+            else
+              sudo hdiutil detach -force /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "GITHUB_CACHE_IMAGE_DETACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
           fi
 
-          du -sh "$GITHUB_NIX_STORE_IMAGE_BUNDLE" || true
-
-      - name: Prune previous GitHub sparsebundle caches
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          gh cache list \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$GITHUB_REF" \
-            --key "$GITHUB_NIX_CACHE_KEY_PREFIX-" \
-            --limit 100 \
-            --json id,key \
-            --jq '.[] | [.id, .key] | @tsv' \
-            | while IFS=$'\t' read -r cache_id cache_key; do
-                [ -n "$cache_id" ] || continue
-
-                echo "GITHUB_CACHE_PRUNE_DELETE ref=$GITHUB_REF id=$cache_id key=$cache_key"
-                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
-              done
-
-          echo "GITHUB_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Save GitHub sparsebundle cache
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/hci-darwin-nix-store/nix-root.sparsebundle
-          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Report GitHub sparsebundle cache save
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          save_duration="$(($(date +%s) - GITHUB_CACHE_SAVE_STARTED_AT))"
-          echo "GITHUB_CACHE_UPLOAD_COMPLETE key=$GITHUB_NIX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
-
-  aarch64-linux-cache-readers:
-    name: "GitHub aarch64-linux Cache Reader ${{ matrix.runner }}"
+  aarch64-linux-cache-consumer:
+    name: "GitHub aarch64-linux Cache Consumer"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [1, 2]
-    env:
-      AARCH64_LINUX_RUNNER_HOSTNAME: github-aarch64-linux-${{ matrix.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -286,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          image_dir="$RUNNER_TEMP/hci-aarch64-linux-nix-image"
+          image_dir="$RUNNER_TEMP/nix-root-aarch64-linux"
           image="$image_dir/nix-root.ext4"
           archive="$image.zst"
 
@@ -304,8 +235,8 @@ jobs:
         id: aarch64-linux-cache-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/hci-aarch64-linux-nix-image/nix-root.ext4.zst
-          key: ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-reader-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nix-root-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-consumer
           restore-keys: |
             ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-
 
@@ -379,15 +310,6 @@ jobs:
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
-
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo hostnamectl set-hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          sudo hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          hostname
 
       - name: Build jaeger aarch64-linux toplevel
         shell: bash
@@ -432,335 +354,6 @@ jobs:
             duration="$((SECONDS - started))"
             echo "AARCH64_LINUX_IMAGE_UNMOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix durationSeconds=$duration"
           fi
-
-  aarch64-linux-cache-writer:
-    name: "GitHub aarch64-linux Cache Writer"
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 355
-    needs: aarch64-linux-cache-readers
-    if: ${{ !cancelled() }}
-    permissions:
-      actions: write
-      contents: read
-      statuses: read
-    concurrency:
-      group: hci-agent-runner-github-aarch64-linux
-      cancel-in-progress: false
-    env:
-      AARCH64_LINUX_RUNNER_HOSTNAME: github-aarch64-linux
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.revision || github.sha }}
-          persist-credentials: false
-
-      - name: Start aarch64-linux ext4 cache restore
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          image_dir="$RUNNER_TEMP/hci-aarch64-linux-nix-image"
-          image="$image_dir/nix-root.ext4"
-          archive="$image.zst"
-
-          mkdir -p "$image_dir"
-
-          {
-            printf 'AARCH64_LINUX_NIX_IMAGE=%s\n' "$image"
-            printf 'AARCH64_LINUX_NIX_IMAGE_ARCHIVE=%s\n' "$archive"
-            printf 'AARCH64_LINUX_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
-          } >> "$GITHUB_ENV"
-
-          df -h
-
-      - name: Restore aarch64-linux ext4 image cache
-        id: aarch64-linux-cache-restore
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ runner.temp }}/hci-aarch64-linux-nix-image/nix-root.ext4.zst
-          key: ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-writer
-          restore-keys: |
-            ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-
-
-      - name: Prepare aarch64-linux Nix image
-        shell: bash
-        env:
-          CACHE_HIT: ${{ steps.aarch64-linux-cache-restore.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.aarch64-linux-cache-restore.outputs.cache-matched-key }}
-        run: |
-          set -euo pipefail
-
-          restore_duration="$(($(date +%s) - AARCH64_LINUX_CACHE_RESTORE_STARTED_AT))"
-          echo "AARCH64_LINUX_CACHE_RESTORE_DONE hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
-
-          for tool in zstd mkfs.ext4 truncate mount df du; do
-            if ! command -v "$tool" >/dev/null 2>&1; then
-              echo "::error ::$tool is required for the aarch64-linux ext4 image cache prototype."
-              exit 1
-            fi
-          done
-
-          if [ -s "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" ]; then
-            started="$SECONDS"
-            rm -f "$AARCH64_LINUX_NIX_IMAGE"
-            zstd --sparse -d -f "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" -o "$AARCH64_LINUX_NIX_IMAGE"
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_DECOMPRESSED path=$AARCH64_LINUX_NIX_IMAGE archive=$AARCH64_LINUX_NIX_IMAGE_ARCHIVE durationSeconds=$duration"
-          else
-            started="$SECONDS"
-            rm -f "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE"
-            truncate -s "$AARCH64_LINUX_NIX_IMAGE_SIZE" "$AARCH64_LINUX_NIX_IMAGE"
-            mkfs.ext4 -F -m 0 "$AARCH64_LINUX_NIX_IMAGE"
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_CREATED path=$AARCH64_LINUX_NIX_IMAGE size=$AARCH64_LINUX_NIX_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
-          fi
-
-          ls -lh "$AARCH64_LINUX_NIX_IMAGE" || true
-          du -h "$AARCH64_LINUX_NIX_IMAGE" || true
-          du -h --apparent-size "$AARCH64_LINUX_NIX_IMAGE" || true
-
-          sudo mkdir -p /nix
-          if mountpoint -q /nix; then
-            echo "::error ::/nix is already a mountpoint."
-            findmnt /nix || true
-            exit 1
-          fi
-          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            echo "::error ::/nix exists and is not empty before mounting the image."
-            sudo ls -la /nix
-            exit 1
-          fi
-
-          started="$SECONDS"
-          if sudo mount -o loop,discard "$AARCH64_LINUX_NIX_IMAGE" /nix; then
-            mount_options=loop,discard
-          else
-            echo "AARCH64_LINUX_IMAGE_MOUNT_DISCARD_UNSUPPORTED fallingBackTo=loop"
-            sudo mount -o loop "$AARCH64_LINUX_NIX_IMAGE" /nix
-            mount_options=loop
-          fi
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_IMAGE_MOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
-
-          sudo chown "$USER" /nix
-          chmod u+rwx /nix
-          df -h /nix
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
-
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo hostnamectl set-hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          sudo hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          hostname
-
-      - name: Build and root jaeger aarch64-linux toplevel
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          out_path_file="$RUNNER_TEMP/aarch64-linux-jaeger-out-path"
-          root_dir=/nix/var/nix/gcroots/hci-agent-runner/aarch64-linux
-
-          started="$SECONDS"
-          nix build \
-            --accept-flake-config \
-            --print-build-logs \
-            --print-out-paths \
-            --no-link \
-            "$AARCH64_LINUX_NIX_ATTR" \
-            > "$out_path_file"
-          duration="$((SECONDS - started))"
-
-          cat "$out_path_file"
-          out_path="$(tail -n 1 "$out_path_file")"
-          mkdir -p "$root_dir"
-          ln -sfn "$out_path" "$root_dir/jaeger"
-
-          echo "AARCH64_LINUX_BUILD_COMPLETE attr=$AARCH64_LINUX_NIX_ATTR outPath=$out_path gcroot=$root_dir/jaeger durationSeconds=$duration"
-
-      - name: Prepare aarch64-linux ext4 cache save
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if ! command -v e2fsck >/dev/null 2>&1; then
-            echo "::error ::e2fsck is required for the aarch64-linux ext4 image cache prototype."
-            exit 1
-          fi
-
-          df -h /nix
-          sudo du -sh /nix /nix/store /nix/var/nix || true
-
-          started="$SECONDS"
-          nix store gc
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_STORE_GC_COMPLETE durationSeconds=$duration"
-
-          df -h /nix
-          sudo du -sh /nix /nix/store /nix/var/nix || true
-
-          started="$SECONDS"
-          optimise_status=0
-          nix store optimise || optimise_status=$?
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_STORE_OPTIMISE_COMPLETE status=$optimise_status durationSeconds=$duration"
-
-          df -h /nix
-          sudo du -sh /nix /nix/store /nix/var/nix || true
-
-          sudo fstrim -v /nix || true
-
-          started="$SECONDS"
-          sync
-          if ! sudo umount /nix; then
-            echo "::error ::/nix is still busy; refusing to fsck and save a live ext4 image."
-            findmnt /nix || true
-            sudo fuser -vm /nix || true
-            exit 1
-          fi
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_IMAGE_UNMOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix durationSeconds=$duration"
-
-          e2fsck_status=0
-          sudo e2fsck -pf "$AARCH64_LINUX_NIX_IMAGE" || e2fsck_status=$?
-          if [ "$e2fsck_status" -ne 0 ] && [ "$e2fsck_status" -ne 1 ]; then
-            echo "::error ::e2fsck failed with status $e2fsck_status."
-            exit "$e2fsck_status"
-          fi
-          echo "AARCH64_LINUX_IMAGE_FSCK_COMPLETE status=$e2fsck_status"
-
-          started="$SECONDS"
-          zstd --sparse -T0 -3 -f "$AARCH64_LINUX_NIX_IMAGE" -o "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE"
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_IMAGE_COMPRESSED path=$AARCH64_LINUX_NIX_IMAGE archive=$AARCH64_LINUX_NIX_IMAGE_ARCHIVE level=3 durationSeconds=$duration"
-
-          ls -lh "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
-          du -h "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
-          du -h --apparent-size "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" || true
-
-      - name: Prune previous aarch64-linux ext4 caches
-        if: success()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          gh cache list \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$GITHUB_REF" \
-            --key "$AARCH64_LINUX_CACHE_KEY_PREFIX-" \
-            --limit 100 \
-            --json id,key \
-            --jq '.[] | [.id, .key] | @tsv' \
-            | while IFS=$'\t' read -r cache_id cache_key; do
-                [ -n "$cache_id" ] || continue
-
-                echo "AARCH64_LINUX_CACHE_PRUNE_DELETE ref=$GITHUB_REF id=$cache_id key=$cache_key"
-                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
-              done
-
-          echo "AARCH64_LINUX_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Unmount aarch64-linux Nix image after failure
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if mountpoint -q /nix; then
-            sync
-            started="$SECONDS"
-            if sudo umount /nix; then
-              :
-            else
-              sudo umount -l /nix
-            fi
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_UNMOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix durationSeconds=$duration"
-          fi
-
-      - name: Save aarch64-linux ext4 image cache
-        if: success()
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/hci-aarch64-linux-nix-image/nix-root.ext4.zst
-          key: ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Report aarch64-linux ext4 cache save
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          save_duration="$(($(date +%s) - AARCH64_LINUX_CACHE_SAVE_STARTED_AT))"
-          echo "AARCH64_LINUX_CACHE_UPLOAD_COMPLETE key=$AARCH64_LINUX_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
-
-  aarch64-linux-nixbuild-remote-store:
-    name: "GitHub aarch64-linux nixbuild Remote Store"
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 355
-    env:
-      AARCH64_LINUX_RUNNER_HOSTNAME: github-aarch64-linux-3
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.revision || github.sha }}
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
-
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo hostnamectl set-hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          sudo hostname "$AARCH64_LINUX_RUNNER_HOSTNAME"
-          hostname
-
-      - name: Configure nixbuild.net
-        uses: nixbuild/nixbuild-action@v25
-        with:
-          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
-          settings: |
-            caches = cachix://whitestrake
-            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build jaeger aarch64-linux toplevel in nixbuild remote store
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          df -h
-          started="$SECONDS"
-          nix build \
-            --accept-flake-config \
-            --print-build-logs \
-            --print-out-paths \
-            --builders "" \
-            --max-jobs 2 \
-            --eval-store auto \
-            --store ssh-ng://eu.nixbuild.net \
-            "$AARCH64_LINUX_NIX_ATTR"
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_NIXBUILD_REMOTE_STORE_BUILD_COMPLETE attr=$AARCH64_LINUX_NIX_ATTR store=ssh-ng://eu.nixbuild.net durationSeconds=$duration"
 
   darwin-agent-namespace:
     name: "Namespace Cache Volume Runner"

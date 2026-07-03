@@ -1,0 +1,1353 @@
+name: "GHCI Cache Lanes"
+run-name: "GHCI Cache Lanes"
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval-ghci:
+    name: "Evaluate GHCI build matrix"
+    runs-on: ubuntu-24.04
+    outputs:
+      aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
+      aarch64_linux: ${{ steps.matrix.outputs.aarch64_linux }}
+      x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Emit build matrices
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2016
+          records="$(
+            nix eval --impure --json --expr '
+              let
+                flake = builtins.getFlake (toString ./.);
+                mkNixos = name: cfg: {
+                  name = name;
+                  kind = "nixosConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                };
+                mkDarwin = name: cfg: {
+                  name = name;
+                  kind = "darwinConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                };
+                nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
+                darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
+              in
+                nixos ++ darwin
+            '
+          )"
+
+          aarch64_darwin="$(jq -c '[.[] | select(.system == "aarch64-darwin")]' <<< "$records")"
+          aarch64_linux="$(jq -c '[.[] | select(.system == "aarch64-linux")]' <<< "$records")"
+          x86_64_linux="$(jq -c '[.[] | select(.system == "x86_64-linux")]' <<< "$records")"
+
+          {
+            printf 'aarch64_darwin=%s\n' "$aarch64_darwin"
+            printf 'aarch64_linux=%s\n' "$aarch64_linux"
+            printf 'x86_64_linux=%s\n' "$x86_64_linux"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "GHCI_MATRIX aarch64-darwin=$aarch64_darwin"
+          echo "GHCI_MATRIX aarch64-linux=$aarch64_linux"
+          echo "GHCI_MATRIX x86_64-linux=$x86_64_linux"
+
+  aarch64-linux-readers:
+    name: "GHCI aarch64-linux Reader ${{ matrix.build.name }}"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.aarch64_linux != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.aarch64_linux) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-aarch64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: aarch64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start ext4 cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_dir="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME"
+          image="$image_dir/nix-root.ext4"
+          archive="$image.zst"
+
+          mkdir -p "$image_dir"
+
+          {
+            printf 'NIX_ROOT_IMAGE=%s\n' "$image"
+            printf 'NIX_ROOT_IMAGE_ARCHIVE=%s\n' "$archive"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+          df -h
+
+      - name: Restore ext4 image cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-reader-${{ matrix.build.name }}
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare ext4 Nix image
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          for tool in zstd mkfs.ext4 truncate mount df du; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error ::$tool is required for ext4 Nix image cache lanes."
+              exit 1
+            fi
+          done
+
+          if [ -s "$NIX_ROOT_IMAGE_ARCHIVE" ]; then
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE"
+            zstd --sparse -d -f "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DECOMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE durationSeconds=$duration"
+          else
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE"
+            truncate -s "$NIX_ROOT_IMAGE_SIZE" "$NIX_ROOT_IMAGE"
+            mkfs.ext4 -F -m 0 "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE size=$NIX_ROOT_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
+          fi
+
+          ls -lh "$NIX_ROOT_IMAGE" || true
+          du -h "$NIX_ROOT_IMAGE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" || true
+
+          sudo mkdir -p /nix
+          if mountpoint -q /nix; then
+            echo "::error ::/nix is already a mountpoint."
+            findmnt /nix || true
+            exit 1
+          fi
+          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error ::/nix exists and is not empty before mounting the image."
+            sudo ls -la /nix
+            exit 1
+          fi
+
+          started="$SECONDS"
+          if sudo mount -o loop,discard "$NIX_ROOT_IMAGE" /nix; then
+            mount_options=loop,discard
+          else
+            echo "NIX_ROOT_IMAGE_MOUNT_DISCARD_UNSUPPORTED system=$NIX_ROOT_SYSTEM fallingBackTo=loop"
+            sudo mount -o loop "$NIX_ROOT_IMAGE" /nix
+            mount_options=loop
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_MOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          df -h /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Report Nix usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            df -h /nix
+            sudo du -sh /nix /nix/store /nix/var/nix || true
+          fi
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            sync
+            started="$SECONDS"
+            if sudo umount /nix; then
+              :
+            else
+              sudo umount -l /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+  aarch64-linux-writer:
+    name: "GHCI aarch64-linux Writer"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - aarch64-linux-readers
+    if: ${{ success() && needs.eval-ghci.outputs.aarch64_linux != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: ghci-cache-lane-aarch64-linux-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.aarch64_linux }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-aarch64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: aarch64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start ext4 cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_dir="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME"
+          image="$image_dir/nix-root.ext4"
+          archive="$image.zst"
+
+          mkdir -p "$image_dir"
+
+          {
+            printf 'NIX_ROOT_IMAGE=%s\n' "$image"
+            printf 'NIX_ROOT_IMAGE_ARCHIVE=%s\n' "$archive"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+          df -h
+
+      - name: Restore ext4 image cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-writer
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare ext4 Nix image
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          for tool in zstd mkfs.ext4 truncate mount df du jq; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error ::$tool is required for ext4 Nix image cache lanes."
+              exit 1
+            fi
+          done
+
+          if [ -s "$NIX_ROOT_IMAGE_ARCHIVE" ]; then
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE"
+            zstd --sparse -d -f "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DECOMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE durationSeconds=$duration"
+          else
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE"
+            truncate -s "$NIX_ROOT_IMAGE_SIZE" "$NIX_ROOT_IMAGE"
+            mkfs.ext4 -F -m 0 "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE size=$NIX_ROOT_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
+          fi
+
+          ls -lh "$NIX_ROOT_IMAGE" || true
+          du -h "$NIX_ROOT_IMAGE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" || true
+
+          sudo mkdir -p /nix
+          if mountpoint -q /nix; then
+            echo "::error ::/nix is already a mountpoint."
+            findmnt /nix || true
+            exit 1
+          fi
+          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error ::/nix exists and is not empty before mounting the image."
+            sudo ls -la /nix
+            exit 1
+          fi
+
+          started="$SECONDS"
+          if sudo mount -o loop,discard "$NIX_ROOT_IMAGE" /nix; then
+            mount_options=loop,discard
+          else
+            echo "NIX_ROOT_IMAGE_MOUNT_DISCARD_UNSUPPORTED system=$NIX_ROOT_SYSTEM fallingBackTo=loop"
+            sudo mount -o loop "$NIX_ROOT_IMAGE" /nix
+            mount_options=loop
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_MOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          df -h /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root lane configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$NIX_ROOT_SYSTEM"
+          rm -rf "$root_dir"
+          mkdir -p "$root_dir"
+
+          jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
+            while IFS=$'\t' read -r name attr; do
+              out_path_file="$RUNNER_TEMP/$NIX_ROOT_SYSTEM-$name-out-path"
+
+              started="$SECONDS"
+              nix build \
+                --accept-flake-config \
+                --print-build-logs \
+                --print-out-paths \
+                --no-link \
+                "$attr" \
+                > "$out_path_file"
+              duration="$((SECONDS - started))"
+
+              cat "$out_path_file"
+              out_path="$(tail -n 1 "$out_path_file")"
+              ln -sfn "$out_path" "$root_dir/$name"
+
+              echo "GHCI_WRITER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+            done
+
+      - name: Prepare ext4 cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v e2fsck >/dev/null 2>&1; then
+            echo "::error ::e2fsck is required for ext4 Nix image cache lanes."
+            exit 1
+          fi
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          nix store gc
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_GC_COMPLETE system=$NIX_ROOT_SYSTEM durationSeconds=$duration"
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=$NIX_ROOT_SYSTEM status=$optimise_status durationSeconds=$duration"
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          sudo fstrim -v /nix || true
+
+          started="$SECONDS"
+          sync
+          if ! sudo umount /nix; then
+            echo "::error ::/nix is still busy; refusing to fsck and save a live ext4 image."
+            findmnt /nix || true
+            sudo fuser -vm /nix || true
+            exit 1
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+
+          e2fsck_status=0
+          sudo e2fsck -pf "$NIX_ROOT_IMAGE" || e2fsck_status=$?
+          if [ "$e2fsck_status" -ne 0 ] && [ "$e2fsck_status" -ne 1 ]; then
+            echo "::error ::e2fsck failed with status $e2fsck_status."
+            exit "$e2fsck_status"
+          fi
+          echo "NIX_ROOT_IMAGE_FSCK_COMPLETE system=$NIX_ROOT_SYSTEM status=$e2fsck_status"
+
+          started="$SECONDS"
+          zstd --sparse -T0 -3 -f "$NIX_ROOT_IMAGE" -o "$NIX_ROOT_IMAGE_ARCHIVE"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_COMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE level=3 durationSeconds=$duration"
+
+          ls -lh "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+          du -h "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+
+      - name: Prune previous ext4 caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$NIX_ROOT_CACHE_KEY_PREFIX-" \
+            --limit 100 \
+            --json id,key \
+            --jq '.[] | [.id, .key] | @tsv' \
+            | while IFS=$'\t' read -r cache_id cache_key; do
+                [ -n "$cache_id" ] || continue
+
+                echo "NIX_ROOT_CACHE_PRUNE_DELETE system=$NIX_ROOT_SYSTEM ref=$GITHUB_REF id=$cache_id key=$cache_key"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+              done
+
+          echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Unmount ext4 Nix image after failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            sync
+            started="$SECONDS"
+            if sudo umount /nix; then
+              :
+            else
+              sudo umount -l /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+      - name: Save ext4 image cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report ext4 cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
+  x86-64-linux-readers:
+    name: "GHCI x86_64-linux Reader ${{ matrix.build.name }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.x86_64_linux != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.x86_64_linux) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-x86_64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-x86_64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: x86_64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start ext4 cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_dir="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME"
+          image="$image_dir/nix-root.ext4"
+          archive="$image.zst"
+
+          mkdir -p "$image_dir"
+
+          {
+            printf 'NIX_ROOT_IMAGE=%s\n' "$image"
+            printf 'NIX_ROOT_IMAGE_ARCHIVE=%s\n' "$archive"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+          df -h
+
+      - name: Restore ext4 image cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-x86_64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-reader-${{ matrix.build.name }}
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare ext4 Nix image
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          for tool in zstd mkfs.ext4 truncate mount df du; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error ::$tool is required for ext4 Nix image cache lanes."
+              exit 1
+            fi
+          done
+
+          if [ -s "$NIX_ROOT_IMAGE_ARCHIVE" ]; then
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE"
+            zstd --sparse -d -f "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DECOMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE durationSeconds=$duration"
+          else
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE"
+            truncate -s "$NIX_ROOT_IMAGE_SIZE" "$NIX_ROOT_IMAGE"
+            mkfs.ext4 -F -m 0 "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE size=$NIX_ROOT_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
+          fi
+
+          ls -lh "$NIX_ROOT_IMAGE" || true
+          du -h "$NIX_ROOT_IMAGE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" || true
+
+          sudo mkdir -p /nix
+          if mountpoint -q /nix; then
+            echo "::error ::/nix is already a mountpoint."
+            findmnt /nix || true
+            exit 1
+          fi
+          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error ::/nix exists and is not empty before mounting the image."
+            sudo ls -la /nix
+            exit 1
+          fi
+
+          started="$SECONDS"
+          if sudo mount -o loop,discard "$NIX_ROOT_IMAGE" /nix; then
+            mount_options=loop,discard
+          else
+            echo "NIX_ROOT_IMAGE_MOUNT_DISCARD_UNSUPPORTED system=$NIX_ROOT_SYSTEM fallingBackTo=loop"
+            sudo mount -o loop "$NIX_ROOT_IMAGE" /nix
+            mount_options=loop
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_MOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          df -h /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Report Nix usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            df -h /nix
+            sudo du -sh /nix /nix/store /nix/var/nix || true
+          fi
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            sync
+            started="$SECONDS"
+            if sudo umount /nix; then
+              :
+            else
+              sudo umount -l /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+  x86-64-linux-writer:
+    name: "GHCI x86_64-linux Writer"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - x86-64-linux-readers
+    if: ${{ success() && needs.eval-ghci.outputs.x86_64_linux != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: ghci-cache-lane-x86_64-linux-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.x86_64_linux }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-x86_64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-x86_64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: x86_64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start ext4 cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_dir="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME"
+          image="$image_dir/nix-root.ext4"
+          archive="$image.zst"
+
+          mkdir -p "$image_dir"
+
+          {
+            printf 'NIX_ROOT_IMAGE=%s\n' "$image"
+            printf 'NIX_ROOT_IMAGE_ARCHIVE=%s\n' "$archive"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+          df -h
+
+      - name: Restore ext4 image cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-x86_64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-writer
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare ext4 Nix image
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          for tool in zstd mkfs.ext4 truncate mount df du jq; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error ::$tool is required for ext4 Nix image cache lanes."
+              exit 1
+            fi
+          done
+
+          if [ -s "$NIX_ROOT_IMAGE_ARCHIVE" ]; then
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE"
+            zstd --sparse -d -f "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DECOMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE durationSeconds=$duration"
+          else
+            started="$SECONDS"
+            rm -f "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE"
+            truncate -s "$NIX_ROOT_IMAGE_SIZE" "$NIX_ROOT_IMAGE"
+            mkfs.ext4 -F -m 0 "$NIX_ROOT_IMAGE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE size=$NIX_ROOT_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
+          fi
+
+          ls -lh "$NIX_ROOT_IMAGE" || true
+          du -h "$NIX_ROOT_IMAGE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" || true
+
+          sudo mkdir -p /nix
+          if mountpoint -q /nix; then
+            echo "::error ::/nix is already a mountpoint."
+            findmnt /nix || true
+            exit 1
+          fi
+          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "::error ::/nix exists and is not empty before mounting the image."
+            sudo ls -la /nix
+            exit 1
+          fi
+
+          started="$SECONDS"
+          if sudo mount -o loop,discard "$NIX_ROOT_IMAGE" /nix; then
+            mount_options=loop,discard
+          else
+            echo "NIX_ROOT_IMAGE_MOUNT_DISCARD_UNSUPPORTED system=$NIX_ROOT_SYSTEM fallingBackTo=loop"
+            sudo mount -o loop "$NIX_ROOT_IMAGE" /nix
+            mount_options=loop
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_MOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          df -h /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root lane configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$NIX_ROOT_SYSTEM"
+          rm -rf "$root_dir"
+          mkdir -p "$root_dir"
+
+          jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
+            while IFS=$'\t' read -r name attr; do
+              out_path_file="$RUNNER_TEMP/$NIX_ROOT_SYSTEM-$name-out-path"
+
+              started="$SECONDS"
+              nix build \
+                --accept-flake-config \
+                --print-build-logs \
+                --print-out-paths \
+                --no-link \
+                "$attr" \
+                > "$out_path_file"
+              duration="$((SECONDS - started))"
+
+              cat "$out_path_file"
+              out_path="$(tail -n 1 "$out_path_file")"
+              ln -sfn "$out_path" "$root_dir/$name"
+
+              echo "GHCI_WRITER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+            done
+
+      - name: Prepare ext4 cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v e2fsck >/dev/null 2>&1; then
+            echo "::error ::e2fsck is required for ext4 Nix image cache lanes."
+            exit 1
+          fi
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          nix store gc
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_GC_COMPLETE system=$NIX_ROOT_SYSTEM durationSeconds=$duration"
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=$NIX_ROOT_SYSTEM status=$optimise_status durationSeconds=$duration"
+
+          df -h /nix
+          sudo du -sh /nix /nix/store /nix/var/nix || true
+
+          sudo fstrim -v /nix || true
+
+          started="$SECONDS"
+          sync
+          if ! sudo umount /nix; then
+            echo "::error ::/nix is still busy; refusing to fsck and save a live ext4 image."
+            findmnt /nix || true
+            sudo fuser -vm /nix || true
+            exit 1
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+
+          e2fsck_status=0
+          sudo e2fsck -pf "$NIX_ROOT_IMAGE" || e2fsck_status=$?
+          if [ "$e2fsck_status" -ne 0 ] && [ "$e2fsck_status" -ne 1 ]; then
+            echo "::error ::e2fsck failed with status $e2fsck_status."
+            exit "$e2fsck_status"
+          fi
+          echo "NIX_ROOT_IMAGE_FSCK_COMPLETE system=$NIX_ROOT_SYSTEM status=$e2fsck_status"
+
+          started="$SECONDS"
+          zstd --sparse -T0 -3 -f "$NIX_ROOT_IMAGE" -o "$NIX_ROOT_IMAGE_ARCHIVE"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_COMPRESSED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE level=3 durationSeconds=$duration"
+
+          ls -lh "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+          du -h "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+          du -h --apparent-size "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+
+      - name: Prune previous ext4 caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$NIX_ROOT_CACHE_KEY_PREFIX-" \
+            --limit 100 \
+            --json id,key \
+            --jq '.[] | [.id, .key] | @tsv' \
+            | while IFS=$'\t' read -r cache_id cache_key; do
+                [ -n "$cache_id" ] || continue
+
+                echo "NIX_ROOT_CACHE_PRUNE_DELETE system=$NIX_ROOT_SYSTEM ref=$GITHUB_REF id=$cache_id key=$cache_key"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+              done
+
+          echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Unmount ext4 Nix image after failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            sync
+            started="$SECONDS"
+            if sudo umount /nix; then
+              :
+            else
+              sudo umount -l /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_UNMOUNTED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+      - name: Save ext4 image cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-x86_64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report ext4 cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
+  aarch64-darwin-readers:
+    name: "GHCI aarch64-darwin Reader ${{ matrix.build.name }}"
+    runs-on: macos-26
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.aarch64_darwin) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 30g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start sparsebundle cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_bundle="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME/nix-root.sparsebundle"
+          mkdir -p "$(dirname "$image_bundle")"
+
+          {
+            printf 'NIX_ROOT_IMAGE_BUNDLE=%s\n' "$image_bundle"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore sparsebundle cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-reader-${{ matrix.build.name }}
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare sparsebundle Nix root
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          synthetic_conf=/etc/synthetic.conf
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          sudo touch "$synthetic_conf"
+
+          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
+            if ! grep -qx 'nix' "$synthetic_conf"; then
+              echo "::error ::$synthetic_conf already defines nix differently."
+              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
+              exit 1
+            fi
+          else
+            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
+          fi
+
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
+          fi
+
+          if [ ! -e /nix ]; then
+            echo "::error ::macOS did not materialize synthetic /nix."
+            sudo cat "$synthetic_conf"
+            exit 1
+          fi
+
+          if [ -L /nix ]; then
+            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
+            ls -ld /nix
+            exit 1
+          fi
+
+          if [ -d "$NIX_ROOT_IMAGE_BUNDLE" ]; then
+            echo "NIX_ROOT_IMAGE_READY system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE source=cache"
+          else
+            started="$SECONDS"
+            hdiutil create \
+              -size "$NIX_ROOT_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$NIX_ROOT_IMAGE_BUNDLE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE size=$NIX_ROOT_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          started="$SECONDS"
+          sudo hdiutil attach \
+            -mountpoint /nix \
+            -nobrowse \
+            "$NIX_ROOT_IMAGE_BUNDLE"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_ATTACHED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Detach sparsebundle Nix root
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mount | grep -q ' on /nix '; then
+            started="$SECONDS"
+            sync
+            if sudo hdiutil detach /nix; then
+              :
+            else
+              sudo hdiutil detach -force /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DETACHED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+  aarch64-darwin-writer:
+    name: "GHCI aarch64-darwin Writer"
+    runs-on: macos-26
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - aarch64-darwin-readers
+    if: ${{ success() && needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: ghci-cache-lane-aarch64-darwin-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.aarch64_darwin }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 30g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Start sparsebundle cache restore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_bundle="$RUNNER_TEMP/$NIX_ROOT_IMAGE_DIR_NAME/nix-root.sparsebundle"
+          mkdir -p "$(dirname "$image_bundle")"
+
+          {
+            printf 'NIX_ROOT_IMAGE_BUNDLE=%s\n' "$image_bundle"
+            printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore sparsebundle cache
+        id: nix-root-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-writer
+          restore-keys: |
+            ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-
+
+      - name: Prepare sparsebundle Nix root
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.nix-root-cache-restore.outputs.cache-hit }}
+          CACHE_MATCHED_KEY: ${{ steps.nix-root-cache-restore.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+
+          synthetic_conf=/etc/synthetic.conf
+          restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+
+          echo "NIX_ROOT_CACHE_RESTORE_DONE system=$NIX_ROOT_SYSTEM hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::error ::jq is required for sparsebundle Nix image cache lanes."
+            exit 1
+          fi
+
+          sudo touch "$synthetic_conf"
+
+          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
+            if ! grep -qx 'nix' "$synthetic_conf"; then
+              echo "::error ::$synthetic_conf already defines nix differently."
+              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
+              exit 1
+            fi
+          else
+            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
+          fi
+
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
+              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
+          fi
+
+          if [ ! -e /nix ]; then
+            echo "::error ::macOS did not materialize synthetic /nix."
+            sudo cat "$synthetic_conf"
+            exit 1
+          fi
+
+          if [ -L /nix ]; then
+            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
+            ls -ld /nix
+            exit 1
+          fi
+
+          if [ -d "$NIX_ROOT_IMAGE_BUNDLE" ]; then
+            echo "NIX_ROOT_IMAGE_READY system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE source=cache"
+          else
+            started="$SECONDS"
+            hdiutil create \
+              -size "$NIX_ROOT_IMAGE_SIZE" \
+              -type SPARSEBUNDLE \
+              -fs 'Case-sensitive Journaled HFS+' \
+              -volname NixStore \
+              "$NIX_ROOT_IMAGE_BUNDLE"
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_CREATED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE size=$NIX_ROOT_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
+          fi
+
+          started="$SECONDS"
+          sudo hdiutil attach \
+            -mountpoint /nix \
+            -nobrowse \
+            "$NIX_ROOT_IMAGE_BUNDLE"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_ATTACHED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root lane configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$NIX_ROOT_SYSTEM"
+          rm -rf "$root_dir"
+          mkdir -p "$root_dir"
+
+          jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
+            while IFS=$'\t' read -r name attr; do
+              out_path_file="$RUNNER_TEMP/$NIX_ROOT_SYSTEM-$name-out-path"
+
+              started="$SECONDS"
+              nix build \
+                --accept-flake-config \
+                --print-build-logs \
+                --print-out-paths \
+                --no-link \
+                "$attr" \
+                > "$out_path_file"
+              duration="$((SECONDS - started))"
+
+              cat "$out_path_file"
+              out_path="$(tail -n 1 "$out_path_file")"
+              ln -sfn "$out_path" "$root_dir/$name"
+
+              echo "GHCI_WRITER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+            done
+
+      - name: Prepare sparsebundle cache save
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          df -h /nix
+          du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          nix store gc
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_GC_COMPLETE system=$NIX_ROOT_SYSTEM durationSeconds=$duration"
+
+          df -h /nix
+          du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=$NIX_ROOT_SYSTEM status=$optimise_status durationSeconds=$duration"
+
+          df -h /nix
+          du -sh /nix /nix/store /nix/var/nix || true
+
+          started="$SECONDS"
+          sync
+          if sudo hdiutil detach /nix; then
+            :
+          else
+            sudo hdiutil detach -force /nix
+          fi
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_DETACHED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+          if [ ! -d "$NIX_ROOT_IMAGE_BUNDLE" ]; then
+            echo "::error ::Nix sparsebundle is missing at $NIX_ROOT_IMAGE_BUNDLE."
+            ls -la "$(dirname "$NIX_ROOT_IMAGE_BUNDLE")"
+            exit 1
+          fi
+
+          du -sh "$NIX_ROOT_IMAGE_BUNDLE" || true
+
+      - name: Prune previous sparsebundle caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$NIX_ROOT_CACHE_KEY_PREFIX-" \
+            --limit 100 \
+            --json id,key \
+            --jq '.[] | [.id, .key] | @tsv' \
+            | while IFS=$'\t' read -r cache_id cache_key; do
+                [ -n "$cache_id" ] || continue
+
+                echo "NIX_ROOT_CACHE_PRUNE_DELETE system=$NIX_ROOT_SYSTEM ref=$GITHUB_REF id=$cache_id key=$cache_key"
+                gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+              done
+
+          echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Detach sparsebundle Nix root after failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mount | grep -q ' on /nix '; then
+            started="$SECONDS"
+            sync
+            if sudo hdiutil detach /nix; then
+              :
+            else
+              sudo hdiutil detach -force /nix
+            fi
+            duration="$((SECONDS - started))"
+            echo "NIX_ROOT_IMAGE_DETACHED system=$NIX_ROOT_SYSTEM path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+          fi
+
+      - name: Save sparsebundle cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report sparsebundle cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
