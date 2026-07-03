@@ -75,6 +75,68 @@ hci_agent_tools_in_path() {
   done
 }
 
+root_hci_agent_tools() {
+  local refresh_failed=0
+  local out_path
+  local tool
+  local tool_path
+  local tool_root
+  local tool_store_path
+
+  if { [ -e "$HCI_AGENT_TOOLS_GCROOT_DIR" ] || [ -L "$HCI_AGENT_TOOLS_GCROOT_DIR" ]; } \
+    && [ ! -d "$HCI_AGENT_TOOLS_GCROOT_DIR" ]; then
+    log "WARNING: refusing to use non-directory HCI agent tools gcroot path: $HCI_AGENT_TOOLS_GCROOT_DIR"
+    return 1
+  fi
+
+  mkdir -p "$HCI_AGENT_TOOLS_GCROOT_DIR"
+
+  for tool in curl jq hercules-ci-agent; do
+    tool_path="$(command -v "$tool")"
+    tool_store_path="$(cd "$(dirname "$tool_path")/.." && pwd -P)"
+    tool_root="$HCI_AGENT_TOOLS_GCROOT_DIR/$tool"
+
+    case "$tool_store_path" in
+      /nix/store/*)
+        ;;
+      *)
+        if ! out_path="$(nix build \
+          --accept-flake-config \
+          --inputs-from . \
+          --no-link \
+          --print-out-paths \
+          "nixpkgs#$tool")"; then
+          log "WARNING: could not resolve HCI agent tool root for $tool."
+          refresh_failed=1
+          continue
+        fi
+        tool_store_path="${out_path%%$'\n'*}"
+        ;;
+    esac
+
+    if [ ! -x "$tool_store_path/bin/$tool" ]; then
+      log "WARNING: fallback HCI agent tool $tool does not expose $tool_store_path/bin/$tool."
+      refresh_failed=1
+      continue
+    fi
+
+    if { [ -e "$tool_root" ] || [ -L "$tool_root" ]; } && [ ! -L "$tool_root" ]; then
+      log "WARNING: refusing to replace non-symlink HCI agent tool root: $tool_root"
+      refresh_failed=1
+      continue
+    fi
+
+    ln -sfn "$tool_store_path" "$tool_root"
+    log "HCI_AGENT_TOOL_ROOTED tool=$tool gcroot=$tool_root outPath=$tool_store_path source=nix-shell-fallback"
+  done
+
+  if [ "$refresh_failed" -eq 1 ]; then
+    return 1
+  fi
+
+  return 0
+}
+
 bootstrap_hci_agent_tools() {
   if [ "${HCI_AGENT_SUPERVISOR_LIB_ONLY:-}" = "1" ]; then
     return 0
@@ -88,6 +150,7 @@ bootstrap_hci_agent_tools() {
 
   if [ "$HCI_AGENT_TOOLS_BOOTSTRAPPED" = "1" ]; then
     if hci_agent_tools_in_path; then
+      root_hci_agent_tools || log "WARNING: could not persist all HCI agent tools from nix shell fallback."
       return 0
     fi
 

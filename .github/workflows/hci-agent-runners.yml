@@ -82,7 +82,7 @@ jobs:
           system: ${{ env.HCI_AGENT_SYSTEM }}
 
       - name: Pack sparsebundle Nix root
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: ./.github/actions/nix-sparsebundle-pack
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
@@ -94,19 +94,19 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Start cache save timer
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         shell: bash
         run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Save sparsebundle cache
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/nix-root-agent-aarch64-darwin/nix-root.sparsebundle
           key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Report sparsebundle cache save
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
@@ -115,7 +115,7 @@ jobs:
           echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
       - name: Prune cache lane
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: ./.github/actions/github-cache-prune
         env:
           GH_TOKEN: ${{ github.token }}
@@ -193,7 +193,7 @@ jobs:
           system: ${{ env.HCI_AGENT_SYSTEM }}
 
       - name: Pack ext4 Nix root
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: ./.github/actions/nix-ext4-pack
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
@@ -205,19 +205,19 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Start cache save timer
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         shell: bash
         run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Save ext4 image cache
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/nix-root-agent-aarch64-linux/nix-root.ext4.zst
           key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Report ext4 cache save
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
@@ -226,7 +226,7 @@ jobs:
           echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
       - name: Prune cache lane
-        if: ${{ success() && steps.hci-agent.outputs.job-found != 'false' }}
+        if: success()
         uses: ./.github/actions/github-cache-prune
         env:
           GH_TOKEN: ${{ github.token }}
@@ -557,8 +557,6 @@ jobs:
           system: ${{ env.HCI_AGENT_SYSTEM }}
 
       - name: Save Namespace sparsebundle Nix root artifact
-        env:
-          HCI_AGENT_JOB_FOUND: ${{ steps.hci-agent.outputs.job-found }}
         shell: bash
         run: |
           set -euo pipefail
@@ -574,11 +572,6 @@ jobs:
           sudo hdiutil detach /nix || sudo hdiutil detach -force /nix
           duration="$((SECONDS - started))"
           echo "NAMESPACE_ARTIFACT_IMAGE_DETACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
-
-          if [ "$HCI_AGENT_JOB_FOUND" = "false" ]; then
-            echo "NAMESPACE_ARTIFACT_UPLOAD_SKIPPED reason=hci-job-not-found"
-            exit 0
-          fi
 
           if ! command -v nsc >/dev/null 2>&1; then
             echo "::error ::nsc CLI is not available."
