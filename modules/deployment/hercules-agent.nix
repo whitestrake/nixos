@@ -340,7 +340,7 @@
         IOSchedulingPriority = 7;
         CPUWeight = 10;
         IOWeight = 10;
-        MemoryHigh = "512M";
+        MemoryHigh = "1G";
         MemoryMax = "2G";
         TasksMax = 256;
         OOMPolicy = "stop";
