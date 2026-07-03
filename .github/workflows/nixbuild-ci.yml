@@ -9,61 +9,41 @@ permissions:
   contents: read
 
 jobs:
-  eval-nixbuild:
-    name: "Evaluate Linux build matrix"
-    runs-on: ubuntu-24.04
-    outputs:
-      linux: ${{ steps.matrix.outputs.linux }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
-          extra-nix-conf: |
-            narinfo-cache-negative-ttl = 0
-            max-jobs = auto
-
-      - name: Emit Linux build matrix
-        id: matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # shellcheck disable=SC2016
-          records="$(
-            nix eval --impure --json --expr '
-              let
-                flake = builtins.getFlake (toString ./.);
-                mkNixos = name: cfg: {
-                  name = name;
-                  kind = "nixosConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
-                };
-              in
-                builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}))
-            '
-          )"
-
-          linux="$(jq -c '[.[] | select(.system | endswith("-linux"))]' <<< "$records")"
-
-          printf 'linux=%s\n' "$linux" >> "$GITHUB_OUTPUT"
-          echo "NIXBUILD_MATRIX linux=$linux"
-
-  linux-remote-store:
-    name: "Nixbuild ${{ matrix.build.name }} (${{ matrix.build.system }})"
+  Builders:
+    name: "${{ matrix.build.name }} (${{ matrix.build.system }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
-    needs: eval-nixbuild
-    if: ${{ needs.eval-nixbuild.outputs.linux != '[]' }}
     strategy:
       fail-fast: false
       matrix:
-        build: ${{ fromJSON(needs.eval-nixbuild.outputs.linux) }}
+        build:
+          - name: jaeger
+            system: aarch64-linux
+            attr: .#nixosConfigurations.jaeger.config.system.build.toplevel
+          - name: kronos
+            system: x86_64-linux
+            attr: .#nixosConfigurations.kronos.config.system.build.toplevel
+          - name: oculus
+            system: x86_64-linux
+            attr: .#nixosConfigurations.oculus.config.system.build.toplevel
+          - name: omnius
+            system: x86_64-linux
+            attr: .#nixosConfigurations.omnius.config.system.build.toplevel
+          - name: onager
+            system: x86_64-linux
+            attr: .#nixosConfigurations.onager.config.system.build.toplevel
+          - name: orthus
+            system: x86_64-linux
+            attr: .#nixosConfigurations.orthus.config.system.build.toplevel
+          - name: pascal
+            system: x86_64-linux
+            attr: .#nixosConfigurations.pascal.config.system.build.toplevel
+          - name: rapier
+            system: x86_64-linux
+            attr: .#nixosConfigurations.rapier.config.system.build.toplevel
+          - name: sortie
+            system: x86_64-linux
+            attr: .#nixosConfigurations.sortie.config.system.build.toplevel
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

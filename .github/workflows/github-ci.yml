@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   eval-ghci:
-    name: "Evaluate GHCI build matrix"
+    name: "Evaluate Configurations"
     runs-on: ubuntu-24.04
     outputs:
       aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
@@ -73,8 +73,8 @@ jobs:
           echo "GHCI_MATRIX aarch64-linux=$aarch64_linux"
           echo "GHCI_MATRIX x86_64-linux=$x86_64_linux"
 
-  aarch64-linux-readers:
-    name: "GHCI aarch64-linux Reader ${{ matrix.build.name }}"
+  aarch64-linux:
+    name: "${{ matrix.build.name }}"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
     needs: eval-ghci
@@ -143,12 +143,12 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
   aarch64-linux-writer:
-    name: "GHCI aarch64-linux Writer"
+    name: "Cache aarch64-linux"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
     needs:
       - eval-ghci
-      - aarch64-linux-readers
+      - aarch64-linux
     if: ${{ success() && needs.eval-ghci.outputs.aarch64_linux != '[]' }}
     permissions:
       actions: write
@@ -232,8 +232,8 @@ jobs:
           keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
-  x86-64-linux-readers:
-    name: "GHCI x86_64-linux Reader ${{ matrix.build.name }}"
+  x86_64-linux:
+    name: "${{ matrix.build.name }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     needs: eval-ghci
@@ -302,12 +302,12 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
   x86-64-linux-writer:
-    name: "GHCI x86_64-linux Writer"
+    name: "Cache x86_64-linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     needs:
       - eval-ghci
-      - x86-64-linux-readers
+      - x86_64-linux
     if: ${{ success() && needs.eval-ghci.outputs.x86_64_linux != '[]' }}
     permissions:
       actions: write
@@ -319,7 +319,7 @@ jobs:
       GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.x86_64_linux }}
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-x86_64-linux-ext4-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-x86_64-linux
-      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_IMAGE_SIZE: 16G
       NIX_ROOT_SYSTEM: x86_64-linux
     steps:
       - name: Checkout repository
@@ -391,8 +391,8 @@ jobs:
           keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
-  aarch64-darwin-readers:
-    name: "GHCI aarch64-darwin Reader ${{ matrix.build.name }}"
+  aarch64-darwin:
+    name: "${{ matrix.build.name }}"
     runs-on: macos-26
     timeout-minutes: 355
     needs: eval-ghci
@@ -450,12 +450,12 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
   aarch64-darwin-writer:
-    name: "GHCI aarch64-darwin Writer"
+    name: "Cache aarch64-darwin"
     runs-on: macos-26
     timeout-minutes: 355
     needs:
       - eval-ghci
-      - aarch64-darwin-readers
+      - aarch64-darwin
     if: ${{ success() && needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
     permissions:
       actions: write
