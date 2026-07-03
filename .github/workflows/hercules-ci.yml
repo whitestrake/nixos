@@ -1,5 +1,5 @@
-name: "HCI Agent Runners"
-run-name: "HCI Agent Runners"
+name: "Hercules CI"
+run-name: "Hercules CI"
 
 on:
   push:
