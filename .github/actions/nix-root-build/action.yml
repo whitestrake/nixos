@@ -18,7 +18,23 @@ runs:
         GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
       run: |
-        set -euo pipefail
+        set -Eeuo pipefail
+
+        report_usage() {
+          echo "NIX_ROOT_BUILD_USAGE system=$GHCI_LANE_SYSTEM"
+
+          if mountpoint -q /nix; then
+            df -h /nix || true
+            sudo du -sh /nix /nix/store /nix/var/nix /nix/var/nix/builds 2>/dev/null || true
+          fi
+
+          if [ -d /tmp ]; then
+            df -h /tmp || true
+            du -sh /tmp/nix-builds 2>/dev/null || true
+          fi
+        }
+
+        trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
 
         case "$GHCI_LANE_SYSTEM" in
           "" | */* | *..*)

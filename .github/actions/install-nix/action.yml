@@ -10,10 +10,19 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Prepare Nix build directory
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        sudo mkdir -p /tmp/nix-builds
+        sudo chmod 1777 /tmp/nix-builds
+
     - uses: nixbuild/nix-quick-install-action@v35
       with:
         nix_conf: |
           experimental-features = nix-command flakes
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
+          build-dir = /tmp/nix-builds
           ${{ inputs.extra-nix-conf }}
