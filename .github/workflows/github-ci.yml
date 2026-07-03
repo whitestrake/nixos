@@ -110,20 +110,18 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Build and pack Nix store handoff
+      - name: Build configuration
         shell: bash
         run: |
           set -euo pipefail
 
           build_name="${{ matrix.build.name }}"
           handoff_dir="$RUNNER_TEMP/nix-store-handoff-$build_name"
-          file_store="$handoff_dir/file-store"
           upload_dir="$handoff_dir/upload"
-          archive="$upload_dir/nix-store-handoff.tar.zst"
           manifest="$upload_dir/out-paths.txt"
 
           rm -rf "$handoff_dir"
-          mkdir -p "$file_store" "$upload_dir"
+          mkdir -p "$upload_dir"
 
           started="$SECONDS"
           out_paths_text="$(nix build \
@@ -138,18 +136,39 @@ jobs:
 
           echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
 
-          started="$SECONDS"
-          nix copy --to "file://$file_store" "${out_paths[@]}"
-          duration="$((SECONDS - started))"
-          echo "GHCI_HANDOFF_STORE_COPY_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name path=$file_store durationSeconds=$duration"
+          ls -lh "$manifest"
+
+      - name: Export Nix store handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_name="${{ matrix.build.name }}"
+          upload_dir="$RUNNER_TEMP/nix-store-handoff-$build_name/upload"
+          archive="$upload_dir/nix-store-handoff.export.zst"
+          closure_manifest="$upload_dir/closure-paths.txt"
+          manifest="$upload_dir/out-paths.txt"
+
+          mapfile -t out_paths < "$manifest"
+          if [ "${#out_paths[@]}" -eq 0 ]; then
+            echo "::error ::No output paths in Nix store handoff manifest: $manifest"
+            exit 1
+          fi
 
           started="$SECONDS"
-          tar -C "$file_store" -I 'zstd -T0 -3' -cf "$archive" .
+          nix-store -qR "${out_paths[@]}" | sort -u > "$closure_manifest"
           duration="$((SECONDS - started))"
-          echo "GHCI_HANDOFF_PACK_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name archive=$archive durationSeconds=$duration"
+          closure_count="$(wc -l < "$closure_manifest" | tr -d ' ')"
+          echo "GHCI_HANDOFF_CLOSURE_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name paths=$closure_count durationSeconds=$duration"
 
-          ls -lh "$archive" "$manifest"
-          du -sh "$file_store" "$upload_dir" || true
+          started="$SECONDS"
+          mapfile -t closure_paths < "$closure_manifest"
+          nix-store --export "${closure_paths[@]}" | zstd -T0 -3 -f -o "$archive"
+          duration="$((SECONDS - started))"
+          echo "GHCI_HANDOFF_EXPORT_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name archive=$archive durationSeconds=$duration"
+
+          ls -lh "$archive" "$manifest" "$closure_manifest"
+          du -sh "$upload_dir" || true
 
       - name: Upload Nix store handoff
         uses: actions/upload-artifact@v7
@@ -287,9 +306,8 @@ jobs:
               artifact_dir="$download_dir"
             fi
 
-            archive="$artifact_dir/nix-store-handoff.tar.zst"
+            archive="$artifact_dir/nix-store-handoff.export.zst"
             manifest="$artifact_dir/out-paths.txt"
-            import_store="$RUNNER_TEMP/ghci-handoff-import-$artifact_id"
 
             if [ ! -s "$archive" ] || [ ! -s "$manifest" ]; then
               echo "::error ::Incomplete Nix store handoff artifact: $artifact_name"
@@ -297,13 +315,10 @@ jobs:
               exit 1
             fi
 
-            rm -rf "$import_store"
-            mkdir -p "$import_store"
-
             started="$SECONDS"
-            tar -C "$import_store" -I zstd -xf "$archive"
+            zstd -d -c "$archive" | nix-store --import
             duration="$((SECONDS - started))"
-            echo "GHCI_HANDOFF_UNPACK_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id durationSeconds=$duration"
+            echo "GHCI_HANDOFF_IMPORT_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id durationSeconds=$duration"
 
             mapfile -t out_paths < "$manifest"
             if [ "${#out_paths[@]}" -eq 0 ]; then
@@ -311,13 +326,9 @@ jobs:
               exit 1
             fi
 
-            started="$SECONDS"
-            nix copy --no-check-sigs --from "file://$import_store" "${out_paths[@]}"
-            duration="$((SECONDS - started))"
-
             out_path="${out_paths[$((${#out_paths[@]} - 1))]}"
             ln -sfn "$out_path" "$root_dir/$build_name"
-            echo "GHCI_HANDOFF_IMPORT_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name outPath=$out_path gcroot=$root_dir/$build_name durationSeconds=$duration"
+            echo "GHCI_HANDOFF_ROOT_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name outPath=$out_path gcroot=$root_dir/$build_name"
 
             if gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"; then
               echo "GHCI_HANDOFF_ARTIFACT_DELETED system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id"
