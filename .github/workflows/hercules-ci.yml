@@ -40,12 +40,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Mount sparsebundle Nix root
-        uses: ./.github/actions/nix-sparsebundle-mount
+      - name: Restore sparsebundle Nix root cache
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
           cache-key-suffix: agent
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
           image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -87,18 +92,12 @@ jobs:
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
-      - name: Detach sparsebundle Nix root after failure
-        if: always()
-        uses: ./.github/actions/nix-sparsebundle-unmount
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
       - name: Start cache save timer
         if: success()
         shell: bash
         run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Save sparsebundle cache
+      - name: Save sparsebundle Nix root cache
         if: success()
         uses: actions/cache/save@v6
         with:
@@ -151,12 +150,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Mount ext4 Nix root
-        uses: ./.github/actions/nix-ext4-mount
+      - name: Restore ext4 Nix root cache
+        uses: ./.github/actions/nix-ext4-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
           cache-key-suffix: agent
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
+        with:
           image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -198,18 +202,12 @@ jobs:
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
-      - name: Unmount ext4 Nix image
-        if: always()
-        uses: ./.github/actions/nix-ext4-unmount
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
       - name: Start cache save timer
         if: success()
         shell: bash
         run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Save ext4 image cache
+      - name: Save ext4 Nix root cache
         if: success()
         uses: actions/cache/save@v6
         with:

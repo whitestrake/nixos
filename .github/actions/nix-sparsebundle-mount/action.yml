@@ -1,16 +1,7 @@
 name: "Mount sparsebundle Nix root"
-description: "Restore or create a sparsebundle-backed /nix image and mount it."
+description: "Create or attach a sparsebundle-backed /nix image and clean up in post if still mounted."
 
 inputs:
-  cache-key-prefix:
-    description: "GitHub Actions cache key prefix for this Nix root lane."
-    required: true
-  cache-key-suffix:
-    description: "Unique cache key suffix for this restore attempt."
-    required: true
-  image-dir-name:
-    description: "Directory name under runner.temp for the image."
-    required: true
   image-size:
     description: "Size to use when creating a new sparsebundle."
     required: true
@@ -19,93 +10,7 @@ inputs:
     required: true
 
 runs:
-  using: "composite"
-  steps:
-    - name: Start sparsebundle cache restore
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        image_bundle="$RUNNER_TEMP/${{ inputs.image-dir-name }}/nix-root.sparsebundle"
-        mkdir -p "$(dirname "$image_bundle")"
-
-        {
-          printf 'NIX_ROOT_IMAGE_BUNDLE=%s\n' "$image_bundle"
-          printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
-        } >> "$GITHUB_ENV"
-
-    - name: Restore sparsebundle cache
-      id: restore
-      uses: actions/cache/restore@v6
-      with:
-        path: ${{ runner.temp }}/${{ inputs.image-dir-name }}/nix-root.sparsebundle
-        key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache-key-suffix }}
-        restore-keys: |
-          ${{ inputs.cache-key-prefix }}-
-
-    - name: Prepare sparsebundle Nix root
-      shell: bash
-      env:
-        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
-        CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
-      run: |
-        set -euo pipefail
-
-        synthetic_conf=/etc/synthetic.conf
-        restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
-
-        echo "NIX_ROOT_CACHE_RESTORE_DONE system=${{ inputs.system }} hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
-
-        sudo touch "$synthetic_conf"
-
-        if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
-          if ! grep -qx 'nix' "$synthetic_conf"; then
-            echo "::error ::$synthetic_conf already defines nix differently."
-            grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
-            exit 1
-          fi
-        else
-          printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
-        fi
-
-        if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
-          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
-            || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
-        fi
-
-        if [ ! -e /nix ]; then
-          echo "::error ::macOS did not materialize synthetic /nix."
-          sudo cat "$synthetic_conf"
-          exit 1
-        fi
-
-        if [ -L /nix ]; then
-          echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
-          ls -ld /nix
-          exit 1
-        fi
-
-        if [ -d "$NIX_ROOT_IMAGE_BUNDLE" ]; then
-          echo "NIX_ROOT_IMAGE_READY system=${{ inputs.system }} path=$NIX_ROOT_IMAGE_BUNDLE source=cache"
-        else
-          started="$SECONDS"
-          hdiutil create \
-            -size "${{ inputs.image-size }}" \
-            -type SPARSEBUNDLE \
-            -fs 'Case-sensitive Journaled HFS+' \
-            -volname NixStore \
-            "$NIX_ROOT_IMAGE_BUNDLE"
-          duration="$((SECONDS - started))"
-          echo "NIX_ROOT_IMAGE_CREATED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE_BUNDLE size=${{ inputs.image-size }} fs=case-sensitive-jhfs-plus durationSeconds=$duration"
-        fi
-
-        started="$SECONDS"
-        sudo hdiutil attach \
-          -mountpoint /nix \
-          -nobrowse \
-          "$NIX_ROOT_IMAGE_BUNDLE"
-        duration="$((SECONDS - started))"
-        echo "NIX_ROOT_IMAGE_ATTACHED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
-
-        sudo chown "$USER" /nix
-        chmod u+rwx /nix
+  using: "node24"
+  main: "main.js"
+  post: "post.js"
+  post-if: "always()"
