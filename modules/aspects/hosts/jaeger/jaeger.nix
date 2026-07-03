@@ -6,7 +6,6 @@
       den.aspects.server
       den.aspects.docker
       den.aspects.hercules
-      den.aspects.hercules.prewarm
     ];
 
     nixos = {...}: {
