@@ -15,7 +15,6 @@ runs:
         set -euo pipefail
 
         df -h /nix
-        du -sh /nix /nix/store /nix/var/nix || true
 
         started="$SECONDS"
         nix store gc
@@ -23,7 +22,6 @@ runs:
         echo "NIX_ROOT_STORE_GC_COMPLETE system=${{ inputs.system }} durationSeconds=$duration"
 
         df -h /nix
-        du -sh /nix /nix/store /nix/var/nix || true
 
         started="$SECONDS"
         optimise_status=0
@@ -32,7 +30,6 @@ runs:
         echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=${{ inputs.system }} status=$optimise_status durationSeconds=$duration"
 
         df -h /nix
-        du -sh /nix /nix/store /nix/var/nix || true
 
         started="$SECONDS"
         sync

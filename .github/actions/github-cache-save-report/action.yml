@@ -34,6 +34,7 @@ runs:
         if [ "$matched_key" = "$CACHE_KEY" ]; then
           echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$CACHE_SYSTEM key=$CACHE_KEY durationSeconds=$save_duration"
         else
-          echo "::warning title=GitHub cache save skipped::Cache key $CACHE_KEY was not visible after save; reservation or upload likely failed."
+          echo "::error title=GitHub cache save missing::Cache key $CACHE_KEY was not visible after save; refusing to prune older caches."
           echo "NIX_ROOT_CACHE_UPLOAD_SKIPPED system=$CACHE_SYSTEM key=$CACHE_KEY durationSeconds=$save_duration"
+          exit 1
         fi
