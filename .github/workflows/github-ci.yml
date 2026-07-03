@@ -82,7 +82,7 @@ jobs:
                     cacheKind: "ext4",
                     cachePrefix: "nix-root-ci-x86_64-linux-ext4-v1",
                     imageDir: "nix-root-ci-x86_64-linux",
-                    imageSize: "8G"
+                    imageSize: "16G"
                   }
                 else
                   empty

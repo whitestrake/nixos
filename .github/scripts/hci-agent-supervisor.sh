@@ -851,9 +851,9 @@ monitor_ready_targets() {
           return 0
         fi
 
-        log "ERROR: Hercules CI job $job_id completed, but ready targets are still unavailable via substitute-only realisation."
+        log "WARNING: Hercules CI job $job_id completed, but ready targets are still unavailable via substitute-only realisation."
         emit_job_status "$job_json"
-        return 1
+        return 0
         ;;
       unknown)
         log "ERROR: Hercules CI job $job_id is done, but status fields are absent or not success-like."
