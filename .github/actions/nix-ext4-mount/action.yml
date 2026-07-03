@@ -1,0 +1,116 @@
+name: "Mount ext4 Nix root"
+description: "Restore or create an ext4-backed /nix image and mount it."
+
+inputs:
+  cache-key-prefix:
+    description: "GitHub Actions cache key prefix for this Nix root lane."
+    required: true
+  cache-key-suffix:
+    description: "Unique cache key suffix for this restore attempt."
+    required: true
+  image-dir-name:
+    description: "Directory name under runner.temp for the image."
+    required: true
+  image-size:
+    description: "Size to use when creating a new ext4 image."
+    required: true
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Start ext4 cache restore
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        image_dir="$RUNNER_TEMP/${{ inputs.image-dir-name }}"
+        image="$image_dir/nix-root.ext4"
+        archive="$image.zst"
+
+        mkdir -p "$image_dir"
+
+        {
+          printf 'NIX_ROOT_IMAGE=%s\n' "$image"
+          printf 'NIX_ROOT_IMAGE_ARCHIVE=%s\n' "$archive"
+          printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+        } >> "$GITHUB_ENV"
+
+        df -h
+
+    - name: Restore ext4 image cache
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/${{ inputs.image-dir-name }}/nix-root.ext4.zst
+        key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache-key-suffix }}
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}-
+
+    - name: Prepare ext4 Nix image
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+      run: |
+        set -euo pipefail
+
+        image="$RUNNER_TEMP/${{ inputs.image-dir-name }}/nix-root.ext4"
+        archive="$image.zst"
+        restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+        echo "NIX_ROOT_CACHE_RESTORE_DONE system=${{ inputs.system }} hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
+
+        for tool in zstd mkfs.ext4 truncate mount df du; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "::error ::$tool is required for ext4 Nix image cache lanes."
+            exit 1
+          fi
+        done
+
+        if [ -s "$archive" ]; then
+          started="$SECONDS"
+          rm -f "$image"
+          zstd --sparse -d -f "$archive" -o "$image"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_DECOMPRESSED system=${{ inputs.system }} path=$image archive=$archive durationSeconds=$duration"
+        else
+          started="$SECONDS"
+          rm -f "$image" "$archive"
+          truncate -s "${{ inputs.image-size }}" "$image"
+          mkfs.ext4 -F -m 0 "$image"
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_CREATED system=${{ inputs.system }} path=$image size=${{ inputs.image-size }} fs=ext4 durationSeconds=$duration"
+        fi
+
+        ls -lh "$image" || true
+        du -h "$image" || true
+        du -h --apparent-size "$image" || true
+
+        sudo mkdir -p /nix
+        if mountpoint -q /nix; then
+          echo "::error ::/nix is already a mountpoint."
+          findmnt /nix || true
+          exit 1
+        fi
+        if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+          echo "::error ::/nix exists and is not empty before mounting the image."
+          sudo ls -la /nix
+          exit 1
+        fi
+
+        started="$SECONDS"
+        if sudo mount -o loop,discard "$image" /nix; then
+          mount_options=loop,discard
+        else
+          echo "NIX_ROOT_IMAGE_MOUNT_DISCARD_UNSUPPORTED system=${{ inputs.system }} fallingBackTo=loop"
+          sudo mount -o loop "$image" /nix
+          mount_options=loop
+        fi
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_IMAGE_MOUNTED system=${{ inputs.system }} path=$image mountPoint=/nix options=$mount_options durationSeconds=$duration"
+
+        sudo chown "$USER" /nix
+        chmod u+rwx /nix
+        df -h /nix

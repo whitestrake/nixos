@@ -1,0 +1,540 @@
+name: "GitHub CI"
+run-name: "GitHub CI"
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval-ghci:
+    name: "Evaluate GHCI build matrix"
+    runs-on: ubuntu-24.04
+    outputs:
+      aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
+      aarch64_linux: ${{ steps.matrix.outputs.aarch64_linux }}
+      x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Emit build matrices
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2016
+          records="$(
+            nix eval --impure --json --expr '
+              let
+                flake = builtins.getFlake (toString ./.);
+                mkNixos = name: cfg: {
+                  name = name;
+                  kind = "nixosConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                };
+                mkDarwin = name: cfg: {
+                  name = name;
+                  kind = "darwinConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                };
+                nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
+                darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
+              in
+                nixos ++ darwin
+            '
+          )"
+
+          aarch64_darwin="$(jq -c '[.[] | select(.system == "aarch64-darwin")]' <<< "$records")"
+          aarch64_linux="$(jq -c '[.[] | select(.system == "aarch64-linux")]' <<< "$records")"
+          x86_64_linux="$(jq -c '[.[] | select(.system == "x86_64-linux")]' <<< "$records")"
+
+          {
+            printf 'aarch64_darwin=%s\n' "$aarch64_darwin"
+            printf 'aarch64_linux=%s\n' "$aarch64_linux"
+            printf 'x86_64_linux=%s\n' "$x86_64_linux"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "GHCI_MATRIX aarch64-darwin=$aarch64_darwin"
+          echo "GHCI_MATRIX aarch64-linux=$aarch64_linux"
+          echo "GHCI_MATRIX x86_64-linux=$x86_64_linux"
+
+  aarch64-linux-readers:
+    name: "GHCI aarch64-linux Reader ${{ matrix.build.name }}"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.aarch64_linux != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.aarch64_linux) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: aarch64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Report Nix usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            df -h /nix
+            sudo du -sh /nix /nix/store /nix/var/nix || true
+          fi
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        uses: ./.github/actions/nix-ext4-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  aarch64-linux-writer:
+    name: "GHCI aarch64-linux Writer"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - aarch64-linux-readers
+    if: ${{ success() && needs.eval-ghci.outputs.aarch64_linux != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: github-cache-lane-aarch64-linux-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.aarch64_linux }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: aarch64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: writer
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root GHCI lane
+        uses: ./.github/actions/nix-root-build
+        with:
+          builds-json: ${{ env.GHCI_BUILDS_JSON }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Pack ext4 Nix root
+        uses: ./.github/actions/nix-ext4-pack
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        uses: ./.github/actions/nix-ext4-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Start cache save timer
+        if: success()
+        shell: bash
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save ext4 image cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-ci-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report ext4 cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
+      - name: Prune cache lane
+        if: success()
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  x86-64-linux-readers:
+    name: "GHCI x86_64-linux Reader ${{ matrix.build.name }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.x86_64_linux != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.x86_64_linux) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-x86_64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-x86_64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: x86_64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Report Nix usage
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            df -h /nix
+            sudo du -sh /nix /nix/store /nix/var/nix || true
+          fi
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        uses: ./.github/actions/nix-ext4-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  x86-64-linux-writer:
+    name: "GHCI x86_64-linux Writer"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - x86-64-linux-readers
+    if: ${{ success() && needs.eval-ghci.outputs.x86_64_linux != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: github-cache-lane-x86_64-linux-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.x86_64_linux }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-x86_64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-x86_64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: x86_64-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: writer
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root GHCI lane
+        uses: ./.github/actions/nix-root-build
+        with:
+          builds-json: ${{ env.GHCI_BUILDS_JSON }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Pack ext4 Nix root
+        uses: ./.github/actions/nix-ext4-pack
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Unmount ext4 Nix image
+        if: always()
+        uses: ./.github/actions/nix-ext4-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Start cache save timer
+        if: success()
+        shell: bash
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save ext4 image cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-ci-x86_64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report ext4 cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
+      - name: Prune cache lane
+        if: success()
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  aarch64-darwin-readers:
+    name: "GHCI aarch64-darwin Reader ${{ matrix.build.name }}"
+    runs-on: macos-26
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.aarch64_darwin) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 30g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Detach sparsebundle Nix root
+        if: always()
+        uses: ./.github/actions/nix-sparsebundle-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  aarch64-darwin-writer:
+    name: "GHCI aarch64-darwin Writer"
+    runs-on: macos-26
+    timeout-minutes: 355
+    needs:
+      - eval-ghci
+      - aarch64-darwin-readers
+    if: ${{ success() && needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: github-cache-lane-aarch64-darwin-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GHCI_BUILDS_JSON: ${{ needs.eval-ghci.outputs.aarch64_darwin }}
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 30g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: writer
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Build and root GHCI lane
+        uses: ./.github/actions/nix-root-build
+        with:
+          builds-json: ${{ env.GHCI_BUILDS_JSON }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Pack sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-pack
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Detach sparsebundle Nix root after failure
+        if: always()
+        uses: ./.github/actions/nix-sparsebundle-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Start cache save timer
+        if: success()
+        shell: bash
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save sparsebundle cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report sparsebundle cache save
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
+
+      - name: Prune cache lane
+        if: success()
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}

@@ -1,0 +1,52 @@
+name: "Build Nix root"
+description: "Build configurations and root the outputs in a Nix root."
+
+inputs:
+  builds-json:
+    description: "Compact JSON array of build records with name and attr fields."
+    required: true
+  system:
+    description: "Nix system label for telemetry and gcroot placement."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Build and root Nix configurations
+      shell: bash
+      env:
+        GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
+        GHCI_LANE_SYSTEM: ${{ inputs.system }}
+      run: |
+        set -euo pipefail
+
+        case "$GHCI_LANE_SYSTEM" in
+          "" | */* | *..*)
+            echo "::error ::unsafe Nix system label for gcroot path: $GHCI_LANE_SYSTEM"
+            exit 1
+            ;;
+        esac
+
+        legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
+        root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
+        rm -rf "$legacy_root_dir"
+        rm -rf "$root_dir"
+        mkdir -p "$root_dir"
+
+        jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
+          while IFS=$'\t' read -r name attr; do
+            started="$SECONDS"
+            out_paths="$(nix build \
+              --accept-flake-config \
+              --print-build-logs \
+              --print-out-paths \
+              --no-link \
+              "$attr")"
+            duration="$((SECONDS - started))"
+
+            printf '%s\n' "$out_paths"
+            out_path="${out_paths##*$'\n'}"
+            ln -sfn "$out_path" "$root_dir/$name"
+
+            echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+          done

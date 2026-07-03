@@ -1,5 +1,5 @@
-name: "Nixbuild YOLO"
-run-name: "Nixbuild YOLO"
+name: "Nixbuild CI"
+run-name: "Nixbuild CI"
 
 on:
   push:

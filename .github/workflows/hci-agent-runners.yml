@@ -4,148 +4,50 @@ run-name: "HCI Agent Runners"
 on:
   push:
   workflow_dispatch:
-    inputs:
-      revision:
-        description: "Git revision to monitor in Hercules CI. Defaults to this workflow run revision."
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
   statuses: read
 
-env:
-  AARCH64_LINUX_CACHE_KEY_PREFIX: nix-root-aarch64-linux-ext4-v1
-  AARCH64_LINUX_NIX_ATTR: .#nixosConfigurations.jaeger.config.system.build.toplevel
-  AARCH64_LINUX_NIX_IMAGE_SIZE: 8G
-
-# Notes from the Darwin HCI runner trial:
-# - Plain GitHub substitution and Magic Nix Cache both lost to sparsebundle-backed
-#   runners for time-to-useful HCI capacity; Magic was removed after it still had
-#   to materialize the same large closure through its local proxy.
-# - The current comparison keeps the useful paths only: GitHub sparsebundle cache,
-#   Namespace cache volume, and Namespace artifact-backed sparsebundle storage.
-# - The goal is an ephemeral runner that behaves like a warm permanent Darwin
-#   agent: attach a populated /nix sparsebundle, come online quickly, then let HCI
-#   assign any delta work.
-# - If Namespace cache-volume pricing is acceptable, the likely end-state is a
-#   hybrid: keep the sparsebundle on the cache volume, restore the artifact only
-#   on cache-volume miss/corruption, and always upload the final sparsebundle
-#   artifact as the durable fallback.
+# GitHub-hosted jobs currently own separate agent cache lanes while we compare
+# HCI-agent and GHCI-writer cache behaviour. Remove the root/pack/save/prune
+# steps and point NIX_ROOT_CACHE_KEY_PREFIX at the GHCI lane when HCI should
+# become cache-consumer only.
 jobs:
-  darwin-agent-github-cache:
-    name: "GitHub Sparsebundle Cache Runner"
+  github-aarch64-darwin-agent:
+    name: "GitHub aarch64-darwin HCI Agent"
     runs-on: macos-26
     timeout-minutes: 355
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
     concurrency:
       group: hci-agent-runner-github-aarch64-darwin
       cancel-in-progress: false
     env:
-      GITHUB_NIX_CACHE_KEY_PREFIX: nix-root-aarch64-darwin-sparsebundle-v1
-      GITHUB_NIX_STORE_IMAGE_SIZE: 30g
+      HCI_AGENT_HOSTNAME: github-aarch64-darwin
+      HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
+      HCI_AGENT_READY_TARGET_NAME: andred
+      HCI_AGENT_SYSTEM: aarch64-darwin
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-agent-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-agent-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 30g
+      NIX_ROOT_SYSTEM: aarch64-darwin
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
-      - name: Start GitHub sparsebundle cache restore
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          image_bundle="$RUNNER_TEMP/nix-root-aarch64-darwin/nix-root.sparsebundle"
-
-          mkdir -p "$(dirname "$image_bundle")"
-          echo "GITHUB_NIX_STORE_IMAGE_BUNDLE=$image_bundle" >> "$GITHUB_ENV"
-          echo "GITHUB_CACHE_RESTORE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Restore GitHub sparsebundle cache
-        id: github-nix-cache-restore
-        uses: actions/cache/restore@v6
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
         with:
-          path: ${{ runner.temp }}/nix-root-aarch64-darwin/nix-root.sparsebundle
-          key: ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            ${{ env.GITHUB_NIX_CACHE_KEY_PREFIX }}-
-
-      - name: Prepare GitHub cached sparsebundle Nix root
-        shell: bash
-        env:
-          CACHE_HIT: ${{ steps.github-nix-cache-restore.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.github-nix-cache-restore.outputs.cache-matched-key }}
-        run: |
-          set -euo pipefail
-
-          synthetic_conf=/etc/synthetic.conf
-          restore_duration="$(($(date +%s) - GITHUB_CACHE_RESTORE_STARTED_AT))"
-
-          echo "GITHUB_CACHE_IMAGE_RESTORE_DONE hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
-
-          if zstd_path="$(command -v zstd 2>/dev/null)"; then
-            zstd_version="$("$zstd_path" --version 2>/dev/null || true)"
-            echo "GITHUB_CACHE_ZSTD_LOCAL available=true path=$zstd_path version=$zstd_version"
-          else
-            echo "GITHUB_CACHE_ZSTD_LOCAL available=false"
-          fi
-
-          sudo touch "$synthetic_conf"
-
-          if grep -qE '^nix($|[[:space:]])' "$synthetic_conf"; then
-            if ! grep -qx 'nix' "$synthetic_conf"; then
-              echo "::error ::$synthetic_conf already defines nix differently."
-              grep -nE '^nix($|[[:space:]])' "$synthetic_conf" || true
-              exit 1
-            fi
-          else
-            printf 'nix\n' | sudo tee -a "$synthetic_conf" >/dev/null
-          fi
-
-          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
-            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
-              || echo "apfs.util did not report successful synthetic object materialization; validating /nix directly."
-          fi
-
-          if [ ! -e /nix ]; then
-            echo "::error ::macOS did not materialize synthetic /nix."
-            sudo cat "$synthetic_conf"
-            exit 1
-          fi
-
-          if [ -L /nix ]; then
-            echo "::error ::/nix is a symlink; Nix requires /nix to be a real directory or mountpoint."
-            ls -ld /nix
-            exit 1
-          fi
-
-          if [ -d "$GITHUB_NIX_STORE_IMAGE_BUNDLE" ]; then
-            echo "GITHUB_CACHE_IMAGE_READY path=$GITHUB_NIX_STORE_IMAGE_BUNDLE source=cache"
-          else
-            started="$SECONDS"
-            hdiutil create \
-              -size "$GITHUB_NIX_STORE_IMAGE_SIZE" \
-              -type SPARSEBUNDLE \
-              -fs 'Case-sensitive Journaled HFS+' \
-              -volname NixStore \
-              "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
-            duration="$((SECONDS - started))"
-            echo "GITHUB_CACHE_IMAGE_CREATED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE size=$GITHUB_NIX_STORE_IMAGE_SIZE fs=case-sensitive-jhfs-plus durationSeconds=$duration"
-          fi
-
-          started="$SECONDS"
-          sudo hdiutil attach \
-            -mountpoint /nix \
-            -nobrowse \
-            "$GITHUB_NIX_STORE_IMAGE_BUNDLE"
-          duration="$((SECONDS - started))"
-          echo "GITHUB_CACHE_IMAGE_ATTACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
-
-          sudo chown "$USER" /nix
-          chmod u+rwx /nix
-
-          echo "Mounted GitHub cache sparsebundle $GITHUB_NIX_STORE_IMAGE_BUNDLE at /nix"
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: agent
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -154,155 +56,107 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo scutil --set HostName github-aarch64-darwin
-          sudo scutil --set LocalHostName github-aarch64-darwin
-          sudo hostname github-aarch64-darwin
-
-      - name: Run ephemeral Hercules CI Darwin agent
+      - name: Run ephemeral Hercules CI agent
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
-          DARWIN_CONFIGURATION: andred
           GITHUB_TOKEN: ${{ github.token }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_DARWIN_FINISH_CONDITION: hci-job-done
-          HCI_DARWIN_JOB_NAME_FILE: ${{ runner.temp }}/hci-final-gate-job-name
-          HCI_DARWIN_RESOLVE_FINAL_GATE_JOB_NAME: "1"
-          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_AGENT_JOB_NAME_FILE: ${{ runner.temp }}/hci-final-gate-job-name
+          HCI_AGENT_TIMEOUT_SECONDS: "18000"
           HCI_PROJECT: github/whitestrake/nixos
-          HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
 
-          bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+          bash .github/scripts/hci-agent-supervisor.sh
 
-      - name: Detach GitHub sparsebundle cache
+      - name: Maintain HCI agent cache roots
+        uses: ./.github/actions/hci-root-maintenance
+        with:
+          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
+          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
+          system: ${{ env.HCI_AGENT_SYSTEM }}
+
+      - name: Pack sparsebundle Nix root
+        if: success()
+        uses: ./.github/actions/nix-sparsebundle-pack
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Detach sparsebundle Nix root after failure
         if: always()
+        uses: ./.github/actions/nix-sparsebundle-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Start cache save timer
+        if: success()
+        shell: bash
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save sparsebundle cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-agent-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report sparsebundle cache save
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          if mount | grep -q ' on /nix '; then
-            started="$SECONDS"
-            sync
-            if sudo hdiutil detach /nix; then
-              :
-            else
-              sudo hdiutil detach -force /nix
-            fi
-            duration="$((SECONDS - started))"
-            echo "GITHUB_CACHE_IMAGE_DETACHED path=$GITHUB_NIX_STORE_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
-          fi
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
-  aarch64-linux-cache-consumer:
-    name: "GitHub aarch64-linux Cache Consumer"
+      - name: Prune cache lane
+        if: success()
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+  github-aarch64-linux-agent:
+    name: "GitHub aarch64-linux HCI Agent"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
+    concurrency:
+      group: hci-agent-runner-github-aarch64-linux
+      cancel-in-progress: false
+    env:
+      GHCRTS: -xr128G
+      HCI_AGENT_HOSTNAME: github-aarch64-linux
+      HCI_AGENT_READY_TARGET_ATTR: .#nixosConfigurations.jaeger.config.system.build.toplevel
+      HCI_AGENT_READY_TARGET_NAME: jaeger
+      HCI_AGENT_SYSTEM: aarch64-linux
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-agent-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-agent-aarch64-linux
+      NIX_ROOT_IMAGE_SIZE: 8G
+      NIX_ROOT_SYSTEM: aarch64-linux
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
-      - name: Start aarch64-linux ext4 cache restore
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          image_dir="$RUNNER_TEMP/nix-root-aarch64-linux"
-          image="$image_dir/nix-root.ext4"
-          archive="$image.zst"
-
-          mkdir -p "$image_dir"
-
-          {
-            printf 'AARCH64_LINUX_NIX_IMAGE=%s\n' "$image"
-            printf 'AARCH64_LINUX_NIX_IMAGE_ARCHIVE=%s\n' "$archive"
-            printf 'AARCH64_LINUX_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
-          } >> "$GITHUB_ENV"
-
-          df -h
-
-      - name: Restore aarch64-linux ext4 image cache
-        id: aarch64-linux-cache-restore
-        uses: actions/cache/restore@v6
+      - name: Mount ext4 Nix root
+        uses: ./.github/actions/nix-ext4-mount
         with:
-          path: ${{ runner.temp }}/nix-root-aarch64-linux/nix-root.ext4.zst
-          key: ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}-consumer
-          restore-keys: |
-            ${{ env.AARCH64_LINUX_CACHE_KEY_PREFIX }}-
-
-      - name: Prepare aarch64-linux Nix image
-        shell: bash
-        env:
-          CACHE_HIT: ${{ steps.aarch64-linux-cache-restore.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.aarch64-linux-cache-restore.outputs.cache-matched-key }}
-        run: |
-          set -euo pipefail
-
-          restore_duration="$(($(date +%s) - AARCH64_LINUX_CACHE_RESTORE_STARTED_AT))"
-          echo "AARCH64_LINUX_CACHE_RESTORE_DONE hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"
-
-          for tool in zstd mkfs.ext4 truncate mount df du; do
-            if ! command -v "$tool" >/dev/null 2>&1; then
-              echo "::error ::$tool is required for the aarch64-linux ext4 image cache prototype."
-              exit 1
-            fi
-          done
-
-          if [ -s "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" ]; then
-            started="$SECONDS"
-            rm -f "$AARCH64_LINUX_NIX_IMAGE"
-            zstd --sparse -d -f "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE" -o "$AARCH64_LINUX_NIX_IMAGE"
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_DECOMPRESSED path=$AARCH64_LINUX_NIX_IMAGE archive=$AARCH64_LINUX_NIX_IMAGE_ARCHIVE durationSeconds=$duration"
-          else
-            started="$SECONDS"
-            rm -f "$AARCH64_LINUX_NIX_IMAGE" "$AARCH64_LINUX_NIX_IMAGE_ARCHIVE"
-            truncate -s "$AARCH64_LINUX_NIX_IMAGE_SIZE" "$AARCH64_LINUX_NIX_IMAGE"
-            mkfs.ext4 -F -m 0 "$AARCH64_LINUX_NIX_IMAGE"
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_CREATED path=$AARCH64_LINUX_NIX_IMAGE size=$AARCH64_LINUX_NIX_IMAGE_SIZE fs=ext4 durationSeconds=$duration"
-          fi
-
-          ls -lh "$AARCH64_LINUX_NIX_IMAGE" || true
-          du -h "$AARCH64_LINUX_NIX_IMAGE" || true
-          du -h --apparent-size "$AARCH64_LINUX_NIX_IMAGE" || true
-
-          sudo mkdir -p /nix
-          if mountpoint -q /nix; then
-            echo "::error ::/nix is already a mountpoint."
-            findmnt /nix || true
-            exit 1
-          fi
-          if [ -n "$(sudo find /nix -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            echo "::error ::/nix exists and is not empty before mounting the image."
-            sudo ls -la /nix
-            exit 1
-          fi
-
-          started="$SECONDS"
-          if sudo mount -o loop,discard "$AARCH64_LINUX_NIX_IMAGE" /nix; then
-            mount_options=loop,discard
-          else
-            echo "AARCH64_LINUX_IMAGE_MOUNT_DISCARD_UNSUPPORTED fallingBackTo=loop"
-            sudo mount -o loop "$AARCH64_LINUX_NIX_IMAGE" /nix
-            mount_options=loop
-          fi
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_IMAGE_MOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix options=$mount_options durationSeconds=$duration"
-
-          sudo chown "$USER" /nix
-          chmod u+rwx /nix
-          df -h /nix
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: agent
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -311,62 +165,88 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Build jaeger aarch64-linux toplevel
+      - name: Run ephemeral Hercules CI agent
         shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_CACHE_NAME: whitestrake
+          GITHUB_TOKEN: ${{ github.token }}
+          HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
+          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
+          HCI_AGENT_JOB_NAME_FILE: ${{ runner.temp }}/hci-final-gate-job-name
+          HCI_AGENT_TIMEOUT_SECONDS: "18000"
+          HCI_PROJECT: github/whitestrake/nixos
         run: |
           set -euo pipefail
 
-          started="$SECONDS"
-          nix build \
-            --accept-flake-config \
-            --print-build-logs \
-            --print-out-paths \
-            --no-link \
-            "$AARCH64_LINUX_NIX_ATTR"
-          duration="$((SECONDS - started))"
-          echo "AARCH64_LINUX_BUILD_COMPLETE attr=$AARCH64_LINUX_NIX_ATTR durationSeconds=$duration"
+          bash .github/scripts/hci-agent-supervisor.sh
 
-      - name: Report aarch64-linux Nix usage
+      - name: Maintain HCI agent cache roots
+        uses: ./.github/actions/hci-root-maintenance
+        with:
+          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
+          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
+          system: ${{ env.HCI_AGENT_SYSTEM }}
+
+      - name: Pack ext4 Nix root
+        if: success()
+        uses: ./.github/actions/nix-ext4-pack
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Unmount ext4 Nix image
         if: always()
+        uses: ./.github/actions/nix-ext4-unmount
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Start cache save timer
+        if: success()
+        shell: bash
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Save ext4 image cache
+        if: success()
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-agent-aarch64-linux/nix-root.ext4.zst
+          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report ext4 cache save
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          if mountpoint -q /nix; then
-            df -h /nix
-            sudo du -sh /nix /nix/store /nix/var/nix || true
-          fi
+          save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$NIX_ROOT_SYSTEM key=$NIX_ROOT_CACHE_KEY_PREFIX-${{ github.run_id }}-${{ github.run_attempt }} durationSeconds=$save_duration"
 
-      - name: Unmount aarch64-linux Nix image
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
+      - name: Prune cache lane
+        if: success()
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
 
-          if mountpoint -q /nix; then
-            sync
-            started="$SECONDS"
-            if sudo umount /nix; then
-              :
-            else
-              sudo umount -l /nix
-            fi
-            duration="$((SECONDS - started))"
-            echo "AARCH64_LINUX_IMAGE_UNMOUNTED path=$AARCH64_LINUX_NIX_IMAGE mountPoint=/nix durationSeconds=$duration"
-          fi
-
-  darwin-agent-namespace:
-    name: "Namespace Cache Volume Runner"
+  namespace-aarch64-darwin-cache-volume-agent:
+    name: "Namespace aarch64-darwin Cache Volume HCI Agent"
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
     concurrency:
       group: hci-agent-runner-namespace-aarch64-darwin
       cancel-in-progress: false
+    env:
+      HCI_AGENT_HOSTNAME: namespace-aarch64-darwin
+      HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
+      HCI_AGENT_READY_TARGET_NAME: andred
+      HCI_AGENT_SYSTEM: aarch64-darwin
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
       - name: Prepare Namespace Nix cache root
@@ -431,35 +311,36 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo scutil --set HostName namespace-aarch64-darwin
-          sudo scutil --set LocalHostName namespace-aarch64-darwin
-          sudo hostname namespace-aarch64-darwin
-
-      - name: Run ephemeral Hercules CI Darwin agent
+      - name: Run ephemeral Hercules CI agent
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
-          DARWIN_CONFIGURATION: andred
           GITHUB_TOKEN: ${{ github.token }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_DARWIN_FINISH_CONDITION: hci-job-done
-          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_AGENT_JOB_NAME: 10-darwinConfiguration-andred
+          HCI_AGENT_TIMEOUT_SECONDS: "18000"
           HCI_PROJECT: github/whitestrake/nixos
-          HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
 
-          bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+          bash .github/scripts/hci-agent-supervisor.sh
 
-  darwin-agent-namespace-artifact:
-    name: "Namespace Artifact Runner"
+      - name: Maintain HCI agent cache roots
+        uses: ./.github/actions/hci-root-maintenance
+        with:
+          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
+          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
+          system: ${{ env.HCI_AGENT_SYSTEM }}
+
+      - name: Garbage collect Nix root
+        uses: ./.github/actions/nix-root-gc
+        with:
+          system: ${{ env.HCI_AGENT_SYSTEM }}
+
+  namespace-aarch64-darwin-artifact-agent:
+    name: "Namespace aarch64-darwin Artifact HCI Agent"
     runs-on: namespace-profile-aarch64-darwin-no-cache
     timeout-minutes: 355
     concurrency:
@@ -470,11 +351,14 @@ jobs:
       NAMESPACE_NIX_STORE_ARTIFACT: hci-darwin-agent/aarch64-darwin-nix-root.sparsebundle.tar.zst
       NAMESPACE_NIX_STORE_ARTIFACT_EXPIRY: 720h
       NAMESPACE_NIX_STORE_IMAGE_SIZE: 30g
+      HCI_AGENT_HOSTNAME: namespace-aarch64-darwin
+      HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
+      HCI_AGENT_READY_TARGET_NAME: andred
+      HCI_AGENT_SYSTEM: aarch64-darwin
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
 
       - name: Prepare Namespace sparsebundle Nix root
@@ -634,32 +518,33 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Set HCI agent hostname
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo scutil --set HostName namespace-artifact-aarch64-darwin
-          sudo scutil --set LocalHostName namespace-artifact-aarch64-darwin
-          sudo hostname namespace-artifact-aarch64-darwin
-
-      - name: Run ephemeral Hercules CI Darwin agent
+      - name: Run ephemeral Hercules CI agent
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: whitestrake
-          DARWIN_CONFIGURATION: andred
           GITHUB_TOKEN: ${{ github.token }}
           HERCULES_CI_CLUSTER_JOIN_TOKEN: ${{ secrets.HERCULES_CI_CLUSTER_JOIN_TOKEN }}
           HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-          HCI_DARWIN_FINISH_CONDITION: hci-job-done
-          HCI_DARWIN_TIMEOUT_SECONDS: "18000"
+          HCI_AGENT_JOB_NAME: 10-darwinConfiguration-andred
+          HCI_AGENT_TIMEOUT_SECONDS: "18000"
           HCI_PROJECT: github/whitestrake/nixos
-          HCI_REVISION: ${{ inputs.revision || github.sha }}
         run: |
           set -euo pipefail
 
-          bash modules/deployment/scripts/hci-darwin-agent-supervisor.sh
+          bash .github/scripts/hci-agent-supervisor.sh
+
+      - name: Maintain HCI agent cache roots
+        uses: ./.github/actions/hci-root-maintenance
+        with:
+          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
+          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
+          system: ${{ env.HCI_AGENT_SYSTEM }}
+
+      - name: Garbage collect Nix root
+        uses: ./.github/actions/nix-root-gc
+        with:
+          system: ${{ env.HCI_AGENT_SYSTEM }}
 
       - name: Save Namespace sparsebundle Nix root artifact
         shell: bash
@@ -679,11 +564,7 @@ jobs:
 
           started="$SECONDS"
           sync
-          if sudo hdiutil detach /nix; then
-            :
-          else
-            sudo hdiutil detach -force /nix
-          fi
+          sudo hdiutil detach /nix || sudo hdiutil detach -force /nix
           duration="$((SECONDS - started))"
           echo "NAMESPACE_ARTIFACT_IMAGE_DETACHED path=$image_bundle mountPoint=/nix durationSeconds=$duration"
 
@@ -692,6 +573,15 @@ jobs:
             ls -la "$image_parent"
             exit 1
           fi
+
+          du -sh "$image_bundle" || true
+
+          started="$SECONDS"
+          hdiutil compact "$image_bundle"
+          duration="$((SECONDS - started))"
+          echo "NAMESPACE_ARTIFACT_IMAGE_COMPACTED path=$image_bundle durationSeconds=$duration"
+
+          du -sh "$image_bundle" || true
 
           started="$SECONDS"
           rm -f "$image_archive"

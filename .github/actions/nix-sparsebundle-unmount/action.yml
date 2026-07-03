@@ -1,0 +1,23 @@
+name: "Unmount sparsebundle Nix root"
+description: "Detach a sparsebundle-backed /nix image if it is still mounted."
+
+inputs:
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Detach sparsebundle Nix root
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if mount | grep -q ' on /nix '; then
+          started="$SECONDS"
+          sync
+          sudo hdiutil detach /nix || sudo hdiutil detach -force /nix
+          duration="$((SECONDS - started))"
+          echo "NIX_ROOT_IMAGE_DETACHED system=${{ inputs.system }} path=${NIX_ROOT_IMAGE_BUNDLE:-} mountPoint=/nix durationSeconds=$duration"
+        fi

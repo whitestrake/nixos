@@ -1,0 +1,41 @@
+name: "Prune GitHub cache"
+description: "Delete previous GitHub Actions caches for the current ref and key prefix."
+
+inputs:
+  cache-key-prefix:
+    description: "GitHub Actions cache key prefix for this lane."
+    required: true
+  keep-cache-key:
+    description: "Cache key to keep while pruning this lane."
+    required: false
+    default: ""
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Prune previous caches
+      shell: bash
+      env:
+        CACHE_KEY_PREFIX: ${{ inputs.cache-key-prefix }}
+        KEEP_CACHE_KEY: ${{ inputs.keep-cache-key }}
+        CACHE_SYSTEM: ${{ inputs.system }}
+      run: |
+        set -euo pipefail
+
+        gh cache list \
+          --repo "$GITHUB_REPOSITORY" \
+          --ref "$GITHUB_REF" \
+          --key "$CACHE_KEY_PREFIX-" \
+          --limit 100 \
+          --json id,key \
+          --jq '.[] | [.id, .key] | @tsv' \
+          | while IFS=$'\t' read -r cache_id cache_key; do
+              [ -n "$cache_id" ] || continue
+              [ -z "$KEEP_CACHE_KEY" ] || [ "$cache_key" != "$KEEP_CACHE_KEY" ] || continue
+
+              echo "NIX_ROOT_CACHE_PRUNE_DELETE system=$CACHE_SYSTEM ref=$GITHUB_REF id=$cache_id key=$cache_key"
+              gh cache delete "$cache_id" --repo "$GITHUB_REPOSITORY"
+            done

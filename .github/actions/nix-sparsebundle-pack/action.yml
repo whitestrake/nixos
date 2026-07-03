@@ -1,0 +1,56 @@
+name: "Pack sparsebundle Nix root"
+description: "GC, optimise, detach, compact, and validate a sparsebundle-backed Nix root."
+
+inputs:
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare sparsebundle cache save
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        df -h /nix
+        du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        nix store gc
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_STORE_GC_COMPLETE system=${{ inputs.system }} durationSeconds=$duration"
+
+        df -h /nix
+        du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        optimise_status=0
+        nix store optimise || optimise_status=$?
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=${{ inputs.system }} status=$optimise_status durationSeconds=$duration"
+
+        df -h /nix
+        du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        sync
+        sudo hdiutil detach /nix || sudo hdiutil detach -force /nix
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_IMAGE_DETACHED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE_BUNDLE mountPoint=/nix durationSeconds=$duration"
+
+        if [ ! -d "$NIX_ROOT_IMAGE_BUNDLE" ]; then
+          echo "::error ::Nix sparsebundle is missing at $NIX_ROOT_IMAGE_BUNDLE."
+          ls -la "$(dirname "$NIX_ROOT_IMAGE_BUNDLE")"
+          exit 1
+        fi
+
+        du -sh "$NIX_ROOT_IMAGE_BUNDLE" || true
+
+        started="$SECONDS"
+        hdiutil compact "$NIX_ROOT_IMAGE_BUNDLE"
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_IMAGE_COMPACTED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE_BUNDLE durationSeconds=$duration"
+
+        du -sh "$NIX_ROOT_IMAGE_BUNDLE" || true

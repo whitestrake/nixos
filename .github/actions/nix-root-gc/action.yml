@@ -1,0 +1,26 @@
+name: "Garbage collect Nix root"
+description: "Run Nix store GC on a mounted Nix root."
+
+inputs:
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Garbage collect Nix root
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        df -h /nix
+        du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        nix store gc
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_STORE_GC_COMPLETE system=${{ inputs.system }} durationSeconds=$duration"
+
+        df -h /nix
+        du -sh /nix /nix/store /nix/var/nix || true
