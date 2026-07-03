@@ -6,6 +6,7 @@ set -euo pipefail
 : "${GITHUB_API_URL:=https://api.github.com}"
 : "${HCI_AGENT_CONCURRENT_TASKS:=1}"
 : "${HCI_AGENT_HOSTNAME:=}"
+: "${HCI_AGENT_JOB_DISCOVERY_SECONDS:=60}"
 : "${HCI_AGENT_JOB_NAME:=}"
 : "${HCI_AGENT_JOB_NAME_FILE:=}"
 : "${HCI_AGENT_JOB_NAME_WAIT_SECONDS:=600}"
@@ -22,6 +23,16 @@ set -euo pipefail
 
 log() {
   printf '%s\n' "$*" >&2
+}
+
+notice() {
+  printf '::notice title=Hercules CI job unavailable::%s\n' "$*"
+}
+
+emit_job_found_output() {
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    printf 'job-found=%s\n' "$1" >> "$GITHUB_OUTPUT"
+  fi
 }
 
 require_env() {
@@ -651,12 +662,13 @@ cleanup() {
 wait_for_job_id() {
   local revision="$1"
   local deadline="$2"
+  local job_discovery_deadline="$3"
   local jobs_json job_id
 
   HCI_AGENT_JOB_NAME="$(hci_job_name)" || return 1
   export HCI_AGENT_JOB_NAME
 
-  while [ "$SECONDS" -lt "$deadline" ]; do
+  while [ "$SECONDS" -lt "$deadline" ] && [ "$SECONDS" -lt "$job_discovery_deadline" ]; do
     if job_id="$(find_hci_job_id_for_revision_status "$revision")" && [ -n "$job_id" ]; then
       printf '%s\n' "$job_id"
       return 0
@@ -676,6 +688,11 @@ wait_for_job_id() {
     log "Waiting for Hercules CI job $HCI_AGENT_JOB_NAME for $HCI_PROJECT revision $revision..."
     sleep "$HCI_AGENT_POLL_SECONDS"
   done
+
+  if [ "$SECONDS" -ge "$job_discovery_deadline" ]; then
+    log "No Hercules CI job appeared for $HCI_PROJECT revision $revision within ${HCI_AGENT_JOB_DISCOVERY_SECONDS}s."
+    return 2
+  fi
 
   log "ERROR: timed out waiting for Hercules CI job for $HCI_PROJECT revision $revision."
   return 1
@@ -805,11 +822,12 @@ monitor_ready_targets() {
 }
 
 main() {
-  local deadline job_id
+  local deadline job_discovery_deadline job_id wait_status
 
   require_env HCI_AGENT_SYSTEM
   require_env GITHUB_SHA
   require_env HERCULES_CI_CREDENTIALS_JSON
+  require_positive_integer HCI_AGENT_JOB_DISCOVERY_SECONDS
   require_positive_integer HCI_AGENT_POLL_SECONDS
   require_positive_integer HCI_AGENT_STARTUP_SECONDS
   require_positive_integer HCI_AGENT_TIMEOUT_SECONDS
@@ -819,6 +837,7 @@ main() {
 
   HCI_API_TOKEN="$(extract_hci_token "$HERCULES_CI_CREDENTIALS_JSON")"
   deadline=$((SECONDS + HCI_AGENT_TIMEOUT_SECONDS))
+  job_discovery_deadline=$((SECONDS + HCI_AGENT_JOB_DISCOVERY_SECONDS))
 
   set_agent_hostname
   write_agent_files
@@ -835,7 +854,23 @@ main() {
     log "Configured HCI ready target is available before HCI job discovery."
   fi
 
-  job_id="$(wait_for_job_id "$GITHUB_SHA" "$deadline")"
+  wait_status=0
+  job_id="$(wait_for_job_id "$GITHUB_SHA" "$deadline" "$job_discovery_deadline")" || wait_status="$?"
+  case "$wait_status" in
+    0)
+      emit_job_found_output true
+      ;;
+    2)
+      emit_job_found_output false
+      notice "No Hercules CI job appeared for $HCI_PROJECT revision $GITHUB_SHA within ${HCI_AGENT_JOB_DISCOVERY_SECONDS}s; assuming HCI is paused."
+      return 0
+      ;;
+    *)
+      emit_job_found_output false
+      return "$wait_status"
+      ;;
+  esac
+
   monitor_ready_targets "$job_id" "$deadline"
 }
 
