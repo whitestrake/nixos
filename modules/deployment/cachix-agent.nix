@@ -32,11 +32,10 @@
     den.deploy.health.requiredSystemdUnits = ["cachix-agent.service"];
 
     # Asynchronous restart changes:
-    # 1. Do not stop or restart the cachix-agent service during system switches,
-    # because stopping/restarting the agent that is running switch-to-configuration
+    # 1. Do not restart the cachix-agent service during system switches,
+    # because restarting the agent that is running switch-to-configuration
     # causes a deadlock that eventually SIGKILLs the agent and aborts/fails the deploy.
     systemd.services.cachix-agent = {
-      stopIfChanged = false;
       restartIfChanged = false;
     };
 

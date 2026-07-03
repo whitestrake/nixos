@@ -104,9 +104,8 @@
       # Keep worker forks from tripping Linux overcommit accounting.
       environment.GHCRTS = "-xr128G";
 
-      # Upstream does not set these. Keep switches from killing active HCI
+      # Upstream does not set this. Keep switches from killing active HCI
       # builds/effects; the config-restarter below handles stale agent configs.
-      stopIfChanged = false;
       restartIfChanged = false;
     };
 
@@ -331,6 +330,8 @@
       description = "Prewarm Hercules CI configuration closures";
       after = ["network-online.target" "hercules-ci-agent.service"];
       wants = ["network-online.target"];
+      # Timer runs can be long; let active prewarm jobs finish outside deploy activation.
+      restartIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
         ExecCondition = "${agentHasWorkers}/bin/hci-agent-has-workers";
