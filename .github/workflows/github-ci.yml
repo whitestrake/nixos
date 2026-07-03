@@ -284,9 +284,7 @@ jobs:
 
             artifact_dir="$download_dir/$artifact_name"
             if [ ! -d "$artifact_dir" ]; then
-              echo "::error ::Downloaded Nix store handoff directory is missing: $artifact_dir"
-              find "$download_dir" -maxdepth 2 -type f -print || true
-              exit 1
+              artifact_dir="$download_dir"
             fi
 
             archive="$artifact_dir/nix-store-handoff.tar.zst"
