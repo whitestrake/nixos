@@ -1,0 +1,214 @@
+name: "GitHub CI"
+run-name: "GitHub CI"
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eval-ghci:
+    name: "Evaluate Configurations"
+    runs-on: ubuntu-24.04
+    outputs:
+      builds: ${{ steps.matrix.outputs.builds }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Emit build matrices
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2016
+          records="$(
+            nix eval --impure --json --expr '
+              let
+                flake = builtins.getFlake (toString ./.);
+                mkNixos = name: cfg: {
+                  name = name;
+                  kind = "nixosConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                };
+                mkDarwin = name: cfg: {
+                  name = name;
+                  kind = "darwinConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                };
+                nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
+                darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
+              in
+                nixos ++ darwin
+            '
+          )"
+
+          builds="$(
+            jq -c '
+              map(
+                if .system == "aarch64-darwin" then
+                  . + {
+                    runner: "macos-26",
+                    cacheKind: "sparsebundle",
+                    cachePrefix: "nix-root-ci-aarch64-darwin-sparsebundle-v1",
+                    imageDir: "nix-root-ci-aarch64-darwin",
+                    imageSize: "30g"
+                  }
+                elif .system == "aarch64-linux" then
+                  . + {
+                    runner: "ubuntu-24.04-arm",
+                    cacheKind: "ext4",
+                    cachePrefix: "nix-root-ci-aarch64-linux-ext4-v1",
+                    imageDir: "nix-root-ci-aarch64-linux",
+                    imageSize: "8G"
+                  }
+                elif .system == "x86_64-linux" then
+                  . + {
+                    runner: "ubuntu-24.04",
+                    cacheKind: "ext4",
+                    cachePrefix: "nix-root-ci-x86_64-linux-ext4-v1",
+                    imageDir: "nix-root-ci-x86_64-linux",
+                    imageSize: "8G"
+                  }
+                else
+                  empty
+                end
+              )
+            ' <<< "$records"
+          )"
+
+          {
+            printf 'builds=%s\n' "$builds"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "GHCI_MATRIX builds=$builds"
+
+  build:
+    name: "Build ${{ matrix.build.name }} (${{ matrix.build.system }})"
+    runs-on: ${{ matrix.build.runner }}
+    timeout-minutes: 355
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.builds != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.builds) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.build.cachePrefix }}
+      NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.build.imageDir }}
+      NIX_ROOT_IMAGE_SIZE: ${{ matrix.build.imageSize }}
+      NIX_ROOT_SYSTEM: ${{ matrix.build.system }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Restore ext4 Nix root cache
+        if: ${{ matrix.build.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Restore sparsebundle Nix root cache
+        if: ${{ matrix.build.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount ext4 Nix root
+        if: ${{ matrix.build.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        if: ${{ matrix.build.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Push build results to Cachix
+        uses: cachix/cachix-action@v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: true
+
+      - name: Build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix build \
+            --accept-flake-config \
+            --print-build-logs \
+            --print-out-paths \
+            --no-link \
+            "${{ matrix.build.attr }}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+      - name: Report Nix usage
+        if: ${{ always() && matrix.build.cacheKind == 'ext4' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if mountpoint -q /nix; then
+            df -h /nix
+            sudo du -sh /nix /nix/store /nix/var/nix || true
+          fi
+
+  complete:
+    name: "GitHub CI Complete"
+    runs-on: ubuntu-24.04
+    needs:
+      - eval-ghci
+      - build
+    if: always()
+    steps:
+      - name: Check build result
+        shell: bash
+        env:
+          EVAL_RESULT: ${{ needs.eval-ghci.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVAL_RESULT" != "success" ] || [ "$BUILD_RESULT" != "success" ]; then
+            echo "::error ::GitHub CI did not complete successfully: eval=$EVAL_RESULT build=$BUILD_RESULT"
+            exit 1
+          fi
+
+          echo "GitHub CI completed successfully."

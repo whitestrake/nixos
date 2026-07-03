@@ -1,0 +1,70 @@
+name: "Pack ext4 Nix root"
+description: "GC, optimise, unmount, fsck, and compress an ext4-backed Nix root."
+
+inputs:
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Prepare ext4 cache save
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if ! command -v e2fsck >/dev/null 2>&1; then
+          echo "::error ::e2fsck is required for ext4 Nix image cache lanes."
+          exit 1
+        fi
+
+        df -h /nix
+        sudo du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        nix store gc
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_STORE_GC_COMPLETE system=${{ inputs.system }} durationSeconds=$duration"
+
+        df -h /nix
+        sudo du -sh /nix /nix/store /nix/var/nix || true
+
+        started="$SECONDS"
+        optimise_status=0
+        nix store optimise || optimise_status=$?
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=${{ inputs.system }} status=$optimise_status durationSeconds=$duration"
+
+        df -h /nix
+        sudo du -sh /nix /nix/store /nix/var/nix || true
+
+        sudo fstrim -v /nix || true
+
+        started="$SECONDS"
+        sync
+        if ! sudo umount /nix; then
+          echo "::error ::/nix is still busy; refusing to fsck and save a live ext4 image."
+          findmnt /nix || true
+          sudo fuser -vm /nix || true
+          exit 1
+        fi
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_IMAGE_UNMOUNTED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE mountPoint=/nix durationSeconds=$duration"
+
+        e2fsck_status=0
+        sudo e2fsck -pf "$NIX_ROOT_IMAGE" || e2fsck_status=$?
+        if [ "$e2fsck_status" -ne 0 ] && [ "$e2fsck_status" -ne 1 ]; then
+          echo "::error ::e2fsck failed with status $e2fsck_status."
+          exit "$e2fsck_status"
+        fi
+        echo "NIX_ROOT_IMAGE_FSCK_COMPLETE system=${{ inputs.system }} status=$e2fsck_status"
+
+        started="$SECONDS"
+        zstd --sparse -T0 -3 -f "$NIX_ROOT_IMAGE" -o "$NIX_ROOT_IMAGE_ARCHIVE"
+        duration="$((SECONDS - started))"
+        echo "NIX_ROOT_IMAGE_COMPRESSED system=${{ inputs.system }} path=$NIX_ROOT_IMAGE archive=$NIX_ROOT_IMAGE_ARCHIVE level=3 durationSeconds=$duration"
+
+        ls -lh "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+        du -h "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true
+        du -h --apparent-size "$NIX_ROOT_IMAGE" "$NIX_ROOT_IMAGE_ARCHIVE" || true

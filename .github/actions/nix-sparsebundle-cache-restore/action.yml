@@ -1,0 +1,52 @@
+name: "Restore sparsebundle Nix root cache"
+description: "Restore a sparsebundle-backed Nix root and export its path."
+
+inputs:
+  cache-key-prefix:
+    description: "GitHub Actions cache key prefix for this Nix root lane."
+    required: true
+  cache-key-suffix:
+    description: "Unique cache key suffix for this restore attempt."
+    required: true
+  image-dir-name:
+    description: "Directory name under runner.temp for the image."
+    required: true
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Start sparsebundle cache restore
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        image_bundle="$RUNNER_TEMP/${{ inputs.image-dir-name }}/nix-root.sparsebundle"
+        mkdir -p "$(dirname "$image_bundle")"
+
+        {
+          printf 'NIX_ROOT_IMAGE_BUNDLE=%s\n' "$image_bundle"
+          printf 'NIX_ROOT_CACHE_RESTORE_STARTED_AT=%s\n' "$(date +%s)"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore sparsebundle cache
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/${{ inputs.image-dir-name }}/nix-root.sparsebundle
+        key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache-key-suffix }}
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}-
+
+    - name: Report sparsebundle cache restore
+      shell: bash
+      env:
+        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        CACHE_MATCHED_KEY: ${{ steps.restore.outputs.cache-matched-key }}
+      run: |
+        set -euo pipefail
+
+        restore_duration="$(($(date +%s) - NIX_ROOT_CACHE_RESTORE_STARTED_AT))"
+        echo "NIX_ROOT_CACHE_RESTORE_DONE system=${{ inputs.system }} hit=${CACHE_HIT:-} matchedKey=${CACHE_MATCHED_KEY:-} durationSeconds=$restore_duration"

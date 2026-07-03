@@ -1,0 +1,16 @@
+name: "Mount ext4 Nix root"
+description: "Create or decompress an ext4-backed /nix image, mount it, and clean up in post if still mounted."
+
+inputs:
+  image-size:
+    description: "Size to use when creating a new ext4 image."
+    required: true
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "node24"
+  main: "main.js"
+  post: "post.js"
+  post-if: "always()"
