@@ -1,0 +1,39 @@
+name: "Report GitHub cache save"
+description: "Report whether a GitHub Actions cache key was actually saved."
+
+inputs:
+  cache-key:
+    description: "GitHub Actions cache key that was just saved."
+    required: true
+  system:
+    description: "Nix system label for telemetry."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Report cache save result
+      shell: bash
+      env:
+        CACHE_KEY: ${{ inputs.cache-key }}
+        CACHE_SYSTEM: ${{ inputs.system }}
+      run: |
+        set -euo pipefail
+
+        save_duration="$(($(date +%s) - NIX_ROOT_CACHE_SAVE_STARTED_AT))"
+        matched_key="$(
+          gh cache list \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --key "$CACHE_KEY" \
+            --limit 1 \
+            --json key \
+            --jq '.[0].key // ""'
+        )"
+
+        if [ "$matched_key" = "$CACHE_KEY" ]; then
+          echo "NIX_ROOT_CACHE_UPLOAD_COMPLETE system=$CACHE_SYSTEM key=$CACHE_KEY durationSeconds=$save_duration"
+        else
+          echo "::warning title=GitHub cache save skipped::Cache key $CACHE_KEY was not visible after save; reservation or upload likely failed."
+          echo "NIX_ROOT_CACHE_UPLOAD_SKIPPED system=$CACHE_SYSTEM key=$CACHE_KEY durationSeconds=$save_duration"
+        fi
