@@ -110,20 +110,54 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Build configuration
+      - name: Build and pack Nix store handoff
         shell: bash
         run: |
           set -euo pipefail
 
+          build_name="${{ matrix.build.name }}"
+          handoff_dir="$RUNNER_TEMP/nix-store-handoff-$build_name"
+          file_store="$handoff_dir/file-store"
+          upload_dir="$handoff_dir/upload"
+          archive="$upload_dir/nix-store-handoff.tar.zst"
+          manifest="$upload_dir/out-paths.txt"
+
+          rm -rf "$handoff_dir"
+          mkdir -p "$file_store" "$upload_dir"
+
           started="$SECONDS"
-          nix build \
+          out_paths_text="$(nix build \
             --accept-flake-config \
             --print-build-logs \
             --print-out-paths \
             --no-link \
-            "${{ matrix.build.attr }}"
+            "${{ matrix.build.attr }}")"
           duration="$((SECONDS - started))"
+          mapfile -t out_paths <<< "$out_paths_text"
+          printf '%s\n' "${out_paths[@]}" > "$manifest"
+
           echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+          started="$SECONDS"
+          nix copy --to "file://$file_store" "${out_paths[@]}"
+          duration="$((SECONDS - started))"
+          echo "GHCI_HANDOFF_STORE_COPY_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name path=$file_store durationSeconds=$duration"
+
+          started="$SECONDS"
+          tar -C "$file_store" -I 'zstd -T0 -3' -cf "$archive" .
+          duration="$((SECONDS - started))"
+          echo "GHCI_HANDOFF_PACK_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name archive=$archive durationSeconds=$duration"
+
+          ls -lh "$archive" "$manifest"
+          du -sh "$file_store" "$upload_dir" || true
+
+      - name: Upload Nix store handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: nix-store-handoff-${{ env.NIX_ROOT_SYSTEM }}-${{ github.run_attempt }}-${{ matrix.build.name }}
+          path: ${{ runner.temp }}/nix-store-handoff-${{ matrix.build.name }}/upload
+          retention-days: 1
+          compression-level: 0
 
       - name: Report Nix usage
         if: always()
@@ -184,11 +218,116 @@ jobs:
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
 
-      - name: Build and root GHCI lane
-        uses: ./.github/actions/nix-root-build
+      - name: List Nix store handoffs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          handoff_prefix="nix-store-handoff-$NIX_ROOT_SYSTEM-$GITHUB_RUN_ATTEMPT-"
+          handoffs="$RUNNER_TEMP/ghci-handoff-artifacts.tsv"
+          actual_names="$RUNNER_TEMP/ghci-handoff-actual.txt"
+          expected_names="$RUNNER_TEMP/ghci-handoff-expected.txt"
+
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '.artifacts[] | [.id, .name, .expired] | @tsv' \
+            | awk -v prefix="$handoff_prefix" 'BEGIN { FS = OFS = "\t" } index($2, prefix) == 1 && $3 == "false" { print $1, $2 }' \
+            > "$handoffs"
+
+          cut -f2 "$handoffs" | sort > "$actual_names"
+          jq -r --arg prefix "$handoff_prefix" '.[] | $prefix + .name' <<< "$GHCI_BUILDS_JSON" | sort > "$expected_names"
+
+          count="$(wc -l < "$handoffs" | tr -d ' ')"
+          expected_count="$(wc -l < "$expected_names" | tr -d ' ')"
+          if ! diff -u "$expected_names" "$actual_names"; then
+            echo "::error ::Nix store handoff artifact set does not match expected builds for prefix $handoff_prefix"
+            exit 1
+          fi
+
+          echo "GHCI_HANDOFF_ARTIFACTS_FOUND system=$NIX_ROOT_SYSTEM count=$count expected=$expected_count prefix=$handoff_prefix"
+          cat "$handoffs"
+
+      - name: Download Nix store handoffs
+        uses: actions/download-artifact@v8
         with:
-          builds-json: ${{ env.GHCI_BUILDS_JSON }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
+          path: ${{ runner.temp }}/ghci-handoffs
+          pattern: nix-store-handoff-${{ env.NIX_ROOT_SYSTEM }}-${{ github.run_attempt }}-*
+
+      - name: Import and root Nix store handoffs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          handoff_prefix="nix-store-handoff-$NIX_ROOT_SYSTEM-$GITHUB_RUN_ATTEMPT-"
+          handoffs="$RUNNER_TEMP/ghci-handoff-artifacts.tsv"
+          download_dir="$RUNNER_TEMP/ghci-handoffs"
+          legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$NIX_ROOT_SYSTEM"
+          root_dir="/nix/var/nix/gcroots/github-ci/$NIX_ROOT_SYSTEM"
+
+          rm -rf "$legacy_root_dir"
+          rm -rf "$root_dir"
+          mkdir -p "$root_dir"
+
+          while IFS=$'\t' read -r artifact_id artifact_name; do
+            [ -n "$artifact_id" ] || continue
+
+            build_name="${artifact_name#"$handoff_prefix"}"
+            case "$build_name" in
+              "" | */* | *..* | *[!A-Za-z0-9._-]*)
+                echo "::error ::Unsafe handoff build name for gcroot path: $build_name"
+                exit 1
+                ;;
+            esac
+
+            artifact_dir="$download_dir/$artifact_name"
+            if [ ! -d "$artifact_dir" ]; then
+              echo "::error ::Downloaded Nix store handoff directory is missing: $artifact_dir"
+              find "$download_dir" -maxdepth 2 -type f -print || true
+              exit 1
+            fi
+
+            archive="$artifact_dir/nix-store-handoff.tar.zst"
+            manifest="$artifact_dir/out-paths.txt"
+            import_store="$RUNNER_TEMP/ghci-handoff-import-$artifact_id"
+
+            if [ ! -s "$archive" ] || [ ! -s "$manifest" ]; then
+              echo "::error ::Incomplete Nix store handoff artifact: $artifact_name"
+              find "$artifact_dir" -maxdepth 2 -type f -print || true
+              exit 1
+            fi
+
+            rm -rf "$import_store"
+            mkdir -p "$import_store"
+
+            started="$SECONDS"
+            tar -C "$import_store" -I zstd -xf "$archive"
+            duration="$((SECONDS - started))"
+            echo "GHCI_HANDOFF_UNPACK_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id durationSeconds=$duration"
+
+            mapfile -t out_paths < "$manifest"
+            if [ "${#out_paths[@]}" -eq 0 ]; then
+              echo "::error ::No output paths in Nix store handoff manifest: $manifest"
+              exit 1
+            fi
+
+            started="$SECONDS"
+            nix copy --no-check-sigs --from "file://$import_store" "${out_paths[@]}"
+            duration="$((SECONDS - started))"
+
+            out_path="${out_paths[$((${#out_paths[@]} - 1))]}"
+            ln -sfn "$out_path" "$root_dir/$build_name"
+            echo "GHCI_HANDOFF_IMPORT_COMPLETE system=$NIX_ROOT_SYSTEM name=$build_name outPath=$out_path gcroot=$root_dir/$build_name durationSeconds=$duration"
+
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id"; then
+              echo "GHCI_HANDOFF_ARTIFACT_DELETED system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id"
+            else
+              echo "::warning title=Artifact cleanup failed::Could not delete Nix store handoff artifact $artifact_id after import."
+              echo "GHCI_HANDOFF_ARTIFACT_DELETE_FAILED system=$NIX_ROOT_SYSTEM name=$build_name artifactId=$artifact_id"
+            fi
+          done < "$handoffs"
 
       - name: Pack ext4 Nix root
         uses: ./.github/actions/nix-ext4-pack
