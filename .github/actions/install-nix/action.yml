@@ -25,4 +25,7 @@ runs:
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
           build-dir = /tmp/nix-builds
+          connect-timeout = 10
+          download-attempts = 2
+          stalled-download-timeout = 60
           ${{ inputs.extra-nix-conf }}

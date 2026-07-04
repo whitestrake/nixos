@@ -17,8 +17,8 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 355
     concurrency:
-      group: hci-agent-runner-github-aarch64-darwin
-      cancel-in-progress: false
+      group: hci-agent-runner-github-aarch64-darwin-${{ github.ref }}
+      cancel-in-progress: true
     env:
       HCI_AGENT_HOSTNAME: github-aarch64-darwin
       HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel

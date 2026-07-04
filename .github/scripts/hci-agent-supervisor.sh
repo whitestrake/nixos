@@ -13,6 +13,7 @@ set -euo pipefail
 : "${HCI_AGENT_POLL_SECONDS:=30}"
 : "${HCI_AGENT_READY_TARGET_ATTR:=}"
 : "${HCI_AGENT_READY_TARGET_NAME:=}"
+: "${HCI_AGENT_REALISE_TIMEOUT_SECONDS:=1800}"
 : "${HCI_AGENT_STARTUP_SECONDS:=5}"
 : "${HCI_AGENT_TIMEOUT_SECONDS:=18000}"
 : "${HCI_AGENT_TOOLS_BOOTSTRAPPED:=0}"
@@ -27,6 +28,10 @@ log() {
 
 notice() {
   printf '::notice title=Hercules CI job unavailable::%s\n' "$*"
+}
+
+run_with_timeout() {
+  perl -e 'alarm shift; exec @ARGV' "$@"
 }
 
 emit_job_found_output() {
@@ -792,7 +797,7 @@ try_realise_ready_target() {
   fi
 
   log "HCI ready target $HCI_AGENT_READY_TARGET_NAME is not local; attempting substitute-only realisation..."
-  if nix build \
+  if run_with_timeout "$HCI_AGENT_REALISE_TIMEOUT_SECONDS" nix build \
     --accept-flake-config \
     --option max-jobs 0 \
     --no-link \
@@ -892,6 +897,7 @@ main() {
   require_env HERCULES_CI_CREDENTIALS_JSON
   require_positive_integer HCI_AGENT_JOB_DISCOVERY_SECONDS
   require_positive_integer HCI_AGENT_POLL_SECONDS
+  require_positive_integer HCI_AGENT_REALISE_TIMEOUT_SECONDS
   require_positive_integer HCI_AGENT_STARTUP_SECONDS
   require_positive_integer HCI_AGENT_TIMEOUT_SECONDS
 
