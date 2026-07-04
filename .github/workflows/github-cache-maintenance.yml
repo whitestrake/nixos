@@ -12,13 +12,16 @@ permissions:
   contents: read
 
 jobs:
-  gate:
-    name: "Select Target"
+  prepare:
+    name: "Prepare Cache Maintenance"
     runs-on: ubuntu-24.04
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
       target_ref: ${{ steps.gate.outputs.target_ref }}
       target_branch: ${{ steps.gate.outputs.target_branch }}
+      aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
+      aarch64_linux: ${{ steps.matrix.outputs.aarch64_linux }}
+      x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
     steps:
       - name: Select target ref
         id: gate
@@ -57,23 +60,15 @@ jobs:
 
           echo "GITHUB_CACHE_MAINTENANCE_TARGET ref=$target_ref branch=$target_branch shouldRun=$should_run"
 
-  eval-ghci:
-    name: "Evaluate Configurations"
-    runs-on: ubuntu-24.04
-    needs: gate
-    if: ${{ needs.gate.outputs.should_run == 'true' }}
-    outputs:
-      aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
-      aarch64_linux: ${{ steps.matrix.outputs.aarch64_linux }}
-      x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
-    steps:
       - name: Checkout repository
+        if: ${{ steps.gate.outputs.should_run == 'true' }}
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.gate.outputs.target_ref }}
+          ref: ${{ steps.gate.outputs.target_ref }}
           persist-credentials: false
 
       - name: Install Nix
+        if: ${{ steps.gate.outputs.should_run == 'true' }}
         uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
@@ -81,6 +76,7 @@ jobs:
             max-jobs = auto
 
       - name: Emit build matrices
+        if: ${{ steps.gate.outputs.should_run == 'true' }}
         id: matrix
         shell: bash
         run: |
@@ -128,15 +124,13 @@ jobs:
     name: "Cache aarch64-linux"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
-    needs:
-      - gate
-      - eval-ghci
-    if: ${{ needs.gate.outputs.should_run == 'true' && needs.eval-ghci.outputs.aarch64_linux != '[]' }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_linux != '[]' }}
     permissions:
       actions: write
       contents: read
     concurrency:
-      group: github-cache-lane-aarch64-linux-${{ needs.gate.outputs.target_branch }}
+      group: github-cache-lane-aarch64-linux-${{ needs.prepare.outputs.target_branch }}
       cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
@@ -147,7 +141,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.gate.outputs.target_ref }}
+          ref: ${{ needs.prepare.outputs.target_ref }}
           persist-credentials: false
 
       - name: Restore ext4 Nix root cache
@@ -174,7 +168,7 @@ jobs:
       - name: Build and root GHCI lane
         uses: ./.github/actions/nix-root-build
         with:
-          builds-json: ${{ needs.eval-ghci.outputs.aarch64_linux }}
+          builds-json: ${{ needs.prepare.outputs.aarch64_linux }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Pack ext4 Nix root
@@ -217,15 +211,13 @@ jobs:
     name: "Cache x86_64-linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
-    needs:
-      - gate
-      - eval-ghci
-    if: ${{ needs.gate.outputs.should_run == 'true' && needs.eval-ghci.outputs.x86_64_linux != '[]' }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.x86_64_linux != '[]' }}
     permissions:
       actions: write
       contents: read
     concurrency:
-      group: github-cache-lane-x86_64-linux-${{ needs.gate.outputs.target_branch }}
+      group: github-cache-lane-x86_64-linux-${{ needs.prepare.outputs.target_branch }}
       cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-x86_64-linux-ext4-v1
@@ -236,7 +228,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.gate.outputs.target_ref }}
+          ref: ${{ needs.prepare.outputs.target_ref }}
           persist-credentials: false
 
       - name: Restore ext4 Nix root cache
@@ -263,7 +255,7 @@ jobs:
       - name: Build and root GHCI lane
         uses: ./.github/actions/nix-root-build
         with:
-          builds-json: ${{ needs.eval-ghci.outputs.x86_64_linux }}
+          builds-json: ${{ needs.prepare.outputs.x86_64_linux }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Pack ext4 Nix root
@@ -306,15 +298,13 @@ jobs:
     name: "Cache aarch64-darwin"
     runs-on: macos-26
     timeout-minutes: 355
-    needs:
-      - gate
-      - eval-ghci
-    if: ${{ needs.gate.outputs.should_run == 'true' && needs.eval-ghci.outputs.aarch64_darwin != '[]' }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_darwin != '[]' }}
     permissions:
       actions: write
       contents: read
     concurrency:
-      group: github-cache-lane-aarch64-darwin-${{ needs.gate.outputs.target_branch }}
+      group: github-cache-lane-aarch64-darwin-${{ needs.prepare.outputs.target_branch }}
       cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
@@ -325,7 +315,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.gate.outputs.target_ref }}
+          ref: ${{ needs.prepare.outputs.target_ref }}
           persist-credentials: false
 
       - name: Restore sparsebundle Nix root cache
@@ -352,7 +342,7 @@ jobs:
       - name: Build and root GHCI lane
         uses: ./.github/actions/nix-root-build
         with:
-          builds-json: ${{ needs.eval-ghci.outputs.aarch64_darwin }}
+          builds-json: ${{ needs.prepare.outputs.aarch64_darwin }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Pack sparsebundle Nix root
