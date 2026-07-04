@@ -35,6 +35,8 @@
           type = "check";
         };
 
+        formatter.shellcheck.options = ["-x"];
+
         excludes = [
           "flake.nix"
           "modules/secrets/secrets.yaml"
