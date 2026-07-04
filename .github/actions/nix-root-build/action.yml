@@ -34,7 +34,17 @@ runs:
           fi
         }
 
+        run_with_timeout() {
+          perl -e 'alarm shift; exec @ARGV' "$@"
+        }
+
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
+
+        : "${NIX_ROOT_BUILD_TIMEOUT_SECONDS:=1800}"
+        if ! [[ "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error ::NIX_ROOT_BUILD_TIMEOUT_SECONDS must be a positive integer, got: $NIX_ROOT_BUILD_TIMEOUT_SECONDS"
+          exit 1
+        fi
 
         case "$GHCI_LANE_SYSTEM" in
           "" | */* | *..*)
@@ -52,7 +62,7 @@ runs:
         jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
           while IFS=$'\t' read -r name attr; do
             started="$SECONDS"
-            out_paths="$(nix build \
+            out_paths="$(run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" nix build \
               --accept-flake-config \
               --print-build-logs \
               --print-out-paths \
