@@ -129,8 +129,8 @@ if ! printf '%s\n' "$deliverables_json" | jq -e --arg mode "$deliverables_mode" 
   exit 1
 fi
 
-IFS=$'\t' read -r rev short_rev branch < <(
-  printf '%s\n' "$deliverables_json" | jq -r '[.rev, .shortRev, .branch] | @tsv'
+IFS=$'\t' read -r rev branch < <(
+  printf '%s\n' "$deliverables_json" | jq -r '[.rev, .branch] | @tsv'
 )
 deployables_json="$(
   printf '%s\n' "$deliverables_json" \
@@ -207,12 +207,12 @@ dispatch_github_deployment() {
   local matrix_file
 
   if [ "$selected_count" = "0" ]; then
-    echo "No deployable hosts changed; not creating a GitHub Deployment."
+    echo "No deployable hosts changed; not dispatching Cachix deploy workflow."
     return 0
   fi
 
   if [ "$create_github_deployment" = "false" ]; then
-    echo "GitHub Deployment creation disabled for $deliverables_mode deliverables."
+    echo "Cachix deploy workflow dispatch disabled for $deliverables_mode deliverables."
     return 0
   fi
 
@@ -220,7 +220,6 @@ dispatch_github_deployment() {
   printf '%s\n' "$matrix" > "$matrix_file"
 
   CACHIX_DEPLOY_REV="$rev" \
-    CACHIX_DEPLOY_SHORT_REV="$short_rev" \
     CACHIX_DEPLOY_BRANCH="$branch" \
     CACHIX_DEPLOY_SOURCE="hercules-ci" \
     CACHIX_DEPLOY_MATRIX_FILE="$matrix_file" \
