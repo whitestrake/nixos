@@ -4,6 +4,14 @@ run-name: "Linux Cache Format Benchmark"
 on:
   workflow_dispatch:
     inputs:
+      candidate_set:
+        description: "Filesystem candidates to benchmark."
+        default: "ext4-xfs"
+        required: true
+        type: choice
+        options:
+          - ext4-xfs
+          - all
       retain_cache:
         description: "Save benchmark cache lanes for warm-restore follow-up runs."
         default: false
@@ -19,6 +27,7 @@ jobs:
     name: "Evaluate x86_64-linux Configurations"
     runs-on: ubuntu-24.04
     outputs:
+      candidates: ${{ steps.matrix.outputs.candidates }}
       x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
     steps:
       - name: Checkout repository
@@ -57,7 +66,20 @@ jobs:
           )"
 
           x86_64_linux="$(jq -c '[.[] | select(.system == "x86_64-linux")]' <<< "$records")"
-          printf 'x86_64_linux=%s\n' "$x86_64_linux" >> "$GITHUB_OUTPUT"
+          case "${{ inputs.candidate_set }}" in
+            ext4-xfs)
+              candidates='["ext4-current","xfs"]'
+              ;;
+            all)
+              candidates='["ext4-current","ext4-tuned","xfs","btrfs"]'
+              ;;
+          esac
+
+          {
+            printf 'candidates=%s\n' "$candidates"
+            printf 'x86_64_linux=%s\n' "$x86_64_linux"
+          } >> "$GITHUB_OUTPUT"
+          echo "LINUX_CACHE_FORMAT_BENCH_CANDIDATES candidates=$candidates"
           echo "LINUX_CACHE_FORMAT_BENCH_MATRIX x86_64-linux=$x86_64_linux"
 
   benchmark:
@@ -69,11 +91,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        candidate:
-          - ext4-current
-          - ext4-tuned
-          - xfs
-          - btrfs
+        candidate: ${{ fromJSON(needs.eval-ghci.outputs.candidates) }}
     env:
       BENCH_CACHE_KEY_PREFIX: bench-nix-root-x86_64-linux-${{ matrix.candidate }}-v1
       BENCH_CANDIDATE: ${{ matrix.candidate }}
