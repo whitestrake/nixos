@@ -16,9 +16,6 @@ jobs:
     name: "GitHub aarch64-darwin HCI Agent"
     runs-on: macos-26
     timeout-minutes: 355
-    concurrency:
-      group: hci-agent-runner-github-aarch64-darwin
-      cancel-in-progress: false
     env:
       HCI_AGENT_HOSTNAME: github-aarch64-darwin
       HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
@@ -76,9 +73,6 @@ jobs:
     name: "GitHub aarch64-linux HCI Agent"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
-    concurrency:
-      group: hci-agent-runner-github-aarch64-linux
-      cancel-in-progress: false
     env:
       GHCRTS: -xr128G
       HCI_AGENT_HOSTNAME: github-aarch64-linux
@@ -137,9 +131,6 @@ jobs:
     name: "Namespace aarch64-darwin Cache Volume HCI Agent"
     runs-on: namespace-profile-aarch64-darwin
     timeout-minutes: 355
-    concurrency:
-      group: hci-agent-runner-namespace-aarch64-darwin
-      cancel-in-progress: false
     env:
       HCI_AGENT_HOSTNAME: namespace-aarch64-darwin
       HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
