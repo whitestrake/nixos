@@ -9,19 +9,13 @@ permissions:
   contents: read
   statuses: read
 
-# GitHub-hosted jobs currently own separate agent cache lanes while we compare
-# HCI-agent and GHCI-writer cache behaviour. Remove the root/pack/save/prune
-# steps and point NIX_ROOT_CACHE_KEY_PREFIX at the GHCI lane when HCI should
-# become cache-consumer only.
+# GitHub-hosted HCI jobs consume the GHCI cache lanes; only GitHub Cache
+# Maintenance writes them.
 jobs:
   github-aarch64-darwin-agent:
     name: "GitHub aarch64-darwin HCI Agent"
     runs-on: macos-26
     timeout-minutes: 355
-    permissions:
-      actions: write
-      contents: read
-      statuses: read
     concurrency:
       group: hci-agent-runner-github-aarch64-darwin
       cancel-in-progress: false
@@ -30,8 +24,8 @@ jobs:
       HCI_AGENT_READY_TARGET_ATTR: .#darwinConfigurations.andred.config.system.build.toplevel
       HCI_AGENT_READY_TARGET_NAME: andred
       HCI_AGENT_SYSTEM: aarch64-darwin
-      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-agent-aarch64-darwin-sparsebundle-v1
-      NIX_ROOT_IMAGE_DIR_NAME: nix-root-agent-aarch64-darwin
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
       NIX_ROOT_IMAGE_SIZE: 30g
       NIX_ROOT_SYSTEM: aarch64-darwin
     steps:
@@ -78,59 +72,10 @@ jobs:
 
           bash .github/scripts/hci-agent-supervisor.sh
 
-      - name: Maintain HCI agent cache roots
-        if: ${{ steps.hci-agent.outputs.job-found != 'false' }}
-        uses: ./.github/actions/hci-root-maintenance
-        with:
-          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
-          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
-          system: ${{ env.HCI_AGENT_SYSTEM }}
-
-      - name: Pack sparsebundle Nix root
-        if: success()
-        uses: ./.github/actions/nix-sparsebundle-pack
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Start cache save timer
-        if: success()
-        shell: bash
-        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Save sparsebundle Nix root cache
-        if: success()
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/nix-root-agent-aarch64-darwin/nix-root.sparsebundle
-          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Report sparsebundle cache save
-        if: success()
-        uses: ./.github/actions/github-cache-save-report
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Prune cache lane
-        if: success()
-        uses: ./.github/actions/github-cache-prune
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
   github-aarch64-linux-agent:
     name: "GitHub aarch64-linux HCI Agent"
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
-    permissions:
-      actions: write
-      contents: read
-      statuses: read
     concurrency:
       group: hci-agent-runner-github-aarch64-linux
       cancel-in-progress: false
@@ -140,8 +85,8 @@ jobs:
       HCI_AGENT_READY_TARGET_ATTR: .#nixosConfigurations.jaeger.config.system.build.toplevel
       HCI_AGENT_READY_TARGET_NAME: jaeger
       HCI_AGENT_SYSTEM: aarch64-linux
-      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-agent-aarch64-linux-ext4-v1
-      NIX_ROOT_IMAGE_DIR_NAME: nix-root-agent-aarch64-linux
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-linux
       NIX_ROOT_IMAGE_SIZE: 8G
       NIX_ROOT_SYSTEM: aarch64-linux
     steps:
@@ -187,51 +132,6 @@ jobs:
           set -euo pipefail
 
           bash .github/scripts/hci-agent-supervisor.sh
-
-      - name: Maintain HCI agent cache roots
-        if: ${{ steps.hci-agent.outputs.job-found != 'false' }}
-        uses: ./.github/actions/hci-root-maintenance
-        with:
-          ready-target-attr: ${{ env.HCI_AGENT_READY_TARGET_ATTR }}
-          ready-target-name: ${{ env.HCI_AGENT_READY_TARGET_NAME }}
-          system: ${{ env.HCI_AGENT_SYSTEM }}
-
-      - name: Pack ext4 Nix root
-        if: success()
-        uses: ./.github/actions/nix-ext4-pack
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Start cache save timer
-        if: success()
-        shell: bash
-        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
-
-      - name: Save ext4 Nix root cache
-        if: success()
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/nix-root-agent-aarch64-linux/nix-root.ext4.zst
-          key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Report ext4 cache save
-        if: success()
-        uses: ./.github/actions/github-cache-save-report
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Prune cache lane
-        if: success()
-        uses: ./.github/actions/github-cache-prune
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
 
   namespace-aarch64-darwin-cache-volume-agent:
     name: "Namespace aarch64-darwin Cache Volume HCI Agent"
