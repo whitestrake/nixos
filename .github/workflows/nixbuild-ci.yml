@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   Builders:
+    if: ${{ vars.NIXBUILD_CI_ENABLED == 'true' }}
     name: "${{ matrix.build.name }} (${{ matrix.build.system }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
