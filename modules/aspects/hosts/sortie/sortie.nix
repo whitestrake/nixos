@@ -15,7 +15,6 @@
       den.aspects.i915-sriov
       den.aspects.dev-tools
       den.aspects.hercules
-      # den.aspects.hercules.namespace-darwin-broker
     ];
 
     nixos = {
