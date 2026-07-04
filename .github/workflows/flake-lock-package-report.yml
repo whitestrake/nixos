@@ -1,0 +1,326 @@
+name: "Flake.lock: package report"
+run-name: "Flake.lock package report"
+
+on:
+  workflow_run:
+    workflows: ["GitHub CI"]
+    types: [completed]
+    branches: [nix-update/flake-lock]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: flake-lock-package-report-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  eval-ghci:
+    name: "Evaluate Configurations"
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      base_sha: ${{ steps.pr.outputs.base_sha }}
+      builds: ${{ steps.matrix.outputs.builds }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Resolve pull request revisions
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh pr view "${{ github.event.workflow_run.head_branch }}" --repo "$GITHUB_REPOSITORY" --json baseRefOid,headRefOid)"
+          base_sha="$(jq -r '.baseRefOid' <<< "$pr_json")"
+          head_sha="$(jq -r '.headRefOid' <<< "$pr_json")"
+
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          if [ "$head_sha" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale workflow run for ${{ github.event.workflow_run.head_sha }}; current branch head is $head_sha."
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Emit build matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.pr.outputs.stale }}" = "true" ]; then
+            echo "builds=[]" >> "$GITHUB_OUTPUT"
+            echo "FLAKE_LOCK_PACKAGE_REPORT_MATRIX builds=[]"
+            exit 0
+          fi
+
+          # shellcheck disable=SC2016
+          records="$(
+            nix eval --impure --json --expr '
+              let
+                flake = builtins.getFlake (toString ./.);
+                mkNixos = name: cfg: {
+                  name = name;
+                  kind = "nixosConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                };
+                mkDarwin = name: cfg: {
+                  name = name;
+                  kind = "darwinConfiguration";
+                  system = cfg.pkgs.stdenv.hostPlatform.system;
+                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                };
+                nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
+                darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
+              in
+                nixos ++ darwin
+            '
+          )"
+
+          builds="$(
+            jq -c '
+              map(
+                if .system == "aarch64-darwin" then
+                  . + {
+                    runner: "macos-26",
+                    cacheKind: "sparsebundle",
+                    cachePrefix: "nix-root-ci-aarch64-darwin-sparsebundle-v1",
+                    imageDir: "nix-root-ci-aarch64-darwin",
+                    imageSize: "30g"
+                  }
+                elif .system == "aarch64-linux" then
+                  . + {
+                    runner: "ubuntu-24.04-arm",
+                    cacheKind: "ext4",
+                    cachePrefix: "nix-root-ci-aarch64-linux-ext4-v1",
+                    imageDir: "nix-root-ci-aarch64-linux",
+                    imageSize: "8G"
+                  }
+                elif .system == "x86_64-linux" then
+                  . + {
+                    runner: "ubuntu-24.04",
+                    cacheKind: "ext4",
+                    cachePrefix: "nix-root-ci-x86_64-linux-ext4-v1",
+                    imageDir: "nix-root-ci-x86_64-linux",
+                    imageSize: "16G"
+                  }
+                else
+                  empty
+                end
+              )
+            ' <<< "$records"
+          )"
+
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
+          echo "FLAKE_LOCK_PACKAGE_REPORT_MATRIX builds=$builds"
+
+  diff:
+    name: "Diff ${{ matrix.build.name }} (${{ matrix.build.system }})"
+    runs-on: ${{ matrix.build.runner }}
+    timeout-minutes: 10
+    needs: eval-ghci
+    if: ${{ needs.eval-ghci.outputs.builds != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJSON(needs.eval-ghci.outputs.builds) }}
+    env:
+      BASE_SHA: ${{ needs.eval-ghci.outputs.base_sha }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.build.cachePrefix }}
+      NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.build.imageDir }}
+      NIX_ROOT_IMAGE_SIZE: ${{ matrix.build.imageSize }}
+      NIX_ROOT_SYSTEM: ${{ matrix.build.system }}
+    steps:
+      - name: Checkout updated branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+
+      - name: Checkout master baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+
+      - name: Restore ext4 Nix root cache
+        if: ${{ matrix.build.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reporter-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Restore sparsebundle Nix root cache
+        if: ${{ matrix.build.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reporter-${{ matrix.build.name }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount ext4 Nix root
+        if: ${{ matrix.build.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        if: ${{ matrix.build.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+
+      - name: Diff closures
+        shell: bash
+        env:
+          CONFIG_ATTR: ${{ matrix.build.attr }}
+          CONFIG_NAME: ${{ matrix.build.name }}
+          CONFIG_SYSTEM: ${{ matrix.build.system }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p diff-report
+
+          write_report() {
+            local status="$1"
+            local message="$2"
+            local diff_file="${3:-/dev/null}"
+
+            jq -n \
+              --arg name "$CONFIG_NAME" \
+              --arg system "$CONFIG_SYSTEM" \
+              --arg status "$status" \
+              --arg message "$message" \
+              --rawfile diff "$diff_file" \
+              '{
+                name: $name,
+                system: $system,
+                status: $status,
+                message: $message,
+                diff: ($diff | split("\n") | map(select(length > 0)))
+              }' > "diff-report/$CONFIG_NAME.json"
+          }
+
+          run_with_timeout() {
+            perl -e 'alarm shift; exec @ARGV' "$@"
+          }
+
+          flake_attr="${CONFIG_ATTR#.#}"
+          base_dir="$GITHUB_WORKSPACE/base"
+          head_dir="$GITHUB_WORKSPACE"
+          old_output="$RUNNER_TEMP/old-paths"
+          new_output="$RUNNER_TEMP/new-paths"
+          diff_output="$RUNNER_TEMP/diff-closures"
+
+          if ! run_with_timeout 240 nix build --accept-flake-config --print-out-paths --no-link "path:$base_dir#$flake_attr" > "$old_output"; then
+            write_report failed "baseline closure did not realise within 4m"
+            exit 0
+          fi
+
+          if ! run_with_timeout 240 nix build --accept-flake-config --print-out-paths --no-link "path:$head_dir#$flake_attr" > "$new_output"; then
+            write_report failed "updated closure did not realise within 4m"
+            exit 0
+          fi
+
+          old_path="$(tail -n 1 "$old_output")"
+          new_path="$(tail -n 1 "$new_output")"
+          if ! nix store diff-closures "$old_path" "$new_path" > "$diff_output"; then
+            write_report failed "closure diff failed"
+            exit 0
+          fi
+
+          write_report success "" "$diff_output"
+
+      - name: Upload diff report
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock-package-report-${{ matrix.build.name }}
+          path: diff-report/${{ matrix.build.name }}.json
+          if-no-files-found: error
+          retention-days: 1
+
+  update-pr:
+    name: "Update PR body"
+    runs-on: ubuntu-24.04
+    needs:
+      - eval-ghci
+      - diff
+    if: ${{ needs.eval-ghci.result == 'success' && needs.diff.result == 'success' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      BASE_SHA: ${{ needs.eval-ghci.outputs.base_sha }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Checkout reporter scripts
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download diff reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: flake-lock-package-report-*
+          path: diff-reports
+          merge-multiple: true
+
+      - name: Update pull request body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh pr view "$HEAD_BRANCH" --repo "$GITHUB_REPOSITORY" --json baseRefOid,body,headRefOid)"
+          current_base="$(jq -r '.baseRefOid' <<< "$pr_json")"
+          current_head="$(jq -r '.headRefOid' <<< "$pr_json")"
+
+          if [ "$current_head" != "$HEAD_SHA" ] || [ "$current_base" != "$BASE_SHA" ]; then
+            echo "Skipping stale package report for $BASE_SHA..$HEAD_SHA; current PR is $current_base..$current_head."
+            exit 0
+          fi
+
+          jq -r '.body // ""' <<< "$pr_json" > current-body.md
+
+          python3 .github/scripts/flake_lock_package_report.py \
+            --diff-dir diff-reports \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --body current-body.md \
+            --output updated-body.md
+
+          # This can overwrite a PR-body edit made after the read above, but only this
+          # generated report block is intended to churn and later CI runs will refresh it.
+          gh pr edit "$HEAD_BRANCH" --repo "$GITHUB_REPOSITORY" --body-file updated-body.md

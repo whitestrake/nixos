@@ -27,9 +27,6 @@ jobs:
           title: "chore: bump flake.lock"
           body: |
             Automated update of `flake.lock`.
-
-            ---
-            _This PR was created automatically by the flake lock update workflow._
           labels: |
             dependencies
             automated
