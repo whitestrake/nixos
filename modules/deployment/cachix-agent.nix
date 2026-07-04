@@ -21,6 +21,7 @@
 
   den.aspects.cachix-agent.nixos = {
     config,
+    lib,
     pkgs,
     ...
   }: {
@@ -30,6 +31,10 @@
       credentialsFile = config.sops.secrets.cachixAgentToken.path;
     };
     den.deploy.health.requiredSystemdUnits = ["cachix-agent.service"];
+
+    systemd.services.nh-clean.unitConfig = lib.mkIf (config.programs.nh.clean.enable or false) {
+      ConditionPathExists = "!/run/cachix-deploy-in-progress";
+    };
 
     # Asynchronous restart changes:
     # 1. Do not restart the cachix-agent service during system switches,
