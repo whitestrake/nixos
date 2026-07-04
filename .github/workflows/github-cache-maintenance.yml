@@ -131,7 +131,7 @@ jobs:
       contents: read
     concurrency:
       group: github-cache-lane-aarch64-linux-${{ needs.prepare.outputs.target_branch }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-linux
@@ -218,7 +218,7 @@ jobs:
       contents: read
     concurrency:
       group: github-cache-lane-x86_64-linux-${{ needs.prepare.outputs.target_branch }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-x86_64-linux-ext4-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-x86_64-linux
@@ -305,7 +305,7 @@ jobs:
       contents: read
     concurrency:
       group: github-cache-lane-aarch64-darwin-${{ needs.prepare.outputs.target_branch }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
