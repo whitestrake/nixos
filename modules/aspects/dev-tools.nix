@@ -13,6 +13,8 @@
         actionlint
         yamlfmt
         mdformat
+        nodejs
+        (python3.withPackages (ps: [ps.pyyaml ps.jsonschema]))
         sops
         age
         nixos-rebuild
