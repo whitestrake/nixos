@@ -3,8 +3,8 @@ set -euo pipefail
 
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
+workflow="${CACHIX_DEPLOY_WORKFLOW:-continuous-deployment.yml}"
 rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
-short_rev="${CACHIX_DEPLOY_SHORT_REV:-}"
 branch="${CACHIX_DEPLOY_BRANCH:-master}"
 source="${CACHIX_DEPLOY_SOURCE:-github-actions}"
 matrix_file="${CACHIX_DEPLOY_MATRIX_FILE:-}"
@@ -13,10 +13,6 @@ deployment_token="${GITHUB_DEPLOYMENT_TOKEN:-${GH_TOKEN:-}}"
 if [ -z "$rev" ]; then
   echo "ERROR: CACHIX_DEPLOY_REV or GITHUB_SHA must be set." >&2
   exit 1
-fi
-
-if [ -z "$short_rev" ]; then
-  short_rev="${rev:0:7}"
 fi
 
 if [ -z "$matrix_file" ]; then
@@ -74,55 +70,55 @@ with_retry() {
   done
 }
 
+if [ "$source" = "hercules-ci" ]; then
+  current_rev="$(
+    with_retry curl -fsS \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $deployment_token" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$github_api_url/repos/$github_repository/git/ref/heads/$branch" \
+      | jq -r '.object.sha // empty'
+  )"
+
+  if [ -z "$current_rev" ]; then
+    echo "ERROR: GitHub branch ref did not include a commit sha for $branch." >&2
+    exit 1
+  fi
+
+  if [ "$rev" != "$current_rev" ]; then
+    echo "Skipping stale HCI deploy:"
+    echo "  deployment sha: $rev"
+    echo "  current $branch: $current_rev"
+    exit 0
+  fi
+fi
+
 payload="$(
   jq -n \
     --arg rev "$rev" \
-    --arg shortRev "$short_rev" \
     --arg branch "$branch" \
     --arg source "$source" \
-    --slurpfile matrix "$matrix_file" \
+    --arg matrix "$(jq -c . "$matrix_file")" \
     '{
-      ref: $rev,
-      task: "deploy:cachix",
-      environment: "production",
-      description: "Cachix deploy requested",
-      auto_merge: false,
-      required_contexts: [],
-      payload: {
-        source: $source,
-        rev: $rev,
-        shortRev: $shortRev,
-        branch: $branch,
-        matrix: $matrix[0]
-      },
-      production_environment: true,
-      transient_environment: false
+      ref: $branch,
+      inputs: {
+        deployment_sha: $rev,
+        deployment_source: $source,
+        matrix: $matrix
+      }
     }'
 )"
 
-echo "Creating GitHub Deployment for changed hosts:"
+echo "Dispatching Cachix deploy workflow for changed hosts:"
 jq -r '.include[] | "  " + .host + " -> " + .storePath' "$matrix_file"
 
-response="$(
-  with_retry curl -fsS \
-    -X POST \
-    -H "Accept: application/vnd.github+json" \
-    -H "Authorization: Bearer $deployment_token" \
-    -H "Content-Type: application/json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    --data "$payload" \
-    "$github_api_url/repos/$github_repository/deployments"
-)"
+with_retry curl -fsS \
+  -X POST \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $deployment_token" \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  --data "$payload" \
+  "$github_api_url/repos/$github_repository/actions/workflows/$workflow/dispatches"
 
-deployment_id="$(jq -r '.id // empty' <<< "$response")"
-if [ -z "$deployment_id" ]; then
-  echo "ERROR: GitHub deployment response did not include an id." >&2
-  jq . <<< "$response" >&2 || printf '%s\n' "$response" >&2
-  exit 1
-fi
-
-if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
-fi
-
-echo "Created GitHub Deployment $deployment_id."
+echo "Dispatched $workflow at $branch for $rev."

@@ -94,7 +94,7 @@
     };
 
     # Deployable records are the subset used for Cachix Deploy state, rollback
-    # pins, and GitHub Deployment payloads.
+    # pins, and workflow dispatch payloads.
     mkDeployableStateItem = pinNames: name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
     in

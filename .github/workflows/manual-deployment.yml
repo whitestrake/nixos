@@ -102,7 +102,6 @@ jobs:
 
           gh workflow run continuous-deployment.yml \
             --ref "$CACHIX_DEPLOY_BRANCH" \
-            -f deployment_environment="production" \
             -f deployment_sha="$CACHIX_DEPLOY_REV" \
             -f deployment_source="github-actions" \
             -f matrix="$matrix"

@@ -730,11 +730,12 @@ cleanup() {
 wait_for_job_id() {
   local revision="$1"
   local deadline="$2"
-  local job_discovery_deadline="$3"
+  local job_discovery_deadline
   local jobs_json job_id
 
   HCI_AGENT_JOB_NAME="$(hci_job_name)" || return 1
   export HCI_AGENT_JOB_NAME
+  job_discovery_deadline=$((SECONDS + HCI_AGENT_JOB_DISCOVERY_SECONDS))
 
   while [ "$SECONDS" -lt "$deadline" ] && [ "$SECONDS" -lt "$job_discovery_deadline" ]; do
     if job_id="$(find_hci_job_id_for_revision_status "$revision")" && [ -n "$job_id" ]; then
@@ -890,7 +891,7 @@ monitor_ready_targets() {
 }
 
 main() {
-  local deadline job_discovery_deadline job_id wait_status
+  local deadline job_id wait_status
 
   require_env HCI_AGENT_SYSTEM
   require_env GITHUB_SHA
@@ -906,7 +907,6 @@ main() {
 
   HCI_API_TOKEN="$(extract_hci_token "$HERCULES_CI_CREDENTIALS_JSON")"
   deadline=$((SECONDS + HCI_AGENT_TIMEOUT_SECONDS))
-  job_discovery_deadline=$((SECONDS + HCI_AGENT_JOB_DISCOVERY_SECONDS))
 
   set_agent_hostname
   write_agent_files
@@ -924,7 +924,7 @@ main() {
   fi
 
   wait_status=0
-  job_id="$(wait_for_job_id "$GITHUB_SHA" "$deadline" "$job_discovery_deadline")" || wait_status="$?"
+  job_id="$(wait_for_job_id "$GITHUB_SHA" "$deadline")" || wait_status="$?"
   case "$wait_status" in
     0)
       emit_job_found_output true
