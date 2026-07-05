@@ -262,7 +262,7 @@ jobs:
           write_report success "" "$diff_output"
 
       - name: Upload diff report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flake-lock-package-report-${{ matrix.build.name }}
           path: diff-report/${{ matrix.build.name }}.json
@@ -291,7 +291,7 @@ jobs:
           persist-credentials: false
 
       - name: Download diff reports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: flake-lock-package-report-*
           path: diff-reports
