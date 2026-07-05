@@ -170,14 +170,42 @@ jobs:
           set -euo pipefail
 
           started="$SECONDS"
-          nix build \
-            --accept-flake-config \
-            --print-build-logs \
-            --print-out-paths \
-            --no-link \
-            "${{ matrix.build.attr }}"
+          out_paths="$(
+            nix build \
+              --accept-flake-config \
+              --print-build-logs \
+              --print-out-paths \
+              --no-link \
+              "${{ matrix.build.attr }}"
+          )"
+          store_path="${out_paths##*$'\n'}"
           duration="$((SECONDS - started))"
-          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} durationSeconds=$duration"
+
+          mkdir -p "$RUNNER_TEMP/ghci-toplevel"
+          jq -n \
+            --arg kind "${{ matrix.build.kind }}" \
+            --arg name "${{ matrix.build.name }}" \
+            --arg system "$NIX_ROOT_SYSTEM" \
+            --arg attr "${{ matrix.build.attr }}" \
+            --arg storePath "$store_path" \
+            '{
+              kind: $kind,
+              name: $name,
+              system: $system,
+              attr: $attr,
+              storePath: $storePath
+            }' > "$RUNNER_TEMP/ghci-toplevel/record.json"
+
+          echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} outPath=$store_path durationSeconds=$duration"
+
+      - name: Upload top-level output artifact
+        if: ${{ success() && github.ref == 'refs/heads/master' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghci-toplevel-${{ matrix.build.system }}-${{ matrix.build.kind }}-${{ matrix.build.name }}
+          path: ${{ runner.temp }}/ghci-toplevel/record.json
+          retention-days: 1
+          compression-level: 0
 
       - name: Report Nix usage
         if: ${{ always() && matrix.build.cacheKind == 'ext4' }}
