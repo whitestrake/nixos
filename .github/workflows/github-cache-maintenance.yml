@@ -11,10 +11,21 @@ on:
 permissions:
   contents: read
 
+env:
+  NIX_ROOT_CACHE_PREFIX_AARCH64_LINUX: nix-root-ci-aarch64-linux-ext4-v1
+  NIX_ROOT_CACHE_PREFIX_X86_64_LINUX: nix-root-ci-x86_64-linux-ext4-v1
+  NIX_ROOT_CACHE_PREFIX_AARCH64_DARWIN: nix-root-ci-aarch64-darwin-sparsebundle-v1
+  NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_LINUX: nix-root-ci-fingerprint-aarch64-linux-ext4-v1
+  NIX_ROOT_CACHE_MARKER_PREFIX_X86_64_LINUX: nix-root-ci-fingerprint-x86_64-linux-ext4-v1
+  NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_DARWIN: nix-root-ci-fingerprint-aarch64-darwin-sparsebundle-v1
+
 jobs:
   prepare:
     name: "Prepare Cache Maintenance"
     runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
       target_ref: ${{ steps.gate.outputs.target_ref }}
@@ -22,6 +33,18 @@ jobs:
       aarch64_darwin: ${{ steps.matrix.outputs.aarch64_darwin }}
       aarch64_linux: ${{ steps.matrix.outputs.aarch64_linux }}
       x86_64_linux: ${{ steps.matrix.outputs.x86_64_linux }}
+      aarch64_darwin_fingerprint: ${{ steps.matrix.outputs.aarch64_darwin_fingerprint }}
+      aarch64_linux_fingerprint: ${{ steps.matrix.outputs.aarch64_linux_fingerprint }}
+      x86_64_linux_fingerprint: ${{ steps.matrix.outputs.x86_64_linux_fingerprint }}
+      aarch64_darwin_marker_key: ${{ steps.matrix.outputs.aarch64_darwin_marker_key }}
+      aarch64_linux_marker_key: ${{ steps.matrix.outputs.aarch64_linux_marker_key }}
+      x86_64_linux_marker_key: ${{ steps.matrix.outputs.x86_64_linux_marker_key }}
+      aarch64_darwin_marker_exists: ${{ steps.matrix.outputs.aarch64_darwin_marker_exists }}
+      aarch64_linux_marker_exists: ${{ steps.matrix.outputs.aarch64_linux_marker_exists }}
+      x86_64_linux_marker_exists: ${{ steps.matrix.outputs.x86_64_linux_marker_exists }}
+      aarch64_darwin_should_refresh: ${{ steps.matrix.outputs.aarch64_darwin_should_refresh }}
+      aarch64_linux_should_refresh: ${{ steps.matrix.outputs.aarch64_linux_should_refresh }}
+      x86_64_linux_should_refresh: ${{ steps.matrix.outputs.x86_64_linux_should_refresh }}
     steps:
       - name: Select target ref
         id: gate
@@ -79,6 +102,9 @@ jobs:
         if: ${{ steps.gate.outputs.should_run == 'true' }}
         id: matrix
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -92,12 +118,14 @@ jobs:
                   kind = "nixosConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
                   attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                  storePath = toString cfg.config.system.build.toplevel;
                 };
                 mkDarwin = name: cfg: {
                   name = name;
                   kind = "darwinConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
                   attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                  storePath = toString cfg.config.system.build.toplevel;
                 };
                 nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
                 darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
@@ -109,6 +137,109 @@ jobs:
           aarch64_darwin="$(jq -c '[.[] | select(.system == "aarch64-darwin")]' <<< "$records")"
           aarch64_linux="$(jq -c '[.[] | select(.system == "aarch64-linux")]' <<< "$records")"
           x86_64_linux="$(jq -c '[.[] | select(.system == "x86_64-linux")]' <<< "$records")"
+
+          cache_list_failed=false
+          if ! cache_keys="$(
+            gh cache list \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$GITHUB_REF" \
+              --limit 100 \
+              --json key \
+              --jq '.[].key'
+          )"; then
+            cache_list_failed=true
+            cache_keys=""
+            echo "::warning title=GitHub cache list failed::Refreshing all non-empty cache lanes because cache state could not be queried."
+          fi
+
+          fingerprint_lane() {
+            local system="$1"
+            jq -r --arg system "$system" '
+              .[]
+              | select(.system == $system)
+              | [.kind, .name, .storePath]
+              | @tsv
+            ' <<< "$records" | sort | sha256sum | cut -d " " -f1
+          }
+
+          has_cache_prefix() {
+            local prefix="$1"
+            local key
+            while IFS= read -r key; do
+              [[ "$key" == "$prefix"-* ]] && return 0
+            done <<< "$cache_keys"
+            return 1
+          }
+
+          has_cache_key() {
+            local expected="$1"
+            local key
+            while IFS= read -r key; do
+              [ "$key" = "$expected" ] && return 0
+            done <<< "$cache_keys"
+            return 1
+          }
+
+          bool_from_status() {
+            if "$@"; then
+              printf 'true'
+            else
+              printf 'false'
+            fi
+          }
+
+          emit_lane_decision() {
+            local output_prefix="$1"
+            local system="$2"
+            local matrix="$3"
+            local real_prefix="$4"
+            local marker_prefix="$5"
+            local fingerprint marker_key real_exists marker_exists force_refresh should_refresh
+
+            fingerprint="$(fingerprint_lane "$system")"
+            marker_key="$marker_prefix-$fingerprint"
+            real_exists="$(bool_from_status has_cache_prefix "$real_prefix")"
+            marker_exists="$(bool_from_status has_cache_key "$marker_key")"
+            force_refresh=false
+            should_refresh=false
+
+            if [ "$matrix" != "[]" ]; then
+              if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+                force_refresh=true
+                should_refresh=true
+              elif [ "$cache_list_failed" = "true" ] || [ "$real_exists" != "true" ] || [ "$marker_exists" != "true" ]; then
+                should_refresh=true
+              fi
+            fi
+
+            {
+              printf '%s_fingerprint=%s\n' "$output_prefix" "$fingerprint"
+              printf '%s_marker_key=%s\n' "$output_prefix" "$marker_key"
+              printf '%s_marker_exists=%s\n' "$output_prefix" "$marker_exists"
+              printf '%s_should_refresh=%s\n' "$output_prefix" "$should_refresh"
+            } >> "$GITHUB_OUTPUT"
+
+            echo "NIX_ROOT_CACHE_REFRESH_DECISION system=$system realCache=$real_exists marker=$marker_exists force=$force_refresh refresh=$should_refresh fingerprint=$fingerprint"
+          }
+
+          emit_lane_decision \
+            aarch64_linux \
+            aarch64-linux \
+            "$aarch64_linux" \
+            "$NIX_ROOT_CACHE_PREFIX_AARCH64_LINUX" \
+            "$NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_LINUX"
+          emit_lane_decision \
+            x86_64_linux \
+            x86_64-linux \
+            "$x86_64_linux" \
+            "$NIX_ROOT_CACHE_PREFIX_X86_64_LINUX" \
+            "$NIX_ROOT_CACHE_MARKER_PREFIX_X86_64_LINUX"
+          emit_lane_decision \
+            aarch64_darwin \
+            aarch64-darwin \
+            "$aarch64_darwin" \
+            "$NIX_ROOT_CACHE_PREFIX_AARCH64_DARWIN" \
+            "$NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_DARWIN"
 
           {
             printf 'aarch64_darwin=%s\n' "$aarch64_darwin"
@@ -125,7 +256,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 355
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_linux != '[]' }}
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_linux != '[]' && needs.prepare.outputs.aarch64_linux_should_refresh == 'true' }}
     permissions:
       actions: write
       contents: read
@@ -207,12 +338,42 @@ jobs:
           keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
+      - name: Write cache marker
+        if: ${{ success() && needs.prepare.outputs.aarch64_linux_marker_exists != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker_dir="${RUNNER_TEMP}/nix-root-cache-markers/${NIX_ROOT_SYSTEM}"
+          mkdir -p "$marker_dir"
+          printf '%s\n' "${{ needs.prepare.outputs.aarch64_linux_fingerprint }}" > "$marker_dir/fingerprint.txt"
+
+      - name: Save cache marker
+        id: save-cache-marker
+        if: ${{ success() && needs.prepare.outputs.aarch64_linux_marker_exists != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-cache-markers/aarch64-linux
+          key: ${{ needs.prepare.outputs.aarch64_linux_marker_key }}
+
+      - name: Prune cache marker lane
+        if: ${{ success() && (needs.prepare.outputs.aarch64_linux_marker_exists == 'true' || steps.save-cache-marker.outcome == 'success') }}
+        continue-on-error: true
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_LINUX }}
+          keep-cache-key: ${{ needs.prepare.outputs.aarch64_linux_marker_key }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
   x86_64-linux:
     name: "Cache x86_64-linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.x86_64_linux != '[]' }}
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.x86_64_linux != '[]' && needs.prepare.outputs.x86_64_linux_should_refresh == 'true' }}
     permissions:
       actions: write
       contents: read
@@ -294,12 +455,42 @@ jobs:
           keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
+      - name: Write cache marker
+        if: ${{ success() && needs.prepare.outputs.x86_64_linux_marker_exists != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker_dir="${RUNNER_TEMP}/nix-root-cache-markers/${NIX_ROOT_SYSTEM}"
+          mkdir -p "$marker_dir"
+          printf '%s\n' "${{ needs.prepare.outputs.x86_64_linux_fingerprint }}" > "$marker_dir/fingerprint.txt"
+
+      - name: Save cache marker
+        id: save-cache-marker
+        if: ${{ success() && needs.prepare.outputs.x86_64_linux_marker_exists != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-cache-markers/x86_64-linux
+          key: ${{ needs.prepare.outputs.x86_64_linux_marker_key }}
+
+      - name: Prune cache marker lane
+        if: ${{ success() && (needs.prepare.outputs.x86_64_linux_marker_exists == 'true' || steps.save-cache-marker.outcome == 'success') }}
+        continue-on-error: true
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_MARKER_PREFIX_X86_64_LINUX }}
+          keep-cache-key: ${{ needs.prepare.outputs.x86_64_linux_marker_key }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
   aarch64-darwin:
     name: "Cache aarch64-darwin"
     runs-on: macos-26
     timeout-minutes: 355
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_darwin != '[]' }}
+    if: ${{ needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.aarch64_darwin != '[]' && needs.prepare.outputs.aarch64_darwin_should_refresh == 'true' }}
     permissions:
       actions: write
       contents: read
@@ -379,4 +570,34 @@ jobs:
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
           keep-cache-key: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Write cache marker
+        if: ${{ success() && needs.prepare.outputs.aarch64_darwin_marker_exists != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          marker_dir="${RUNNER_TEMP}/nix-root-cache-markers/${NIX_ROOT_SYSTEM}"
+          mkdir -p "$marker_dir"
+          printf '%s\n' "${{ needs.prepare.outputs.aarch64_darwin_fingerprint }}" > "$marker_dir/fingerprint.txt"
+
+      - name: Save cache marker
+        id: save-cache-marker
+        if: ${{ success() && needs.prepare.outputs.aarch64_darwin_marker_exists != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/nix-root-cache-markers/aarch64-darwin
+          key: ${{ needs.prepare.outputs.aarch64_darwin_marker_key }}
+
+      - name: Prune cache marker lane
+        if: ${{ success() && (needs.prepare.outputs.aarch64_darwin_marker_exists == 'true' || steps.save-cache-marker.outcome == 'success') }}
+        continue-on-error: true
+        uses: ./.github/actions/github-cache-prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_MARKER_PREFIX_AARCH64_DARWIN }}
+          keep-cache-key: ${{ needs.prepare.outputs.aarch64_darwin_marker_key }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
