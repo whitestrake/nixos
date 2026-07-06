@@ -82,6 +82,14 @@ in {
       deployPin = "deployed-host-${name}";
     };
 
+    mkBuiltJob = name: _cfg: {
+      host = name;
+      jobName = mkConfigurationJobName "nixosConfiguration" name;
+      toplevelAttrPath = ["nixosConfigurations" name "config" "system" "build" "toplevel"];
+      buildPin = "built-host-${name}";
+    };
+
+    builtJobs = lib.mapAttrsToList mkBuiltJob (self.nixosConfigurations or {});
     deployableJobs = lib.mapAttrsToList mkDeployableJob deployableConfigurations;
 
     mkDeliverablesEffect = {
@@ -109,6 +117,7 @@ in {
           export HCI_DEPLOYMENT_REV=${escapeShellArg config.repo.rev}
           export HCI_DEPLOYMENT_SHORT_REV=${escapeShellArg config.repo.shortRev}
           export HCI_REQUIRED_JOB_NAMES=${escapeShellArg (builtins.toJSON requiredJobNames)}
+          export HCI_BUILT_JOBS=${escapeShellArg (builtins.toJSON builtJobs)}
           export HCI_DEPLOYABLE_JOBS=${escapeShellArg (builtins.toJSON deployableJobs)}
           export CACHIX_PIN_FUNCTIONS_SCRIPT="${./scripts/cachix-pin-functions.sh}"
           export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (

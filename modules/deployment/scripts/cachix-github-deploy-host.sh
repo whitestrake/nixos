@@ -9,7 +9,7 @@ rollback_script="${DEPLOY_ROLLBACK_SCRIPT:-}"
 deploy_plan_file="${CACHIX_DEPLOY_PLAN_FILE:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
 output_dir="${CACHIX_DEPLOY_OUTPUT_DIR:-$PWD}"
-deployed_pin_keep_revisions="${CACHIX_DEPLOYED_PIN_KEEP_REVISIONS:-10}"
+deployed_pin_keep_revisions="${CACHIX_DEPLOYED_PIN_KEEP_REVISIONS:-3}"
 
 # shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
 source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/cachix-pin-functions.sh}"

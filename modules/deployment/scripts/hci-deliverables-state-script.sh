@@ -7,7 +7,9 @@ rev="${HCI_DEPLOYMENT_REV:-}"
 branch="${HCI_DEPLOYMENT_BRANCH:-master}"
 hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
 required_job_names="${HCI_REQUIRED_JOB_NAMES:-[]}"
+built_jobs="${HCI_BUILT_JOBS:-[]}"
 deployable_jobs="${HCI_DEPLOYABLE_JOBS:-[]}"
+built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
 create_github_deployment="${HCI_CREATE_GITHUB_DEPLOYMENT:-true}"
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
@@ -64,6 +66,19 @@ if ! jq -e '
   type == "array"
   and all(.[]; (
     (.host | type == "string" and length > 0)
+    and (.jobName | type == "string" and length > 0)
+    and (.toplevelAttrPath | type == "array" and length > 0)
+    and (.buildPin | type == "string" and startswith("built-host-"))
+  ))
+' <<< "$built_jobs" >/dev/null; then
+  echo "ERROR: HCI_BUILT_JOBS is malformed." >&2
+  exit 1
+fi
+
+if ! jq -e '
+  type == "array"
+  and all(.[]; (
+    (.host | type == "string" and length > 0)
     and (.system | type == "string" and length > 0)
     and (.jobName | type == "string" and length > 0)
     and (.toplevelAttrPath | type == "array" and length > 0)
@@ -72,6 +87,11 @@ if ! jq -e '
   ))
 ' <<< "$deployable_jobs" >/dev/null; then
   echo "ERROR: HCI_DEPLOYABLE_JOBS is malformed." >&2
+  exit 1
+fi
+
+if ! [[ "$built_pin_keep_revisions" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: CACHIX_BUILT_PIN_KEEP_REVISIONS must be a positive integer." >&2
   exit 1
 fi
 
@@ -245,6 +265,29 @@ assemble_deploy_info() {
   jq -s -c 'sort_by(.host)' "$out"
 }
 
+assemble_built_info() {
+  local account_id="$1"
+  local jobs="$2"
+  local record job_id evaluation toplevel_drv store_path
+  local out="$work_dir/built-info.ndjson"
+
+  : > "$out"
+  while IFS= read -r record; do
+    job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
+    evaluation="$(fetch_evaluation "$job_id")"
+    toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
+    store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
+
+    jq -c \
+      --argjson record "$record" \
+      --arg storePath "$store_path" \
+      '$record + {storePath: $storePath}' \
+      <<< '{}' >> "$out"
+  done < <(jq -c '.[]' <<< "$built_jobs")
+
+  jq -s -c 'sort_by(.host)' "$out"
+}
+
 dispatch_github_deployment() {
   local matrix="$1"
   local selected_count="$2"
@@ -278,8 +321,33 @@ project="$(fetch_project)"
 account_id="$(jq -er '.owner.id' <<< "$project")"
 jobs="$(fetch_jobs)"
 assert_required_jobs_green "$jobs"
+built_info="$(assemble_built_info "$account_id" "$jobs")"
 deploy_info="$(assemble_deploy_info "$account_id" "$jobs")"
 pins="$(cachix_fetch_pins "$cache_name")"
+
+while IFS=$'\t' read -r host build_pin store_path; do
+  previous_built="$(cachix_pin_path "$pins" "$build_pin")"
+  if [ "$previous_built" = "$store_path" ]; then
+    echo "Built state already pinned for $host:"
+    echo "  $build_pin -> $store_path"
+  else
+    echo "Built state differs for $host:"
+    echo "  previous: ${previous_built:-[none]}"
+    echo "  current:  $store_path"
+    echo "Pinning built state: $build_pin -> $store_path"
+    cachix_pin_store_path "$cache_name" "$build_pin" "$store_path" "$built_pin_keep_revisions"
+  fi
+done < <(
+  jq -r '
+    .[]
+    | [
+        .host,
+        .buildPin,
+        .storePath
+      ]
+    | @tsv
+  ' <<< "$built_info"
+)
 
 deployment_matrix="$(
   jq -c -n \
