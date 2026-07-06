@@ -83,10 +83,17 @@
         ];
       };
 
-      nixos = {lib, ...}: {
+      nixos = {
+        config,
+        lib,
+        ...
+      }: {
         system.stateVersion = lib.mkDefault "24.05";
         time.timeZone = lib.mkDefault "Australia/Brisbane";
         networking.domain = lib.mkDefault "whitestrake.net";
+
+        # Avoid the NixOS warning about boot.zfs.forceImportRoot defaulting to true.
+        boot.zfs.forceImportRoot = lib.mkIf config.boot.zfs.enabled (lib.mkDefault false);
 
         # Allow running non-Nix dynamic binaries.
         programs.nix-ld.enable = true;

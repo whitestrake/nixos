@@ -33,7 +33,6 @@
       boot.loader.systemd-boot.configurationLimit = 20;
       boot.loader.efi.canTouchEfiVariables = true;
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
-      boot.zfs.forceImportRoot = false;
       boot.kernel.sysctl = {
         "vm.swappiness" = 10;
       };
