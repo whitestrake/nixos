@@ -93,21 +93,12 @@ hci_api_get() {
   local api_base_url="${HERCULES_CI_API_BASE_URL:-https://hercules-ci.com}"
   local api_url="${HCI_API_URL:-${api_base_url%/}/api/v1}"
 
-  if [ -n "${herculesCIHeaders:-}" ] && [ -r "$herculesCIHeaders" ]; then
-    curl -fsS -H @"$herculesCIHeaders" "${api_url%/}$path"
+  if [ -n "$token" ]; then
+    curl -fsS -H "Authorization: Bearer $token" "${api_url%/}$path"
     return
   fi
 
-  [ "${CI_GATE_HCI_ALLOW_ENV_TOKEN:-false}" = "true" ] || {
-    echo "herculesCIHeaders is required for HCI lookup; set CI_GATE_HCI_ALLOW_ENV_TOKEN=true for local env-token fallback" >&2
-    return 1
-  }
-  [ -n "$token" ] || {
-    echo "no HCI API token available" >&2
-    return 1
-  }
-
-  curl -fsS -H "Authorization: Bearer $token" "${api_url%/}$path"
+  curl -fsS "${api_url%/}$path"
 }
 
 urlencode() {
