@@ -248,47 +248,73 @@ deployable_for_job_name() {
     <<< "$deployable_jobs"
 }
 
+assemble_config_record() {
+  local account_id="$1"
+  local jobs="$2"
+  local record="$3"
+  local out="$4"
+  local deployable job_id evaluation toplevel_drv rollback_drv store_path rollback_script
+
+  deployable="$(deployable_for_job_name "$(jq -r '.jobName' <<< "$record")")"
+  job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
+  evaluation="$(fetch_evaluation "$job_id")"
+  toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
+  store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
+
+  rollback_script=""
+  if jq -e 'has("rollbackAttrPath")' <<< "$deployable" >/dev/null; then
+    rollback_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.rollbackAttrPath' <<< "$deployable")")"
+    rollback_script="$(output_for_derivation "$account_id" "$job_id" "$rollback_drv")"
+  fi
+
+  jq -c \
+    --argjson record "$record" \
+    --argjson deployable "$deployable" \
+    --arg storePath "$store_path" \
+    --arg rollbackScript "$rollback_script" \
+    '
+      $record
+      + {storePath: $storePath}
+      + if $rollbackScript == "" then
+          {}
+        else
+          ($deployable | {system, deployPin})
+          + {rollbackScript: $rollbackScript}
+        end
+    ' \
+    <<< '{}' > "$out"
+}
+
 assemble_config_records() {
   local account_id="$1"
   local jobs="$2"
   local records="$3"
-  local record deployable job_id evaluation toplevel_drv rollback_drv store_path rollback_script
-  local out="$work_dir/config-records.ndjson"
+  local record out pid status=0
+  local -a pids=()
 
-  echo "Resolving outputs for $(jq -r 'length' <<< "$records") configuration jobs..." >&2
-  : > "$out"
+  echo "Resolving outputs for $(jq -r 'length' <<< "$records") configuration jobs in parallel..." >&2
   while IFS= read -r record; do
-    deployable="$(deployable_for_job_name "$(jq -r '.jobName' <<< "$record")")"
-    job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
-    evaluation="$(fetch_evaluation "$job_id")"
-    toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
-    store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
-
-    rollback_script=""
-    if jq -e 'has("rollbackAttrPath")' <<< "$deployable" >/dev/null; then
-      rollback_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.rollbackAttrPath' <<< "$deployable")")"
-      rollback_script="$(output_for_derivation "$account_id" "$job_id" "$rollback_drv")"
-    fi
-
-    jq -c \
-      --argjson record "$record" \
-      --argjson deployable "$deployable" \
-      --arg storePath "$store_path" \
-      --arg rollbackScript "$rollback_script" \
-      '
-        $record
-        + {storePath: $storePath}
-        + if $rollbackScript == "" then
-            {}
-          else
-            ($deployable | {system, deployPin})
-            + {rollbackScript: $rollbackScript}
-          end
-      ' \
-      <<< '{}' >> "$out"
+    out="$work_dir/config-record-${#pids[@]}.json"
+    assemble_config_record "$account_id" "$jobs" "$record" "$out" &
+    pids+=("$!")
   done < <(jq -c '.[]' <<< "$records")
 
-  jq -s -c 'sort_by(.host)' "$out"
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then
+      status=1
+    fi
+  done
+
+  if [ "$status" -ne 0 ]; then
+    return "$status"
+  fi
+
+  if [ "${#pids[@]}" -eq 0 ]; then
+    echo "[]"
+    return 0
+  fi
+
+  jq -s -c 'sort_by(.host)' "$work_dir"/config-record-*.json
 }
 
 dispatch_github_deployment() {
