@@ -239,51 +239,54 @@ output_for_derivation() {
     | jq -er '.outputs[] | select(.outputName == "out") | .outputPath'
 }
 
-assemble_deploy_info() {
-  local account_id="$1"
-  local jobs="$2"
-  local record job_id evaluation toplevel_drv rollback_drv store_path rollback_script
-  local out="$work_dir/deploy-info.ndjson"
+deployable_for_job_name() {
+  local job_name="$1"
 
-  : > "$out"
-  while IFS= read -r record; do
-    job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
-    evaluation="$(fetch_evaluation "$job_id")"
-    toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
-    rollback_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.rollbackAttrPath' <<< "$record")")"
-    store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
-    rollback_script="$(output_for_derivation "$account_id" "$job_id" "$rollback_drv")"
-
-    jq -c \
-      --argjson record "$record" \
-      --arg storePath "$store_path" \
-      --arg rollbackScript "$rollback_script" \
-      '$record + {storePath: $storePath, rollbackScript: $rollbackScript}' \
-      <<< '{}' >> "$out"
-  done < <(jq -c '.[]' <<< "$deployable_jobs")
-
-  jq -s -c 'sort_by(.host)' "$out"
+  jq -c \
+    --arg jobName "$job_name" \
+    'map(select(.jobName == $jobName)) | first // {}' \
+    <<< "$deployable_jobs"
 }
 
-assemble_built_info() {
+assemble_config_records() {
   local account_id="$1"
   local jobs="$2"
-  local record job_id evaluation toplevel_drv store_path
-  local out="$work_dir/built-info.ndjson"
+  local records="$3"
+  local record deployable job_id evaluation toplevel_drv rollback_drv store_path rollback_script
+  local out="$work_dir/config-records.ndjson"
 
+  echo "Resolving outputs for $(jq -r 'length' <<< "$records") configuration jobs..." >&2
   : > "$out"
   while IFS= read -r record; do
+    deployable="$(deployable_for_job_name "$(jq -r '.jobName' <<< "$record")")"
     job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
     evaluation="$(fetch_evaluation "$job_id")"
     toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
     store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
 
+    rollback_script=""
+    if jq -e 'has("rollbackAttrPath")' <<< "$deployable" >/dev/null; then
+      rollback_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.rollbackAttrPath' <<< "$deployable")")"
+      rollback_script="$(output_for_derivation "$account_id" "$job_id" "$rollback_drv")"
+    fi
+
     jq -c \
       --argjson record "$record" \
+      --argjson deployable "$deployable" \
       --arg storePath "$store_path" \
-      '$record + {storePath: $storePath}' \
+      --arg rollbackScript "$rollback_script" \
+      '
+        $record
+        + {storePath: $storePath}
+        + if $rollbackScript == "" then
+            {}
+          else
+            ($deployable | {system, deployPin})
+            + {rollbackScript: $rollbackScript}
+          end
+      ' \
       <<< '{}' >> "$out"
-  done < <(jq -c '.[]' <<< "$built_jobs")
+  done < <(jq -c '.[]' <<< "$records")
 
   jq -s -c 'sort_by(.host)' "$out"
 }
@@ -317,16 +320,29 @@ dispatch_github_deployment() {
     bash "$create_github_deployment_script"
 }
 
+echo "Fetching HCI project..."
 project="$(fetch_project)"
 account_id="$(jq -er '.owner.id' <<< "$project")"
+
+echo "Fetching HCI jobs for $rev..."
 jobs="$(fetch_jobs)"
+
+echo "Checking required HCI jobs..."
 assert_required_jobs_green "$jobs"
-deploy_info="$(assemble_deploy_info "$account_id" "$jobs")"
+
+if [ "$mode" = "production" ]; then
+  records_to_resolve="$built_jobs"
+else
+  records_to_resolve="$deployable_jobs"
+fi
+
+config_records="$(assemble_config_records "$account_id" "$jobs" "$records_to_resolve")"
+
+echo "Fetching Cachix pins..."
 pins="$(cachix_fetch_pins "$cache_name")"
 
 if [ "$mode" = "production" ]; then
-  built_info="$(assemble_built_info "$account_id" "$jobs")"
-
+  echo "Pinning built-host paths..."
   while IFS=$'\t' read -r host build_pin store_path; do
     previous_built="$(cachix_pin_path "$pins" "$build_pin")"
     if [ "$previous_built" = "$store_path" ]; then
@@ -348,13 +364,13 @@ if [ "$mode" = "production" ]; then
           .storePath
         ]
       | @tsv
-    ' <<< "$built_info"
+    ' <<< "$config_records"
   )
 fi
 
 deployment_matrix="$(
   jq -c -n \
-    --argjson deployInfo "$deploy_info" \
+    --argjson records "$config_records" \
     --argjson pins "$pins" \
     '
       def pinPath($name):
@@ -362,8 +378,8 @@ deployment_matrix="$(
 
       {
         include: (
-          $deployInfo
-          | map(select(pinPath(.deployPin) != .storePath))
+          $records
+          | map(select(has("rollbackScript") and pinPath(.deployPin) != .storePath))
           | map({host, system, storePath, rollbackScript})
           | sort_by(.host)
         )
