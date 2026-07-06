@@ -83,11 +83,20 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         run: |
           nix fmt
+      - name: Create GitHub App token
+        id: app-token
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       - name: Create Pull Request
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           branch: nix-update/${{ matrix.package }}
           title: "chore(pkgs): update ${{ matrix.package }}${{ steps.update.outputs.title_suffix }}"
           body: |
