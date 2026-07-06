@@ -9,7 +9,7 @@ hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
 required_job_names="${HCI_REQUIRED_JOB_NAMES:-[]}"
 built_jobs="${HCI_BUILT_JOBS:-[]}"
 deployable_jobs="${HCI_DEPLOYABLE_JOBS:-[]}"
-built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
+built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-3}"
 create_github_deployment="${HCI_CREATE_GITHUB_DEPLOYMENT:-true}"
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
@@ -131,7 +131,7 @@ fetch_project() {
 
 fetch_jobs_page() {
   local offset="${1:-}"
-  local path="/site/$hci_site/account/$hci_account/project/$hci_repo/jobs?rev=$rev&handler=OnPush&limit=100"
+  local path="/site/$hci_site/account/$hci_account/project/$hci_repo/jobs?rev=$rev&handler=OnPush"
 
   if [ -n "$offset" ]; then
     path="$path&offsetIndex=$offset"
@@ -321,33 +321,36 @@ project="$(fetch_project)"
 account_id="$(jq -er '.owner.id' <<< "$project")"
 jobs="$(fetch_jobs)"
 assert_required_jobs_green "$jobs"
-built_info="$(assemble_built_info "$account_id" "$jobs")"
 deploy_info="$(assemble_deploy_info "$account_id" "$jobs")"
 pins="$(cachix_fetch_pins "$cache_name")"
 
-while IFS=$'\t' read -r host build_pin store_path; do
-  previous_built="$(cachix_pin_path "$pins" "$build_pin")"
-  if [ "$previous_built" = "$store_path" ]; then
-    echo "Built state already pinned for $host:"
-    echo "  $build_pin -> $store_path"
-  else
-    echo "Built state differs for $host:"
-    echo "  previous: ${previous_built:-[none]}"
-    echo "  current:  $store_path"
-    echo "Pinning built state: $build_pin -> $store_path"
-    cachix_pin_store_path "$cache_name" "$build_pin" "$store_path" "$built_pin_keep_revisions"
-  fi
-done < <(
-  jq -r '
-    .[]
-    | [
-        .host,
-        .buildPin,
-        .storePath
-      ]
-    | @tsv
-  ' <<< "$built_info"
-)
+if [ "$mode" = "production" ]; then
+  built_info="$(assemble_built_info "$account_id" "$jobs")"
+
+  while IFS=$'\t' read -r host build_pin store_path; do
+    previous_built="$(cachix_pin_path "$pins" "$build_pin")"
+    if [ "$previous_built" = "$store_path" ]; then
+      echo "Built state already pinned for $host:"
+      echo "  $build_pin -> $store_path"
+    else
+      echo "Built state differs for $host:"
+      echo "  previous: ${previous_built:-[none]}"
+      echo "  current:  $store_path"
+      echo "Pinning built state: $build_pin -> $store_path"
+      cachix_pin_store_path "$cache_name" "$build_pin" "$store_path" "$built_pin_keep_revisions"
+    fi
+  done < <(
+    jq -r '
+      .[]
+      | [
+          .host,
+          .buildPin,
+          .storePath
+        ]
+      | @tsv
+    ' <<< "$built_info"
+  )
+fi
 
 deployment_matrix="$(
   jq -c -n \
