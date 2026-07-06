@@ -189,9 +189,19 @@
       };
 
     # Fan out each host as its own pure build job for readable GitHub status.
-    mkConfigurationJob = kind: name: cfg:
+    mkConfigurationJob = kind: name: cfg: let
+      system = cfg.pkgs.stdenv.hostPlatform.system;
+      deployable = cfg.config.services.cachix-agent.enable or false;
+    in
       lib.nameValuePair (mkConfigurationJobName kind name) {
-        outputs."${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
+        outputs =
+          {
+            "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
+          }
+          // lib.optionalAttrs deployable {
+            packages.${system}."deploy-health-rollback-script-${name}" =
+              self.packages.${system}.deploy-health-rollback-script;
+          };
       };
   in {
     inherit ciSystems;
