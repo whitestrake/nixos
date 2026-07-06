@@ -48,8 +48,7 @@ jobs:
           CACHIX_DEPLOY_HOSTS: ${{ inputs.hosts }}
           CACHIX_DEPLOY_FORCE: ${{ inputs.force && 'true' || 'false' }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
-          HERCULES_CI_CREDENTIALS_JSON: ${{ secrets.HERCULES_CI_CREDENTIALS_JSON }}
-        run: nix shell nixpkgs#hci -c bash modules/deployment/scripts/cachix-github-deploy-plan.sh
+        run: bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
       - name: Report no dispatch
         if: ${{ steps.plan.outputs.preview == 'true' || steps.plan.outputs.selected_count == '0' }}
@@ -104,4 +103,5 @@ jobs:
             --ref "$CACHIX_DEPLOY_BRANCH" \
             -f deployment_sha="$CACHIX_DEPLOY_REV" \
             -f deployment_source="github-actions" \
+            -f force="${{ inputs.force && 'true' || 'false' }}" \
             -f matrix="$matrix"

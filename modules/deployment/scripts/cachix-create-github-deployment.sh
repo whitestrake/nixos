@@ -7,6 +7,7 @@ workflow="${CACHIX_DEPLOY_WORKFLOW:-continuous-deployment.yml}"
 rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
 branch="${CACHIX_DEPLOY_BRANCH:-master}"
 source="${CACHIX_DEPLOY_SOURCE:-github-actions}"
+force="${CACHIX_DEPLOY_FORCE:-false}"
 matrix_file="${CACHIX_DEPLOY_MATRIX_FILE:-}"
 deployment_token="${GITHUB_DEPLOYMENT_TOKEN:-${GH_TOKEN:-}}"
 
@@ -19,6 +20,15 @@ if [ -z "$matrix_file" ]; then
   echo "ERROR: CACHIX_DEPLOY_MATRIX_FILE is empty." >&2
   exit 1
 fi
+
+case "$force" in
+  true|false)
+    ;;
+  *)
+    echo "ERROR: CACHIX_DEPLOY_FORCE must be true or false." >&2
+    exit 1
+    ;;
+esac
 
 if [ ! -r "$matrix_file" ]; then
   echo "ERROR: CACHIX_DEPLOY_MATRIX_FILE is not readable: $matrix_file" >&2
@@ -98,12 +108,14 @@ payload="$(
     --arg rev "$rev" \
     --arg branch "$branch" \
     --arg source "$source" \
+    --arg force "$force" \
     --arg matrix "$(jq -c . "$matrix_file")" \
     '{
       ref: $branch,
       inputs: {
         deployment_sha: $rev,
         deployment_source: $source,
+        force: $force,
         matrix: $matrix
       }
     }'

@@ -3,17 +3,34 @@
   self,
   withSystem,
   ...
-}: {
+}: let
+  flakeLib = inputs.nixpkgs.lib;
+
+  mkDeploymentDeployable = name: cfg: let
+    system = cfg.pkgs.stdenv.hostPlatform.system;
+  in {
+    inherit system;
+    storePath = toString cfg.config.system.build.toplevel;
+    rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+    deployPin = "deployed-host-${name}";
+  };
+in {
   flake-file.inputs.hercules-ci-effects.url = "github:hercules-ci/hercules-ci-effects";
   flake-file.inputs.hercules-ci-effects.inputs.nixpkgs.follows = "nixpkgs";
   imports = [inputs.hercules-ci-effects.flakeModule];
+
+  flake.deploy.targets =
+    flakeLib.mapAttrs mkDeploymentDeployable
+    (flakeLib.filterAttrs
+      (_name: cfg: cfg.config.services.cachix-agent.enable or false)
+      (self.nixosConfigurations or {}));
 
   herculesCI = {
     config,
     lib,
     ...
   }: let
-    # Master records production deliverables; other branches record canary deliverables.
+    # Master dispatches deployments; other branches only assemble a canary matrix.
     isProductionBranch = config.repo.branch == "master";
 
     # Effects must execute on native x86_64 Linux agents, even if builds fan out.
@@ -35,25 +52,6 @@
       (_name: cfg: cfg.config.services.cachix-agent.enable or false)
       (self.nixosConfigurations or {});
 
-    deployableRollbackPackages =
-      lib.foldl'
-      (
-        packages: name: let
-          system = deployableConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
-        in
-          packages
-          // {
-            ${system} =
-              (packages.${system} or {})
-              // {
-                "deploy-health-rollback-script-${name}" =
-                  self.packages.${system}.deploy-health-rollback-script;
-              };
-          }
-      )
-      {}
-      (builtins.attrNames deployableConfigurations);
-
     # Keep default hygiene cheap by excluding Darwin formatters from HCI.
     linuxFormatterSystems =
       lib.filter
@@ -67,88 +65,37 @@
 
     nixosConfigurationNames = builtins.attrNames (self.nixosConfigurations or {});
     darwinConfigurationNames = builtins.attrNames (self.darwinConfigurations or {});
-    duplicateConfigurationNames = lib.intersectLists nixosConfigurationNames darwinConfigurationNames;
-    hasDuplicateConfigurationName = name: builtins.elem name duplicateConfigurationNames;
 
     mkConfigurationJobName = kind: name: "${configurationJobPrefixes.${kind}}-${kind}-${name}";
-    mkConfigurationRecordName = kind: name:
-      if hasDuplicateConfigurationName name
-      then "${kind}-${name}"
-      else name;
-    mkConfigurationBuildPin = pinNames: kind: name:
-      if hasDuplicateConfigurationName name
-      then "${pinNames.host}-${kind}-${name}"
-      else "${pinNames.host}-${name}";
+    requiredJobNames =
+      (map (mkConfigurationJobName "nixosConfiguration") nixosConfigurationNames)
+      ++ (map (mkConfigurationJobName "darwinConfiguration") darwinConfigurationNames);
 
-    # Configuration records cover every configuration HCI evaluates. They drive
-    # built-host-* / canary-host-* pins independently of deployability.
-    mkBuildStateItem = pinNames: kind: name: cfg: let
+    mkDeployableJob = name: cfg: let
       system = cfg.pkgs.stdenv.hostPlatform.system;
-      systemClosure = cfg.config.system.build.toplevel;
     in {
-      inherit kind;
-      jobName = mkConfigurationJobName kind name;
+      host = name;
       inherit system;
-      storePath = toString systemClosure;
-      buildPin = mkConfigurationBuildPin pinNames kind name;
+      jobName = mkConfigurationJobName "nixosConfiguration" name;
+      toplevelAttrPath = ["nixosConfigurations" name "config" "system" "build" "toplevel"];
+      rollbackAttrPath = ["packages" system "deploy-health-rollback-script-${name}"];
+      deployPin = "deployed-host-${name}";
     };
 
-    # Deployable records are the subset used for Cachix Deploy state, rollback
-    # pins, and workflow dispatch payloads.
-    mkDeployableStateItem = pinNames: name: cfg: let
-      system = cfg.pkgs.stdenv.hostPlatform.system;
-    in
-      (mkBuildStateItem pinNames "nixosConfiguration" name cfg)
-      // {
-        rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
-        rollbackPin = "${pinNames.rollback}-${name}";
-        deployPin = "deployed-host-${name}";
-      };
-
-    mkConfigurationRecords = pinNames: kind: configurations:
-      lib.mapAttrs' (
-        name: cfg:
-          lib.nameValuePair
-          (mkConfigurationRecordName kind name)
-          (mkBuildStateItem pinNames kind name cfg)
-      )
-      configurations;
-
-    mkConfigurations = pinNames:
-      (mkConfigurationRecords pinNames "nixosConfiguration" (self.nixosConfigurations or {}))
-      // (mkConfigurationRecords pinNames "darwinConfiguration" (self.darwinConfigurations or {}));
-
-    # Record all configuration deliverables plus deployable host paths. The
-    # script pins every configuration, but writes only deployables as hosts in
-    # the persisted deployables state.
-    mkDeliverablesJson = pinNames:
-      builtins.unsafeDiscardStringContext (
-        builtins.toJSON {
-          ref = config.repo.ref;
-          branch = config.repo.branch;
-          rev = config.repo.rev;
-          shortRev = config.repo.shortRev;
-          configurations = mkConfigurations pinNames;
-          deployables = lib.mapAttrs (mkDeployableStateItem pinNames) deployableConfigurations;
-        }
-      );
-
-    productionDeliverablesJson = mkDeliverablesJson {
-      host = "built-host";
-      rollback = "built-rollback";
+    mkBuiltJob = name: _cfg: {
+      host = name;
+      jobName = mkConfigurationJobName "nixosConfiguration" name;
+      toplevelAttrPath = ["nixosConfigurations" name "config" "system" "build" "toplevel"];
+      buildPin = "built-host-${name}";
     };
 
-    canaryDeliverablesJson = mkDeliverablesJson {
-      host = "canary-host";
-      rollback = "canary-rollback";
-    };
+    builtJobs = lib.mapAttrsToList mkBuiltJob (self.nixosConfigurations or {});
+    deployableJobs = lib.mapAttrsToList mkDeployableJob deployableConfigurations;
 
     mkDeliverablesEffect = {
       hci-effects,
       pkgs,
       mode,
-      stateName,
-      deliverablesJson,
       createGitHubDeployment,
     }:
       hci-effects.mkEffect {
@@ -164,11 +111,14 @@
 
         effectScript = with lib; ''
           export CACHIX_CACHE_NAME="whitestrake"
-          export DELIVERABLES_JSON=${escapeShellArg deliverablesJson}
-          export HCI_DELIVERABLES_MODE=${escapeShellArg mode}
-          export HCI_DELIVERABLES_STATE_NAME=${escapeShellArg stateName}
-          export HCI_DELIVERABLES_HISTORY_LIMIT="10"
-          export HCI_DELIVERABLES_CI_GATE_SCRIPT="${./scripts/hci-deployables-ci-gate.sh}"
+          export HCI_DEPLOYMENT_MODE=${escapeShellArg mode}
+          export HCI_DEPLOYMENT_BRANCH=${escapeShellArg config.repo.branch}
+          export HCI_DEPLOYMENT_REF=${escapeShellArg config.repo.ref}
+          export HCI_DEPLOYMENT_REV=${escapeShellArg config.repo.rev}
+          export HCI_DEPLOYMENT_SHORT_REV=${escapeShellArg config.repo.shortRev}
+          export HCI_REQUIRED_JOB_NAMES=${escapeShellArg (builtins.toJSON requiredJobNames)}
+          export HCI_BUILT_JOBS=${escapeShellArg (builtins.toJSON builtJobs)}
+          export HCI_DEPLOYABLE_JOBS=${escapeShellArg (builtins.toJSON deployableJobs)}
           export CACHIX_PIN_FUNCTIONS_SCRIPT="${./scripts/cachix-pin-functions.sh}"
           export HCI_CREATE_GITHUB_DEPLOYMENT=${escapeShellArg (
             if createGitHubDeployment
@@ -189,9 +139,19 @@
       };
 
     # Fan out each host as its own pure build job for readable GitHub status.
-    mkConfigurationJob = kind: name: cfg:
+    mkConfigurationJob = kind: name: cfg: let
+      system = cfg.pkgs.stdenv.hostPlatform.system;
+      deployable = cfg.config.services.cachix-agent.enable or false;
+    in
       lib.nameValuePair (mkConfigurationJobName kind name) {
-        outputs."${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
+        outputs =
+          {
+            "${kind}s".${name}.config.system.build.toplevel = cfg.config.system.build.toplevel;
+          }
+          // lib.optionalAttrs deployable {
+            packages.${system}."deploy-health-rollback-script-${name}" =
+              self.packages.${system}.deploy-health-rollback-script;
+          };
       };
   in {
     inherit ciSystems;
@@ -231,21 +191,17 @@
         (self.nixosConfigurations or {}))
 
       {
-        # Publish built configuration pins and deployable state for GitHub.
+        # Assemble deployable paths from successful HCI config jobs and dispatch GitHub.
         "99-deliverables".outputs = withSystem "x86_64-linux" ({
           pkgs,
           hci-effects,
           ...
         }: {
-          packages = deployableRollbackPackages;
-
           effects.production-deliverables =
             hci-effects.runIf isProductionBranch
             (mkDeliverablesEffect {
               inherit hci-effects pkgs;
               mode = "production";
-              stateName = "deployables.json";
-              deliverablesJson = productionDeliverablesJson;
               createGitHubDeployment = true;
             });
 
@@ -254,8 +210,6 @@
             (mkDeliverablesEffect {
               inherit hci-effects pkgs;
               mode = "canary";
-              stateName = "canary-deployables.json";
-              deliverablesJson = canaryDeliverablesJson;
               createGitHubDeployment = false;
             });
         });

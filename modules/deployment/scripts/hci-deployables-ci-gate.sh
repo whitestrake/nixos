@@ -58,7 +58,6 @@ ci_gate_validate_config() {
   ci_gate_positive_integer HCI_CI_GATE_CONNECT_TIMEOUT_SECONDS "${HCI_CI_GATE_CONNECT_TIMEOUT_SECONDS:-10}" || return 1
   ci_gate_positive_integer HCI_CI_GATE_REQUEST_TIMEOUT_SECONDS "${HCI_CI_GATE_REQUEST_TIMEOUT_SECONDS:-60}" || return 1
   ci_gate_positive_integer HCI_CI_GATE_GITHUB_STATUS_PAGES "${HCI_CI_GATE_GITHUB_STATUS_PAGES:-5}" || return 1
-  ci_gate_positive_integer HCI_CI_GATE_HCI_LATEST_JOBS "${HCI_CI_GATE_HCI_LATEST_JOBS:-100}" || return 1
 
   if [[ ! "$hci_project" =~ ^[^/]+/[^/]+/[^/]+$ ]]; then
     printf 'ERROR: HCI_PROJECT must have the form site/account/project, got: %s\n' "$hci_project" >&2
@@ -243,8 +242,11 @@ ci_gate_hci_curl() {
   curl -fsS --connect-timeout "$connect_timeout" --max-time "$max_time" -H "Authorization: Bearer $token" "${api_url%/}$path"
 }
 
-ci_gate_fetch_hci_latest() {
-  local latest="${HCI_CI_GATE_HCI_LATEST_JOBS:-100}"
+ci_gate_fetch_hci_jobs_page() {
+  local revision="$1"
+  local offset="${2:-}"
+  local hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
+  local site account project extra path
 
   if [ -n "${CI_GATE_HCI_JOBS_FILE:-}" ]; then
     [ -r "$CI_GATE_HCI_JOBS_FILE" ] || {
@@ -255,7 +257,61 @@ ci_gate_fetch_hci_latest() {
     return
   fi
 
-  ci_gate_hci_curl "/jobs?latest=$latest"
+  IFS=/ read -r site account project extra <<< "$hci_project"
+  if [ -z "${site:-}" ] || [ -z "${account:-}" ] || [ -z "${project:-}" ] || [ -n "${extra:-}" ]; then
+    echo "HCI_PROJECT must have the form site/account/project, got: $hci_project" >&2
+    return 1
+  fi
+
+  path="/site/$site/account/$account/project/$project/jobs?rev=$revision&handler=OnPush&limit=100"
+  if [ -n "$offset" ]; then
+    path="$path&offsetIndex=$offset"
+  fi
+
+  ci_gate_hci_curl "$path"
+}
+
+ci_gate_fetch_hci_jobs() {
+  local revision="$1"
+  local offset="" page next jobs_file
+
+  if [ -n "${CI_GATE_HCI_JOBS_FILE:-}" ]; then
+    ci_gate_fetch_hci_jobs_page "$revision"
+    return
+  fi
+
+  jobs_file="$(mktemp "${TMPDIR:-/tmp}/ci-gate-hci-jobs.XXXXXX")" || return
+  : > "$jobs_file"
+
+  while true; do
+    if ! page="$(ci_gate_fetch_hci_jobs_page "$revision" "$offset")"; then
+      rm -f "$jobs_file"
+      return 1
+    fi
+
+    if ! jq -e 'type == "object" and (.items | type == "array") and (.more | type == "boolean")' <<< "$page" >/dev/null; then
+      rm -f "$jobs_file"
+      echo "HCI jobs response was not a PagedJobs object" >&2
+      return 1
+    fi
+
+    jq -c '.items[]?' <<< "$page" >> "$jobs_file"
+
+    if [ "$(jq -r '.more' <<< "$page")" != "true" ]; then
+      break
+    fi
+
+    next="$(jq -r '[.items[]?.index] | max // empty' <<< "$page")"
+    if [ -z "$next" ]; then
+      rm -f "$jobs_file"
+      echo "HCI jobs response had more=true but no index for pagination" >&2
+      return 1
+    fi
+    offset="$next"
+  done
+
+  jq -s -c . "$jobs_file"
+  rm -f "$jobs_file"
 }
 
 ci_gate_fetch_hci_job() {
@@ -276,16 +332,12 @@ ci_gate_fetch_hci_job() {
 
 ci_gate_hci_refs() {
   jq -c -n \
-    --argjson root "$1" \
+    --argjson jobs "$1" \
     --argjson required "$2" \
     --arg revision "$3" \
-    --arg hciProject "${HCI_PROJECT:-github/whitestrake/nixos}" \
     '
-      ($hciProject | split("/")) as $project
-      | def matching_jobs($name): [
-          $root[]? | .project as $p
-          | select(($p.siteSlug // "") == $project[0] and ($p.ownerSlug // "") == $project[1] and ($p.slug // "") == $project[2])
-          | .jobs[]? | select(.source.revision == $revision and .jobName == $name)
+      def matching_jobs($name): [
+          $jobs[]? | select(.source.revision == $revision and .jobName == $name)
         ] | sort_by(.index // 0, .startTime // "");
       [$required[] as $name | (matching_jobs($name) | last) as $job | select($job != null) | {id: ($job.id | tostring), jobName: $name, summary: $job}]
     '
@@ -362,7 +414,7 @@ ci_gate_poll_hci() {
   started="$(date +%s)"
 
   while true; do
-    if ! body="$(ci_gate_fetch_hci_latest 2>&1)"; then
+    if ! body="$(ci_gate_fetch_hci_jobs "$revision" 2>&1)"; then
       ci_gate_event "hci-api-error" "$(jq -c -n --argjson attempt "$attempt" --arg error "$body" '{attempt: $attempt, error: $error}')"
       jq -c -n --arg reason "$body" '{state: "unknown", reason: $reason, jobs: [], failedJobs: [], missingJobs: [], pendingJobs: []}'
       return

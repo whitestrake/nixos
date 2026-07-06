@@ -43,31 +43,13 @@ cachix_pin_store_path() {
     >/dev/null
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" == "--self-test" ]]; then
-  set -euo pipefail
-  pins='[{"name":"built-host-pascal","lastRevision":{"storePath":"/nix/store/example-pascal"}}]'
-  test "$(cachix_pin_path "$pins" built-host-pascal)" = "/nix/store/example-pascal"
-  test -z "$(cachix_pin_path "$pins" missing)"
+cachix_verify_store_paths() {
+  local cache_name="$1"
+  shift
 
-  payload="$(cachix_pin_payload built-host-pascal /nix/store/example-pascal 10)"
-  jq -e '
-    .name == "built-host-pascal"
-    and .storePath == "/nix/store/example-pascal"
-    and .keep.tag == "Revisions"
-    and .keep.contents == 10
-  ' <<< "$payload" >/dev/null
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
 
-  CACHIX_AUTH_TOKEN=test-token
-  curl_args=()
-  curl() {
-    curl_args=("$@")
-  }
-
-  cachix_pin_store_path whitestrake built-host-pascal /nix/store/example-pascal 10
-  test "${#curl_args[@]}" = 8
-  test "${curl_args[2]}|${curl_args[4]}|${curl_args[5]}|${curl_args[7]}" = "Authorization: Bearer test-token|Content-Type: application/json|--data|https://app.cachix.org/api/v1/cache/whitestrake/pin"
-  jq -e '
-    .name == "built-host-pascal"
-    and .storePath == "/nix/store/example-pascal"
-  ' <<< "${curl_args[6]}" >/dev/null
-fi
+  cachix_with_retry nix path-info --store "https://$cache_name.cachix.org" "$@" >/dev/null
+}
