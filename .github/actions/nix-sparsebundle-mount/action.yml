@@ -16,4 +16,4 @@ runs:
       env:
         ACTION_IMAGE_SIZE: ${{ inputs.image-size }}
         ACTION_SYSTEM: ${{ inputs.system }}
-      run: ${{ github.action_path }}/main.sh
+      run: bash "$GITHUB_ACTION_PATH/main.sh"
