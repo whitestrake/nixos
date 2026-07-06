@@ -22,6 +22,11 @@ on:
         description: "Deployment matrix JSON."
         required: true
         type: string
+      force:
+        description: "Redeploy even when deployed-host-* already matches the target."
+        required: true
+        default: "false"
+        type: string
 
 concurrency:
   group: cachix-deploy-master
@@ -59,7 +64,7 @@ jobs:
           CACHIX_CACHE_NAME: whitestrake
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
-          CACHIX_DEPLOY_FORCE: "false"
+          CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "10"
           DEPLOY_HOST: ${{ matrix.host }}

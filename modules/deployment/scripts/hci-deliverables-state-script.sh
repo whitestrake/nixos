@@ -2,17 +2,17 @@
 set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-}"
-deliverables_json="${DELIVERABLES_JSON:-${DEPLOYABLES_JSON:-}}"
-deliverables_mode="${HCI_DELIVERABLES_MODE:-${HCI_DEPLOYABLES_MODE:-production}}"
-state_name="${HCI_DELIVERABLES_STATE_NAME:-${HCI_DEPLOYABLES_STATE_NAME:-deployables.json}}"
-state_history_limit="${HCI_DELIVERABLES_HISTORY_LIMIT:-${HCI_DEPLOYABLES_HISTORY_LIMIT:-10}}"
-built_pin_keep_revisions="${CACHIX_BUILT_PIN_KEEP_REVISIONS:-10}"
+mode="${HCI_DEPLOYMENT_MODE:-production}"
+rev="${HCI_DEPLOYMENT_REV:-}"
+branch="${HCI_DEPLOYMENT_BRANCH:-master}"
+hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
+required_job_names="${HCI_REQUIRED_JOB_NAMES:-[]}"
+deployable_jobs="${HCI_DEPLOYABLE_JOBS:-[]}"
 create_github_deployment="${HCI_CREATE_GITHUB_DEPLOYMENT:-true}"
 github_api_url="${GITHUB_API_URL:-https://api.github.com}"
 github_repository="${GITHUB_REPOSITORY:-whitestrake/nixos}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 create_github_deployment_script="${CACHIX_CREATE_GITHUB_DEPLOYMENT_SCRIPT:-$script_dir/cachix-create-github-deployment.sh}"
-ci_gate_script="${HCI_DELIVERABLES_CI_GATE_SCRIPT:-${HCI_DEPLOYABLES_CI_GATE_SCRIPT:-$script_dir/hci-deployables-ci-gate.sh}}"
 
 # shellcheck source=modules/deployment/scripts/cachix-pin-functions.sh
 source "${CACHIX_PIN_FUNCTIONS_SCRIPT:-$script_dir/cachix-pin-functions.sh}"
@@ -22,26 +22,21 @@ if [ -z "$cache_name" ]; then
   exit 1
 fi
 
+if [ -z "$rev" ]; then
+  echo "ERROR: HCI_DEPLOYMENT_REV is empty." >&2
+  exit 1
+fi
+
 if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   echo "ERROR: CACHIX_AUTH_TOKEN is empty." >&2
   exit 1
 fi
 
-if [ -z "$deliverables_json" ]; then
-  echo "ERROR: DELIVERABLES_JSON is empty." >&2
-  exit 1
-fi
-
-if [ ! -r "$ci_gate_script" ]; then
-  echo "ERROR: CI gate script is not readable: $ci_gate_script" >&2
-  exit 1
-fi
-
-case "$deliverables_mode" in
+case "$mode" in
   production|canary)
     ;;
   *)
-    echo "ERROR: HCI_DELIVERABLES_MODE must be production or canary." >&2
+    echo "ERROR: HCI_DEPLOYMENT_MODE must be production or canary." >&2
     exit 1
     ;;
 esac
@@ -60,146 +55,204 @@ if [ "$create_github_deployment" = "true" ] && [ -z "${GITHUB_DEPLOYMENT_TOKEN:-
   exit 1
 fi
 
-if ! [[ "$state_history_limit" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: HCI_DELIVERABLES_HISTORY_LIMIT must be a positive integer." >&2
+if ! jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<< "$required_job_names" >/dev/null; then
+  echo "ERROR: HCI_REQUIRED_JOB_NAMES must be a JSON array of strings." >&2
   exit 1
 fi
 
-if ! [[ "$built_pin_keep_revisions" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: CACHIX_BUILT_PIN_KEEP_REVISIONS must be a positive integer." >&2
+if ! jq -e '
+  type == "array"
+  and all(.[]; (
+    (.host | type == "string" and length > 0)
+    and (.system | type == "string" and length > 0)
+    and (.jobName | type == "string" and length > 0)
+    and (.toplevelAttrPath | type == "array" and length > 0)
+    and (.rollbackAttrPath | type == "array" and length > 0)
+    and (.deployPin | type == "string" and startswith("deployed-host-"))
+  ))
+' <<< "$deployable_jobs" >/dev/null; then
+  echo "ERROR: HCI_DEPLOYABLE_JOBS is malformed." >&2
   exit 1
 fi
 
-# shellcheck disable=SC2016
-required_filter='
-  type == "object"
-    and (.rev | type == "string" and length > 0)
-    and (.shortRev | type == "string" and length > 0)
-    and (.branch | type == "string" and length > 0)
-    and (.ref | type == "string" and length > 0)
-    and (.configurations | type == "object" and length > 0)
-    and (.deployables | type == "object")
-    and all(
-      .configurations[];
-      (type == "object")
-      and (.kind | type == "string" and length > 0)
-      and (.jobName | type == "string" and length > 0)
-      and (.system | type == "string" and length > 0)
-      and (.storePath | type == "string" and startswith("/nix/store/"))
-      and (.buildPin | type == "string")
-      and (
-        if $mode == "production" then
-          (.buildPin | startswith("built-host-"))
-        else
-          (.buildPin | startswith("canary-host-"))
-        end
-      )
-    )
-    and all(
-      .deployables[];
-      (type == "object")
-      and (.kind | type == "string" and length > 0)
-      and (.jobName | type == "string" and length > 0)
-      and (.system | type == "string" and length > 0)
-      and (.storePath | type == "string" and startswith("/nix/store/"))
-      and (.buildPin | type == "string")
-      and (
-        if $mode == "production" then
-          (.buildPin | startswith("built-host-"))
-        else
-          (.buildPin | startswith("canary-host-"))
-        end
-      )
-      and (.rollbackScript | type == "string" and startswith("/nix/store/"))
-      and (.rollbackPin | type == "string")
-      and (
-        if $mode == "production" then
-          (.rollbackPin | startswith("built-rollback-"))
-        else
-          (.rollbackPin | startswith("canary-rollback-"))
-        end
-      )
-      and (.deployPin | type == "string" and startswith("deployed-host-"))
-    )
-'
-
-if ! printf '%s\n' "$deliverables_json" | jq -e --arg mode "$deliverables_mode" "$required_filter" >/dev/null; then
-  echo "ERROR: DELIVERABLES_JSON is malformed." >&2
-  printf '%s\n' "$deliverables_json" | jq . >&2 || printf '%s\n' "$deliverables_json" >&2
+IFS=/ read -r hci_site hci_account hci_repo extra <<< "$hci_project"
+if [ -z "${hci_site:-}" ] || [ -z "${hci_account:-}" ] || [ -z "${hci_repo:-}" ] || [ -n "${extra:-}" ]; then
+  echo "ERROR: HCI_PROJECT must have the form site/account/project, got: $hci_project" >&2
   exit 1
 fi
 
-IFS=$'\t' read -r rev branch < <(
-  printf '%s\n' "$deliverables_json" | jq -r '[.rev, .branch] | @tsv'
-)
-deployables_json="$(
-  printf '%s\n' "$deliverables_json" \
-    | jq -c '{ref, branch, rev, shortRev, hosts: .deployables}'
-)"
 work_dir="$(mktemp -d)"
-old_state="$work_dir/state-old.json"
-new_state="$work_dir/state-new.json"
-
 cleanup() {
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
 
-# shellcheck source=/dev/null
-source "$ci_gate_script"
+hci_api_get() {
+  local path="$1"
+  local token="${HERCULES_CI_API_TOKEN:-${HCI_API_TOKEN:-${HERCULES_CI_TOKEN:-}}}"
+  local api_base_url="${HERCULES_CI_API_BASE_URL:-https://hercules-ci.com}"
+  local api_url="${HCI_API_URL:-${api_base_url%/}/api/v1}"
 
-record_deployables_state() {
-  local timestamp
-
-  getStateFile "$state_name" "$old_state"
-
-  if [ -e "$old_state" ] && ! jq -e 'type == "object"' "$old_state" >/dev/null; then
-    echo "Existing state $state_name is malformed; replacing it." >&2
-    rm -f "$old_state"
+  if [ -n "${herculesCIHeaders:-}" ] && [ -r "$herculesCIHeaders" ]; then
+    curl -fsS -H @"$herculesCIHeaders" "${api_url%/}$path"
+    return
   fi
 
-  if [ ! -e "$old_state" ]; then
-    jq -n '{}' > "$old_state"
-  fi
+  [ "${CI_GATE_HCI_ALLOW_ENV_TOKEN:-false}" = "true" ] || {
+    echo "herculesCIHeaders is required for HCI lookup; set CI_GATE_HCI_ALLOW_ENV_TOKEN=true for local env-token fallback" >&2
+    return 1
+  }
+  [ -n "$token" ] || {
+    echo "no HCI API token available" >&2
+    return 1
+  }
 
-  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-  jq \
-    --argjson current "$deployables_json" \
-    --arg rev "$rev" \
-    --arg timestamp "$timestamp" \
-    --argjson limit "$state_history_limit" \
-    --argjson ciGate "$ci_gate_json" \
-    '
-      def currentRecord:
-        $current | del(.rev) + {generatedAt: $timestamp, ciGate: $ciGate};
-
-      (
-        .[$rev] = currentRecord
-        | to_entries
-        | sort_by(.value.generatedAt // "")
-        | reverse
-        | .[:$limit]
-        | from_entries
-      )
-    ' "$old_state" > "$new_state"
-
-  putStateFile "$state_name" "$new_state"
-
-  echo "Recorded HCI deployables state: $state_name"
-  jq -r --arg rev "$rev" '.[$rev] | "  \($rev) " + (.hosts | keys | sort | join(", "))' "$new_state"
+  curl -fsS -H "Authorization: Bearer $token" "${api_url%/}$path"
 }
 
-set +e
-ci_gate_json="$(run_deployables_ci_gate "$deliverables_json")"
-ci_gate_status=$?
-set -e
+urlencode() {
+  jq -rn --arg value "$1" '$value | @uri'
+}
 
-if [ "$ci_gate_status" -ne 0 ]; then
-  record_deployables_state
-  echo "CI gate blocked deployables state side effects; state was recorded for inspection." >&2
-  exit "$ci_gate_status"
-fi
+fetch_project() {
+  hci_api_get "/site/$hci_site/account/$hci_account/project/$hci_repo"
+}
+
+fetch_jobs_page() {
+  local offset="${1:-}"
+  local path="/site/$hci_site/account/$hci_account/project/$hci_repo/jobs?rev=$rev&handler=OnPush&limit=100"
+
+  if [ -n "$offset" ]; then
+    path="$path&offsetIndex=$offset"
+  fi
+
+  hci_api_get "$path"
+}
+
+fetch_jobs() {
+  local offset="" page next
+  : > "$work_dir/jobs.ndjson"
+
+  while true; do
+    page="$(fetch_jobs_page "$offset")"
+    jq -c '.items[]?' <<< "$page" >> "$work_dir/jobs.ndjson"
+
+    if [ "$(jq -r '.more' <<< "$page")" != "true" ]; then
+      break
+    fi
+
+    next="$(jq -r '[.items[]?.index] | max // empty' <<< "$page")"
+    if [ -z "$next" ]; then
+      echo "ERROR: HCI jobs response has more=true but no item index to continue paging." >&2
+      exit 1
+    fi
+    offset="$next"
+  done
+
+  jq -s -c . "$work_dir/jobs.ndjson"
+}
+
+assert_required_jobs_green() {
+  local jobs="$1"
+
+  jq -e -n \
+    --argjson jobs "$jobs" \
+    --argjson required "$required_job_names" \
+    --arg rev "$rev" \
+    '
+      def success: (. // "" | tostring | ascii_downcase) == "success";
+      def done: (. // "" | tostring | ascii_downcase) == "done";
+      def latest($name): [$jobs[]? | select(.source.revision == $rev and .jobName == $name)] | sort_by(.index // 0) | last;
+      [
+        $required[] as $name
+        | latest($name) as $job
+        | {
+            jobName: $name,
+            found: ($job != null),
+            green: (
+              ($job != null)
+              and ($job.jobPhase | done)
+              and ($job.jobStatus | success)
+              and ([$job.evaluationStatus, $job.derivationStatus, $job.effectsStatus] | map(. // "Success") | all(success))
+            )
+          }
+      ] as $checked
+      | if all($checked[]; .green) then
+          true
+        else
+          error("HCI jobs are not all green: " + ($checked | map(select(.green | not).jobName) | join(", ")))
+        end
+    ' >/dev/null
+}
+
+job_id_for_name() {
+  local jobs="$1"
+  local job_name="$2"
+
+  jq -er \
+    --arg rev "$rev" \
+    --arg jobName "$job_name" \
+    '
+      [.[] | select(.source.revision == $rev and .jobName == $jobName)]
+      | sort_by(.index // 0)
+      | last.id
+    ' <<< "$jobs"
+}
+
+fetch_evaluation() {
+  local job_id="$1"
+  hci_api_get "/jobs/$job_id/evaluation"
+}
+
+derivation_for_attr() {
+  local evaluation="$1"
+  local attr_path="$2"
+
+  jq -er \
+    --argjson path "$attr_path" \
+    '
+      .attributes[]
+      | select(.path == $path)
+      | .value.Ok.derivationPath
+    ' <<< "$evaluation"
+}
+
+output_for_derivation() {
+  local account_id="$1"
+  local job_id="$2"
+  local drv="$3"
+  local encoded_drv
+
+  encoded_drv="$(urlencode "$drv")"
+  hci_api_get "/accounts/$account_id/derivations/$encoded_drv?via-job=$job_id" \
+    | jq -er '.outputs[] | select(.outputName == "out") | .outputPath'
+}
+
+assemble_deploy_info() {
+  local account_id="$1"
+  local jobs="$2"
+  local record job_id evaluation toplevel_drv rollback_drv store_path rollback_script
+  local out="$work_dir/deploy-info.ndjson"
+
+  : > "$out"
+  while IFS= read -r record; do
+    job_id="$(job_id_for_name "$jobs" "$(jq -r '.jobName' <<< "$record")")"
+    evaluation="$(fetch_evaluation "$job_id")"
+    toplevel_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.toplevelAttrPath' <<< "$record")")"
+    rollback_drv="$(derivation_for_attr "$evaluation" "$(jq -c '.rollbackAttrPath' <<< "$record")")"
+    store_path="$(output_for_derivation "$account_id" "$job_id" "$toplevel_drv")"
+    rollback_script="$(output_for_derivation "$account_id" "$job_id" "$rollback_drv")"
+
+    jq -c \
+      --argjson record "$record" \
+      --arg storePath "$store_path" \
+      --arg rollbackScript "$rollback_script" \
+      '$record + {storePath: $storePath, rollbackScript: $rollbackScript}' \
+      <<< '{}' >> "$out"
+  done < <(jq -c '.[]' <<< "$deployable_jobs")
+
+  jq -s -c 'sort_by(.host)' "$out"
+}
 
 dispatch_github_deployment() {
   local matrix="$1"
@@ -212,7 +265,7 @@ dispatch_github_deployment() {
   fi
 
   if [ "$create_github_deployment" = "false" ]; then
-    echo "Cachix deploy workflow dispatch disabled for $deliverables_mode deliverables."
+    echo "Cachix deploy workflow dispatch disabled for $mode deployables."
     return 0
   fi
 
@@ -222,6 +275,7 @@ dispatch_github_deployment() {
   CACHIX_DEPLOY_REV="$rev" \
     CACHIX_DEPLOY_BRANCH="$branch" \
     CACHIX_DEPLOY_SOURCE="hercules-ci" \
+    CACHIX_DEPLOY_FORCE=false \
     CACHIX_DEPLOY_MATRIX_FILE="$matrix_file" \
     GITHUB_API_URL="$github_api_url" \
     GITHUB_REPOSITORY="$github_repository" \
@@ -229,89 +283,34 @@ dispatch_github_deployment() {
     bash "$create_github_deployment_script"
 }
 
+project="$(fetch_project)"
+account_id="$(jq -er '.owner.id' <<< "$project")"
+jobs="$(fetch_jobs)"
+assert_required_jobs_green "$jobs"
+deploy_info="$(assemble_deploy_info "$account_id" "$jobs")"
 pins="$(cachix_fetch_pins "$cache_name")"
 
-while IFS=$'\t' read -r host build_pin store_path; do
-  previous_built="$(cachix_pin_path "$pins" "$build_pin")"
-  if [ "$previous_built" = "$store_path" ]; then
-    echo "Built state already pinned for $host:"
-    echo "  $build_pin -> $store_path"
-  else
-    echo "Built state differs for $host:"
-    echo "  previous: ${previous_built:-[none]}"
-    echo "  current:  $store_path"
-    echo "Pinning built state: $build_pin -> $store_path"
-    cachix_pin_store_path "$cache_name" "$build_pin" "$store_path" "$built_pin_keep_revisions"
-  fi
-done < <(
-  printf '%s\n' "$deliverables_json" \
-    | jq -r '
-        .configurations
-        | to_entries[]
-        | [
-            .key,
-            .value.buildPin,
-            .value.storePath
-          ]
-        | @tsv
-      '
-)
-
-while IFS=$'\t' read -r host rollback_pin rollback_script; do
-  previous_rollback="$(cachix_pin_path "$pins" "$rollback_pin")"
-  if [ "$previous_rollback" = "$rollback_script" ]; then
-    echo "Rollback script already pinned for $host:"
-    echo "  $rollback_pin -> $rollback_script"
-  else
-    echo "Rollback script differs for $host:"
-    echo "  previous: ${previous_rollback:-[none]}"
-    echo "  current:  $rollback_script"
-    echo "Pinning rollback script: $rollback_pin -> $rollback_script"
-    cachix_pin_store_path "$cache_name" "$rollback_pin" "$rollback_script" "$built_pin_keep_revisions"
-  fi
-done < <(
-  printf '%s\n' "$deployables_json" \
-    | jq -r '
-        .hosts
-        | to_entries[]
-        | [
-            .key,
-            .value.rollbackPin,
-            .value.rollbackScript
-          ]
-        | @tsv
-      '
-)
-
-record_deployables_state
-
 deployment_matrix="$(
-  printf '%s\n' "$deployables_json" \
-    | jq -c \
-      --argjson pins "$pins" \
-      '
-        def pinPath($name):
-          (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
+  jq -c -n \
+    --argjson deployInfo "$deploy_info" \
+    --argjson pins "$pins" \
+    '
+      def pinPath($name):
+        (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
 
-        {
-          include: (
-            [
-              .hosts
-              | to_entries[]
-              | .value + {host: .key}
-              | select(pinPath(.deployPin) != .storePath)
-              | {
-                  host,
-                  system,
-                  storePath,
-                  rollbackScript
-                }
-            ]
-            | sort_by(.host)
-          )
-        }
-      '
+      {
+        include: (
+          $deployInfo
+          | map(select(pinPath(.deployPin) != .storePath))
+          | map({host, system, storePath, rollbackScript})
+          | sort_by(.host)
+        )
+      }
+    '
 )"
+
+echo "HCI deploy matrix for $rev ($mode):"
+jq . <<< "$deployment_matrix"
 
 selected_count="$(jq -r '.include | length' <<< "$deployment_matrix")"
 dispatch_github_deployment "$deployment_matrix" "$selected_count"

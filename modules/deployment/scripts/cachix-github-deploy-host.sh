@@ -114,6 +114,8 @@ echo "  target store path:    $store_path"
 echo "  deploy spec:          $deploy_spec"
 jq . "$deploy_spec"
 
+cachix_verify_store_paths "$cache_name" "$store_path" "$rollback_script"
+
 if ! cachix deploy activate "$deploy_spec"; then
   echo "Cachix deploy activate failed for $host. $deploy_pin was not updated." >&2
   exit 1

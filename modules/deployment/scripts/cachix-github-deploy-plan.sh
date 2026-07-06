@@ -2,7 +2,6 @@
 set -euo pipefail
 
 cache_name="${CACHIX_CACHE_NAME:-whitestrake}"
-hci_project="${HCI_PROJECT:-github/whitestrake/nixos}"
 rev="${CACHIX_DEPLOY_REV:-${GITHUB_SHA:-}}"
 hosts_raw="${CACHIX_DEPLOY_HOSTS:-}"
 force="${CACHIX_DEPLOY_FORCE:-false}"
@@ -31,88 +30,12 @@ if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
   exit 1
 fi
 
-IFS=/ read -r hci_site hci_account hci_repo extra <<< "$hci_project"
-if [ -z "${hci_site:-}" ] || [ -z "${hci_account:-}" ] || [ -z "${hci_repo:-}" ] || [ -n "${extra:-}" ]; then
-  echo "ERROR: HCI_PROJECT must have the form site/account/project, got: $hci_project" >&2
-  exit 1
-fi
-
-setup_hci_credentials() {
-  local credentials_dir credentials_file
-
-  if [ -z "${HERCULES_CI_CREDENTIALS_JSON:-}" ]; then
-    echo "ERROR: HERCULES_CI_CREDENTIALS_JSON is empty." >&2
-    exit 1
-  fi
-
-  if [ -z "${HOME:-}" ]; then
-    echo "ERROR: HOME must be set so hci can read credentials." >&2
-    exit 1
-  fi
-
-  credentials_dir="$HOME/.config/hercules-ci"
-  credentials_file="$credentials_dir/credentials.json"
-
-  mkdir -p "$credentials_dir"
-  chmod 0700 "$credentials_dir"
-  printf '%s\n' "$HERCULES_CI_CREDENTIALS_JSON" > "$credentials_file"
-  chmod 0600 "$credentials_file"
-
-  if ! jq -e '.domains."hercules-ci.com".personalToken | select(type == "string" and length > 0)' \
-    "$credentials_file" >/dev/null; then
-    echo "ERROR: HERCULES_CI_CREDENTIALS_JSON must be a Hercules CI credentials.json document." >&2
-    exit 1
-  fi
-}
-
-get_state() {
-  local state_name="$1"
-  hci state get --project "$hci_project" --name "$state_name" --file -
-}
-
 write_output() {
   local name="$1"
   local value="$2"
 
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
-  fi
-}
-
-emit_empty_plan() {
-  local preview_value="$1"
-
-  mkdir -p "$output_dir"
-  write_output selected_count "0"
-  write_output preview "$preview_value"
-  write_output selected_hosts "[none]"
-  printf '%s\n' '{"include":[]}' > "$output_dir/deploy-matrix.json"
-  printf '%s\n' '{"include":[]}' > "$output_dir/deploy-plan.json"
-}
-
-skip_if_stale_automatic_run() {
-  local master_rev
-
-  if [ "$event_name" = "workflow_dispatch" ]; then
-    return 0
-  fi
-
-  if ! master_rev="$(git ls-remote origin refs/heads/master | awk '{print $1}')"; then
-    echo "ERROR: failed to query origin master for stale deploy protection." >&2
-    exit 1
-  fi
-
-  if [ -z "$master_rev" ]; then
-    echo "ERROR: origin refs/heads/master did not resolve." >&2
-    exit 1
-  fi
-
-  if [ "$rev" != "$master_rev" ]; then
-    echo "Skipping stale automatic deploy:"
-    echo "  workflow revision: $rev"
-    echo "  current master:    $master_rev"
-    emit_empty_plan false
-    exit 0
   fi
 }
 
@@ -125,118 +48,38 @@ if [ "$event_name" = "workflow_dispatch" ] && [ -z "$trimmed_hosts" ]; then
   preview=true
 fi
 
-if [ "$event_name" != "workflow_dispatch" ] && [ -z "$trimmed_hosts" ]; then
+if [ -z "$trimmed_hosts" ]; then
   trimmed_hosts="all"
 fi
 
 mkdir -p "$output_dir"
 
-skip_if_stale_automatic_run
-setup_hci_credentials
-skip_if_stale_automatic_run
-
-if ! deployables_state="$(get_state deployables.json)"; then
-  echo "ERROR: failed to read HCI state file deployables.json." >&2
-  exit 1
-fi
-
-if ! canary_deployables_state="$(get_state canary-deployables.json 2>/dev/null)"; then
-  canary_deployables_state='{}'
-fi
-
-deployables_entry="$(
-  jq -c -n \
-    --arg rev "$rev" \
-    --argjson production "$deployables_state" \
-    --argjson canary "$canary_deployables_state" \
-    '
-      if $production | has($rev) then
-        $production[$rev]
-      elif $canary | has($rev) then
-        $canary[$rev]
-      else
-        null
-      end
-    '
+deployables="$(
+  nix eval --accept-flake-config --json .#deployment.deployables
 )"
 
-if [ -z "$deployables_entry" ] || [ "$deployables_entry" = "null" ]; then
-  echo "ERROR: no complete deployables entry for $rev." >&2
-  echo "Checked HCI state files: deployables.json and canary-deployables.json." >&2
+if ! jq -e '
+  type == "object"
+  and length > 0
+  and all(
+    to_entries[];
+    (.key | type == "string" and length > 0)
+    and (.value | type == "object")
+    and (.value.system | type == "string" and length > 0)
+    and (.value.storePath | type == "string" and startswith("/nix/store/"))
+    and (.value.rollbackScript | type == "string" and startswith("/nix/store/"))
+    and (.value.deployPin | type == "string" and startswith("deployed-host-"))
+  )
+' <<< "$deployables" >/dev/null; then
+  echo "ERROR: .#deployment.deployables is malformed." >&2
+  jq . <<< "$deployables" >&2 || true
   exit 1
 fi
 
-if ! jq -e 'type == "object"' <<< "$deployables_entry" >/dev/null; then
-  echo "ERROR: HCI deployables state entry for $rev is malformed." >&2
-  jq . <<< "$deployables_entry" >&2 || true
-  exit 1
-fi
+available_hosts_json="$(jq -c 'keys | sort' <<< "$deployables")"
 
-if ! jq -e '(.ciGate | type) == "object" and .ciGate.state == "passed"' <<< "$deployables_entry" >/dev/null; then
-  echo "ERROR: deployables entry for $rev is not deployable because ciGate.state is not passed." >&2
-  jq -r '
-    if has("ciGate") | not then
-      "  ciGate is missing"
-    elif (.ciGate | type) == "object" then
-      .ciGate | "  ciGate.state: \(.state // "unknown")"
-    else
-      "  ciGate is malformed: expected object, got \(.ciGate | type)"
-    end
-  ' <<< "$deployables_entry" >&2
-  exit 1
-fi
-
-if ! jq -e '(.hosts | type) == "object" and (.hosts | length) > 0' <<< "$deployables_entry" >/dev/null; then
-  echo "ERROR: no complete deployables entry for $rev." >&2
-  echo "Checked HCI state files: deployables.json and canary-deployables.json." >&2
-  exit 1
-fi
-
-invalid_hosts_json="$(
-  jq -c '
-    [
-      .hosts
-      | to_entries[]
-      | select(
-          (.value | type) != "object"
-          or (.value.system | type != "string" or (.value.system | length) == 0)
-          or (.value.storePath | type != "string" or (.value.storePath | startswith("/nix/store/") | not))
-          or (.value.rollbackScript | type != "string" or (.value.rollbackScript | startswith("/nix/store/") | not))
-        )
-      | .key
-    ]
-  ' <<< "$deployables_entry"
-)"
-
-if ! jq -e 'length == 0' <<< "$invalid_hosts_json" >/dev/null; then
-  echo "ERROR: HCI deployables state has malformed host records for $rev:" >&2
-  jq -r '.[] | "  " + .' <<< "$invalid_hosts_json" >&2
-  exit 1
-fi
-
-deployables_json="$(jq -c '.hosts | keys | sort' <<< "$deployables_entry")"
-if jq -e 'length == 0' <<< "$deployables_json" >/dev/null; then
-  echo "ERROR: HCI deployables state has an empty deployables list for $rev." >&2
-  echo "At least one deployable Cachix agent host is expected." >&2
-  exit 1
-fi
-echo "Deployables for $rev: $(jq -r 'join(", ")' <<< "$deployables_json")"
-
-proofs_json="$(
-  jq -c \
-    --arg rev "$rev" \
-    '
-      [
-        .hosts
-        | to_entries[]
-        | .value + {host: .key, rev: $rev}
-      ]
-      | sort_by(.host)
-    ' <<< "$deployables_entry"
-)"
-
-if [ "$trimmed_hosts" = "all" ] || [ -z "$trimmed_hosts" ]; then
-  requested_hosts_json="$deployables_json"
+if [ "$trimmed_hosts" = "all" ]; then
+  requested_hosts_json="$available_hosts_json"
 else
   requested_hosts_json="$(
     jq -cn \
@@ -252,7 +95,7 @@ else
   unknown_hosts_json="$(
     jq -cn \
       --argjson requested "$requested_hosts_json" \
-      --argjson available "$deployables_json" \
+      --argjson available "$available_hosts_json" \
       '$requested | map(. as $host | select(($available | index($host)) | not))'
   )"
 
@@ -263,6 +106,18 @@ else
     exit 1
   fi
 fi
+
+proofs_json="$(
+  jq -c \
+    --arg rev "$rev" \
+    '
+      [
+        to_entries[]
+        | .value + {host: .key, rev: $rev}
+      ]
+      | sort_by(.host)
+    ' <<< "$deployables"
+)"
 
 pins="$(cachix_fetch_pins "$cache_name")"
 
@@ -275,16 +130,15 @@ deploy_info_json="$(
         (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
 
       $proofs
-      | sort_by(.host)
       | map(
-          (.deployPin // ("deployed-host-" + .host)) as $deployPin
+          .deployPin as $deployPin
           | pinPath($deployPin) as $deployed
           | . + {
-              deployPin: $deployPin,
               deployed: $deployed,
               changed: ($deployed != .storePath)
             }
         )
+      | sort_by(.host)
     '
 )"
 
@@ -305,7 +159,7 @@ selected_json="$(
 )"
 
 selected_count="$(jq -r 'length' <<< "$selected_json")"
-matrix="$(jq -cn --argjson include "$selected_json" '{include: ($include | map({host: .host}))}')"
+matrix="$(jq -cn --argjson include "$selected_json" '{include: ($include | map({host, system, storePath, rollbackScript}))}')"
 deploy_plan="$(jq -cn --argjson include "$selected_json" '{include: $include}')"
 selected_hosts="$(jq -r 'if length == 0 then "[none]" else map(.host) | join(", ") end' <<< "$selected_json")"
 
@@ -338,6 +192,11 @@ if [ "$preview" = "true" ]; then
   selected_count=0
   matrix='{"include":[]}'
   deploy_plan='{"include":[]}'
+else
+  mapfile -t selected_paths < <(
+    jq -r '.[] | .storePath, .rollbackScript' <<< "$selected_json"
+  )
+  cachix_verify_store_paths "$cache_name" "${selected_paths[@]}"
 fi
 
 write_output selected_count "$selected_count"

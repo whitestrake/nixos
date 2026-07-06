@@ -43,15 +43,26 @@ cachix_pin_store_path() {
     >/dev/null
 }
 
+cachix_verify_store_paths() {
+  local cache_name="$1"
+  shift
+
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+
+  cachix_with_retry nix path-info --store "https://$cache_name.cachix.org" "$@" >/dev/null
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" == "--self-test" ]]; then
   set -euo pipefail
-  pins='[{"name":"built-host-pascal","lastRevision":{"storePath":"/nix/store/example-pascal"}}]'
-  test "$(cachix_pin_path "$pins" built-host-pascal)" = "/nix/store/example-pascal"
+  pins='[{"name":"deployed-host-pascal","lastRevision":{"storePath":"/nix/store/example-pascal"}}]'
+  test "$(cachix_pin_path "$pins" deployed-host-pascal)" = "/nix/store/example-pascal"
   test -z "$(cachix_pin_path "$pins" missing)"
 
-  payload="$(cachix_pin_payload built-host-pascal /nix/store/example-pascal 10)"
+  payload="$(cachix_pin_payload deployed-host-pascal /nix/store/example-pascal 10)"
   jq -e '
-    .name == "built-host-pascal"
+    .name == "deployed-host-pascal"
     and .storePath == "/nix/store/example-pascal"
     and .keep.tag == "Revisions"
     and .keep.contents == 10
@@ -63,11 +74,19 @@ if [[ "${BASH_SOURCE[0]}" == "$0" && "${1:-}" == "--self-test" ]]; then
     curl_args=("$@")
   }
 
-  cachix_pin_store_path whitestrake built-host-pascal /nix/store/example-pascal 10
+  cachix_pin_store_path whitestrake deployed-host-pascal /nix/store/example-pascal 10
   test "${#curl_args[@]}" = 8
   test "${curl_args[2]}|${curl_args[4]}|${curl_args[5]}|${curl_args[7]}" = "Authorization: Bearer test-token|Content-Type: application/json|--data|https://app.cachix.org/api/v1/cache/whitestrake/pin"
   jq -e '
-    .name == "built-host-pascal"
+    .name == "deployed-host-pascal"
     and .storePath == "/nix/store/example-pascal"
   ' <<< "${curl_args[6]}" >/dev/null
+
+  nix_args=()
+  nix() {
+    nix_args=("$@")
+  }
+
+  cachix_verify_store_paths whitestrake /nix/store/example-pascal /nix/store/example-rollback
+  test "${nix_args[*]}" = "path-info --store https://whitestrake.cachix.org /nix/store/example-pascal /nix/store/example-rollback"
 fi

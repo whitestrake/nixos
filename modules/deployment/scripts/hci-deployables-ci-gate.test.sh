@@ -17,6 +17,48 @@ case "$url" in
   *'&page=2')
     jq -cn '[{context: "last", state: "success"}]'
     ;;
+  *'/site/github/account/whitestrake/project/nixos/jobs?rev=deadbeef&handler=OnPush&limit=100')
+    jq -cn '{
+      items: [
+        {
+          id: "job-1",
+          index: 1,
+          jobName: "20-nixosConfiguration-jaeger",
+          jobPhase: "Done",
+          jobStatus: "Success",
+          evaluationStatus: "Success",
+          derivationStatus: "Success",
+          effectsStatus: "Success",
+          source: {revision: "deadbeef"}
+        }
+      ],
+      more: true
+    }'
+    ;;
+  *'/site/github/account/whitestrake/project/nixos/jobs?rev=deadbeef&handler=OnPush&limit=100&offsetIndex=1')
+    jq -cn '{
+      items: [
+        {
+          id: "job-2",
+          index: 2,
+          jobName: "20-nixosConfiguration-oculus",
+          jobPhase: "Done",
+          jobStatus: "Success",
+          evaluationStatus: "Success",
+          derivationStatus: "Success",
+          effectsStatus: "Success",
+          source: {revision: "deadbeef"}
+        }
+      ],
+      more: false
+    }'
+    ;;
+  *'/jobs/job-1')
+    jq -cn '{}'
+    ;;
+  *'/jobs/job-2')
+    jq -cn '{}'
+    ;;
   *)
     exit 1
     ;;
@@ -30,12 +72,22 @@ export GITHUB_REPOSITORY=whitestrake/nixos
 export HCI_CI_GATE_GITHUB_STATUS_PAGES=2
 export HCI_CI_GATE_TIMEOUT_SECONDS=1
 export HCI_CI_GATE_POLL_INTERVAL_SECONDS=1
+export CI_GATE_HCI_ALLOW_ENV_TOKEN=true
+export HERCULES_CI_TOKEN=dummy
 
 # shellcheck source=/dev/null
 source "$script"
 
 actual="$(ci_gate_poll_github '["last"]' deadbeef | jq -c '{state: .state, contexts: (.contexts | length), pending: (.pendingContexts | length)}')"
 expected='{"state":"green","contexts":1,"pending":0}'
+
+if [ "$actual" != "$expected" ]; then
+  printf 'expected: %s\nactual:   %s\n' "$expected" "$actual" >&2
+  exit 1
+fi
+
+actual="$(ci_gate_poll_hci '["20-nixosConfiguration-jaeger","20-nixosConfiguration-oculus"]' deadbeef | jq -c '{state: .state, jobs: (.jobs | length), missing: (.missingJobs | length)}')"
+expected='{"state":"green","jobs":2,"missing":0}'
 
 if [ "$actual" != "$expected" ]; then
   printf 'expected: %s\nactual:   %s\n' "$expected" "$actual" >&2
