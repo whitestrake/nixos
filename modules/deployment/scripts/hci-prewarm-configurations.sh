@@ -5,20 +5,14 @@ repo_url="${HCI_PREWARM_REPO_URL:-https://github.com/whitestrake/nixos.git}"
 branch="${HCI_PREWARM_BRANCH:-master}"
 checkout_dir="${HCI_PREWARM_CHECKOUT_DIR:-/var/lib/hci-prewarm/nixos}"
 gcroot_dir="${HCI_PREWARM_GCROOT_DIR:-/nix/var/nix/gcroots/hci-prewarm}"
-keep_revisions="${HCI_PREWARM_KEEP_REVISIONS:-3}"
 sleep_seconds="${HCI_PREWARM_SLEEP_SECONDS:-120}"
 lock_file="${HCI_PREWARM_LOCK_FILE:-/run/hci-prewarm-configurations.lock}"
 dry_run_only="${HCI_PREWARM_DRY_RUN_ONLY:-false}"
 agent_service="${HCI_PREWARM_AGENT_SERVICE:-}"
 hci_project="${HCI_PREWARM_HCI_PROJECT:-${HCI_PROJECT:-github/whitestrake/nixos}}"
-hci_master_ref="${HCI_PREWARM_HCI_MASTER_REF:-refs/heads/$branch}"
-hci_latest_jobs="${HCI_PREWARM_HCI_LATEST_JOBS:-200}"
 hci_api_base_url="${HCI_PREWARM_HCI_API_BASE_URL:-${HERCULES_CI_API_BASE_URL:-https://hercules-ci.com}}"
 hci_api_url="${HCI_PREWARM_HCI_API_URL:-${HCI_API_URL:-${hci_api_base_url%/}/api/v1}}"
 hci_jobs_file="${HCI_PREWARM_HCI_JOBS_FILE:-}"
-hci_headers_file="${HCI_PREWARM_HCI_HEADERS_FILE:-${herculesCIHeaders:-}}"
-hci_api_token="${HCI_PREWARM_HCI_API_TOKEN:-}"
-hci_allow_env_token="${HCI_PREWARM_HCI_ALLOW_ENV_TOKEN:-false}"
 hci_connect_timeout="${HCI_PREWARM_HCI_CONNECT_TIMEOUT_SECONDS:-10}"
 hci_request_timeout="${HCI_PREWARM_HCI_REQUEST_TIMEOUT_SECONDS:-60}"
 run_started="$SECONDS"
@@ -50,16 +44,8 @@ fail() {
 
 trap cleanup_tmp_files EXIT
 
-if ! [[ "$keep_revisions" =~ ^[1-9][0-9]*$ ]]; then
-  fail "HCI_PREWARM_KEEP_REVISIONS must be a positive integer, got: $keep_revisions"
-fi
-
 if ! [[ "$sleep_seconds" =~ ^[0-9]+$ ]]; then
   fail "HCI_PREWARM_SLEEP_SECONDS must be a non-negative integer, got: $sleep_seconds"
-fi
-
-if ! [[ "$hci_latest_jobs" =~ ^[1-9][0-9]*$ ]]; then
-  fail "HCI_PREWARM_HCI_LATEST_JOBS must be a positive integer, got: $hci_latest_jobs"
 fi
 
 if ! [[ "$hci_connect_timeout" =~ ^[1-9][0-9]*$ ]]; then
@@ -78,7 +64,7 @@ if ! flock -n 9; then
 fi
 log "event=lock status=acquired lock_file=$lock_file"
 
-log "event=start repo_url=$repo_url branch=$branch checkout_dir=$checkout_dir gcroot_dir=$gcroot_dir keep_revisions=$keep_revisions sleep_seconds=$sleep_seconds dry_run_only=$dry_run_only agent_service=${agent_service:-none} hci_project=$hci_project hci_master_ref=$hci_master_ref hci_latest_jobs=$hci_latest_jobs"
+log "event=start repo_url=$repo_url branch=$branch checkout_dir=$checkout_dir gcroot_dir=$gcroot_dir sleep_seconds=$sleep_seconds dry_run_only=$dry_run_only agent_service=${agent_service:-none} hci_project=$hci_project"
 
 update_checkout() {
   local ref="${1:-refs/heads/$branch}"
@@ -91,22 +77,22 @@ update_checkout() {
     log "event=checkout action=fetch status=start checkout_dir=$checkout_dir before_rev=$before_rev ref=$ref target_rev=${target_rev:-FETCH_HEAD}"
   else
     log "event=checkout action=clone status=start repo_url=$repo_url checkout_dir=$checkout_dir ref=$ref target_rev=${target_rev:-FETCH_HEAD}"
-    mkdir -p "$(dirname "$checkout_dir")"
-    git clone --no-checkout "$repo_url" "$checkout_dir"
+    mkdir -p "$(dirname "$checkout_dir")" || return 1
+    git clone --no-checkout "$repo_url" "$checkout_dir" || return 1
   fi
 
-  git -C "$checkout_dir" fetch --prune origin "$ref"
+  git -C "$checkout_dir" fetch --prune origin "$ref" || return 1
   if [ -n "$target_rev" ]; then
     if ! git -C "$checkout_dir" cat-file -e "$target_rev^{commit}" 2> /dev/null; then
       log "event=checkout action=fetch_revision status=start checkout_dir=$checkout_dir target_rev=$target_rev"
       git -C "$checkout_dir" fetch origin "$target_rev" || true
     fi
-    git -C "$checkout_dir" reset --hard "$target_rev"
+    git -C "$checkout_dir" reset --hard "$target_rev" || return 1
   else
-    git -C "$checkout_dir" reset --hard FETCH_HEAD
+    git -C "$checkout_dir" reset --hard FETCH_HEAD || return 1
   fi
 
-  after_rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
+  after_rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)" || return 1
   log "event=checkout status=complete checkout_dir=$checkout_dir before_rev=$before_rev after_rev=$after_rev ref=$ref"
 }
 
@@ -558,39 +544,30 @@ prewarm_attr() {
   return 0
 }
 
-hci_discovery_configured() {
-  [ -n "$hci_jobs_file" ] \
-    || [ -n "$hci_headers_file" ] \
-    || [ -n "$hci_api_token" ] \
-    || { [ "$hci_allow_env_token" = "true" ] && [ -n "${HERCULES_CI_API_TOKEN:-${HCI_API_TOKEN:-${HERCULES_CI_TOKEN:-}}}" ]; }
-}
-
 hci_curl() {
   local path="$1"
-  local token="$hci_api_token"
 
-  if [ -n "$hci_headers_file" ]; then
-    [ -r "$hci_headers_file" ] || {
-      log "event=hci_lookup status=failed reason=headers-file-unreadable path=$hci_headers_file"
-      return 1
-    }
-    curl -fsS --connect-timeout "$hci_connect_timeout" --max-time "$hci_request_timeout" -H @"$hci_headers_file" "${hci_api_url%/}$path"
-    return
-  fi
+  curl -fsS --connect-timeout "$hci_connect_timeout" --max-time "$hci_request_timeout" "${hci_api_url%/}$path"
+}
 
-  if [ -z "$token" ] && [ "$hci_allow_env_token" = "true" ]; then
-    token="${HERCULES_CI_API_TOKEN:-${HCI_API_TOKEN:-${HERCULES_CI_TOKEN:-}}}"
-  fi
+parse_hci_project() {
+  local project="$1"
+  local site owner repo extra
 
-  [ -n "$token" ] || {
-    log "event=hci_lookup status=disabled reason=no-hci-api-token"
+  IFS=/ read -r site owner repo extra <<< "$project"
+  [ -n "${site:-}" ] && [ -n "${owner:-}" ] && [ -n "${repo:-}" ] && [ -z "${extra:-}" ] || {
+    printf 'ERROR: HCI project must have the form site/owner/repo, got: %s\n' "$project" >&2
     return 1
   }
 
-  curl -fsS --connect-timeout "$hci_connect_timeout" --max-time "$hci_request_timeout" -H "Authorization: Bearer $token" "${hci_api_url%/}$path"
+  printf '%s\t%s\t%s\n' "$site" "$owner" "$repo"
 }
 
-fetch_hci_latest_jobs() {
+fetch_hci_jobs_page() {
+  local revision="$1"
+  local offset="${2:-}"
+  local site owner repo path
+
   if [ -n "$hci_jobs_file" ]; then
     [ -r "$hci_jobs_file" ] || {
       log "event=hci_lookup status=failed reason=jobs-file-unreadable path=$hci_jobs_file"
@@ -600,73 +577,102 @@ fetch_hci_latest_jobs() {
     return
   fi
 
-  hci_curl "/jobs?latest=$hci_latest_jobs"
+  parse_hci_project "$hci_project" >/dev/null || return 1
+  IFS=$'\t' read -r site owner repo < <(parse_hci_project "$hci_project")
+  path="/site/$site/account/$owner/project/$repo/jobs?rev=$revision&handler=OnPush"
+  if [ -n "$offset" ]; then
+    path="$path&offsetIndex=$offset"
+  fi
+
+  hci_curl "$path"
 }
 
-select_hci_prewarm_candidates() {
-  local jobs_file="$1"
-  local project="$2"
-  local master_ref="$3"
-  local site owner repo extra
+fetch_hci_jobs() {
+  local revision="$1"
+  local offset="" page next jobs_tmp
 
-  IFS=/ read -r site owner repo extra <<< "$project"
-  [ -n "${site:-}" ] && [ -n "${owner:-}" ] && [ -n "${repo:-}" ] && [ -z "${extra:-}" ] || {
-    printf 'ERROR: HCI project must have the form site/owner/repo, got: %s\n' "$project" >&2
+  if [ -n "$hci_jobs_file" ]; then
+    page="$(fetch_hci_jobs_page "$revision")" || return 1
+    if ! jq -e 'type == "object" and (.items | type == "array")' <<< "$page" >/dev/null; then
+      log "event=hci_lookup status=failed reason=invalid-jobs-response"
+      return 1
+    fi
+    jq -c '.items' <<< "$page"
+    return
+  fi
+
+  jobs_tmp="$(mktemp)"
+  tmp_files+=("$jobs_tmp")
+  : > "$jobs_tmp"
+
+  while true; do
+    page="$(fetch_hci_jobs_page "$revision" "$offset")" || return 1
+    if ! jq -e 'type == "object" and (.items | type == "array") and (.more | type == "boolean")' <<< "$page" >/dev/null; then
+      log "event=hci_lookup status=failed reason=invalid-paged-jobs-response"
+      return 1
+    fi
+
+    jq -c '.items[]?' <<< "$page" >> "$jobs_tmp"
+
+    if [ "$(jq -r '.more' <<< "$page")" != "true" ]; then
+      break
+    fi
+
+    next="$(jq -r '[.items[]?.index] | max // empty' <<< "$page")"
+    if [ -z "$next" ]; then
+      log "event=hci_lookup status=failed reason=paged-jobs-missing-offset rev=$revision"
+      return 1
+    fi
+    if [ "$next" = "$offset" ]; then
+      log "event=hci_lookup status=failed reason=paged-jobs-stalled rev=$revision offset=$offset"
+      return 1
+    fi
+    offset="$next"
+  done
+
+  if ! jq -s -c . "$jobs_tmp"; then
+    log "event=hci_lookup status=failed reason=invalid-aggregated-jobs"
     return 1
-  }
+  fi
+}
+
+summarize_hci_jobs_for_revision() {
+  local jobs_file="$1"
+  local revision="$2"
 
   jq -r \
-    --arg site "$site" \
-    --arg owner "$owner" \
-    --arg repo "$repo" \
-    --arg masterRef "$master_ref" \
+    --arg revision "$revision" \
     '
-      def green:
-        ((.isCancelled // false) | not)
-        and ((.jobPhase // "" | tostring | ascii_downcase) == "done")
-        and (
-          [
-            .jobStatus?,
-            .evaluationStatus?,
-            .derivationStatus?,
-            .effectsStatus?
-          ]
-          | map(select(. != null) | tostring | ascii_downcase)
-          | length > 0
-          and all(.[]; test("^(success|succeed|succeeded|successful|done|pass|passed|complete|completed)$"))
-        );
+      def failed: (. // "" | tostring | ascii_downcase) | test("fail|error|exception|cancel|timed|abort|unsuccess");
+      def success: (. // "" | tostring | ascii_downcase) | test("^(success|succeed|succeeded|successful|done|pass|passed|complete|completed)$");
+      def done($job): (($job.jobPhase // "") | tostring | ascii_downcase) == "done";
+      def green($job):
+        (($job.isCancelled // false) | not)
+        and ([$job.jobStatus, $job.evaluationStatus, $job.derivationStatus, $job.effectsStatus] | map(. // empty) | all(failed | not))
+        and done($job)
+        and ($job.jobStatus | success)
+        and ([$job.evaluationStatus, $job.derivationStatus, $job.effectsStatus] | map(. // "Success") | all(success));
 
       [
         .[]?
-        | select(.project.siteSlug == $site)
-        | select(.project.ownerSlug == $owner)
-        | select(.project.slug == $repo)
-        | .jobs[]?
-        | select((.jobName // "") | test("^(10-darwinConfiguration-|20-nixosConfiguration-)"))
-        | select((.source.ref // "") != "" and (.source.revision // "") != "")
+        | select(.source.revision == $revision)
         | {
-            ref: .source.ref,
-            revision: .source.revision,
+            jobName: (.jobName // "unknown"),
             index: ((.index // 0) | tonumber? // 0),
-            green: green
+            startTime: (.startTime // ""),
+            green: green(.)
           }
       ]
-      | sort_by(.ref, .revision)
-      | group_by([.ref, .revision])
-      | map({
-          ref: .[0].ref,
-          revision: .[0].revision,
-          index: (map(.index) | max),
-          green: all(.[]; .green)
-        })
-      | map(select(.green))
-      | map(. + {slot: (if .ref == $masterRef then "master" else "non-master" end)})
-      | sort_by(.slot, .index)
-      | group_by(.slot)
-      | map(sort_by(.index) | last)
-      | sort_by(if .slot == "master" then 0 else 1 end)
-      | .[]
-      | [.slot, .ref, .revision, (.index | tostring)]
+      | sort_by(.jobName, .index, .startTime)
+      | group_by(.jobName)
+      | map(last) as $jobs
+      | if ($jobs | length) == 0 then
+          ["missing", "0", ""]
+        elif all($jobs[]; .green) then
+          ["green", ($jobs | length | tostring), ""]
+        else
+          ["pending", ($jobs | length | tostring), ($jobs | map(select(.green | not).jobName) | join(","))]
+        end
       | @tsv
     ' "$jobs_file"
 }
@@ -798,7 +804,12 @@ prune_slot_roots() {
   local -a protected_dirs
 
   protected_dirs=()
-  for current in "$gcroot_dir/current" "$gcroot_dir/master/current" "$gcroot_dir/non-master/current"; do
+  if [ -L "$gcroot_dir/non-master/current" ]; then
+    log "event=prune status=remove_legacy_current current=$gcroot_dir/non-master/current"
+    rm -f "$gcroot_dir/non-master/current"
+  fi
+
+  for current in "$gcroot_dir/current" "$gcroot_dir/master/current"; do
     rev_dir="$(readlink -f "$current" 2> /dev/null || true)"
     case "$rev_dir" in
       "$gcroot_dir"/rev-*)
@@ -832,149 +843,51 @@ prune_slot_roots() {
   done < <(find "$gcroot_dir" -maxdepth 1 -mindepth 1 -type d -name 'rev-*' | sort)
 }
 
-prune_old_roots() {
-  local current_rev_dir="$1"
-  local promoted_rev_dir
-  local protected_count
-  local keep_previous
-  local index
-  local -a previous_rev_dirs
-  local -a stale_dirs
+jobs_file="$(mktemp)"
+tmp_files+=("$jobs_file")
 
-  promoted_rev_dir="$(readlink -f "$gcroot_dir/current" 2> /dev/null || true)"
-  protected_count=1
-  if [ -n "$promoted_rev_dir" ] && [ "$promoted_rev_dir" != "$current_rev_dir" ]; then
-    protected_count=2
-  fi
+if ! update_checkout; then
+  log "event=checkout status=failed message=preserving-existing-roots"
+  exit 0
+fi
+rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
+log "event=hci_lookup status=start rev=$rev"
 
-  keep_previous=$((keep_revisions - protected_count))
-  if [ "$keep_previous" -lt 0 ]; then
-    keep_previous=0
-  fi
-
-  mapfile -t previous_rev_dirs < <(
-    find "$gcroot_dir" \
-      -maxdepth 1 \
-      -mindepth 1 \
-      -type d \
-      -name 'rev-*' \
-      -printf '%T@ %p\n' |
-      sort -rn |
-      cut -d' ' -f2- |
-      while IFS= read -r rev_dir; do
-        if [ "$rev_dir" = "$current_rev_dir" ] || { [ -n "$promoted_rev_dir" ] && [ "$rev_dir" = "$promoted_rev_dir" ]; }; then
-          continue
-        fi
-        printf '%s\n' "$rev_dir"
-      done
-  )
-
-  if [ "${#previous_rev_dirs[@]}" -le "$keep_previous" ]; then
-    log "event=prune status=skip gcroot_dir=$gcroot_dir active_rev_dir=$current_rev_dir promoted_rev_dir=${promoted_rev_dir:-none} previous_count=${#previous_rev_dirs[@]} keep_previous=$keep_previous"
-    return 0
-  fi
-
-  stale_dirs=()
-  for index in "${!previous_rev_dirs[@]}"; do
-    if [ "$index" -ge "$keep_previous" ]; then
-      stale_dirs+=("${previous_rev_dirs[$index]}")
-    fi
-  done
-
-  for stale_dir in "${stale_dirs[@]}"; do
-    case "$stale_dir" in
-      "$gcroot_dir"/rev-*)
-        log "event=prune status=remove stale_dir=$stale_dir"
-        rm -rf "$stale_dir"
-        ;;
-      *)
-        fail "refusing to prune unexpected path: $stale_dir"
-        ;;
-    esac
-  done
-}
-
-if hci_discovery_configured; then
-  jobs_file="$(mktemp)"
-  candidates_file="$(mktemp)"
-  tmp_files+=("$jobs_file" "$candidates_file")
-
-  if ! fetch_hci_latest_jobs > "$jobs_file"; then
-    log "event=hci_lookup status=failed message=preserving-existing-roots"
-    exit 0
-  fi
-
-  if ! select_hci_prewarm_candidates "$jobs_file" "$hci_project" "$hci_master_ref" > "$candidates_file"; then
-    fail "failed to select HCI prewarm candidates"
-  fi
-
-  candidate_count="$(grep -c . "$candidates_file" || true)"
-  log "event=hci_lookup status=complete candidates=$candidate_count"
-  if [ "$candidate_count" -eq 0 ]; then
-    log "event=finish status=success reason=no-hci-candidates duration_seconds=$((SECONDS - run_started))"
-    exit 0
-  fi
-
-  while IFS=$'\t' read -r slot ref rev index; do
-    [ -n "$slot" ] || continue
-    case "$slot" in
-      master | non-master) ;;
-      *) fail "unexpected HCI prewarm slot: $slot" ;;
-    esac
-
-    log "event=hci_candidate slot=$slot ref=$ref rev=$rev index=$index"
-    set +e
-    prewarm_revision "$slot" "$ref" "$rev" "$gcroot_dir/$slot/current"
-    status=$?
-    set -e
-
-    case "$status" in
-      0)
-        ;;
-      20)
-        log "event=finish status=failed slot=$slot reason=misses rev=$rev duration_seconds=$((SECONDS - run_started))"
-        exit 1
-        ;;
-      30)
-        log "event=finish status=deferred slot=$slot reason=agent-became-busy rev=$rev duration_seconds=$((SECONDS - run_started))"
-        exit 0
-        ;;
-      *)
-        fail "unexpected prewarm revision status $status for slot $slot"
-        ;;
-    esac
-  done < "$candidates_file"
-
-  prune_slot_roots
-  log "event=finish status=success mode=hci-discovery duration_seconds=$((SECONDS - run_started))"
+if ! fetch_hci_jobs "$rev" > "$jobs_file"; then
+  log "event=hci_lookup status=failed message=preserving-existing-roots"
   exit 0
 fi
 
-log "event=hci_lookup status=disabled reason=no-hci-source message=falling-back-to-branch-prewarm"
-update_checkout
-
-rev="$(git -C "$checkout_dir" rev-parse --verify HEAD)"
-rev_dir="$gcroot_dir/rev-$rev"
+hci_summary="$(summarize_hci_jobs_for_revision "$jobs_file" "$rev")" || fail "failed to summarize HCI jobs for $rev"
+IFS=$'\t' read -r hci_state hci_job_count hci_not_green <<< "$hci_summary"
+log "event=hci_lookup status=complete rev=$rev state=$hci_state jobs=$hci_job_count not_green=${hci_not_green:-none}"
+if [ "$hci_state" != "green" ]; then
+  log "event=finish status=success reason=hci-$hci_state rev=$rev duration_seconds=$((SECONDS - run_started))"
+  exit 0
+fi
 
 set +e
-prewarm_revision "legacy" "refs/heads/$branch" "$rev" "$gcroot_dir/current"
+prewarm_revision "master" "refs/heads/$branch" "$rev" "$gcroot_dir/master/current"
 status=$?
 set -e
 
 case "$status" in
   0)
-    prune_old_roots "$rev_dir"
-    log "event=finish status=success rev=$rev duration_seconds=$((SECONDS - run_started))"
     ;;
   20)
-    prune_old_roots "$rev_dir"
+    log "event=finish status=failed slot=master reason=misses rev=$rev duration_seconds=$((SECONDS - run_started))"
+    prune_slot_roots
     exit 1
     ;;
   30)
-    prune_old_roots "$rev_dir"
+    log "event=finish status=deferred slot=master reason=agent-became-busy rev=$rev duration_seconds=$((SECONDS - run_started))"
+    prune_slot_roots
     exit 0
     ;;
   *)
-    fail "unexpected prewarm revision status $status"
+    fail "unexpected prewarm revision status $status for slot master"
     ;;
 esac
+
+prune_slot_roots
+log "event=finish status=success mode=hci-discovery duration_seconds=$((SECONDS - run_started))"
