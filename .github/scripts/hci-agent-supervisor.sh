@@ -3,7 +3,6 @@ set -euo pipefail
 
 : "${CACHIX_CACHE_NAME:=whitestrake}"
 : "${CACHIX_PUBLIC_KEY:=whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=}"
-: "${GITHUB_API_URL:=https://api.github.com}"
 : "${HCI_AGENT_CONCURRENT_TASKS:=1}"
 : "${HCI_AGENT_HOSTNAME:=}"
 : "${HCI_AGENT_JOB_DISCOVERY_SECONDS:=60}"
@@ -19,7 +18,6 @@ set -euo pipefail
 : "${HCI_AGENT_TOOLS_BOOTSTRAPPED:=0}"
 : "${HCI_AGENT_TOOLS_GCROOT_DIR:=/nix/var/nix/gcroots/hci-agent-supervisor/tools}"
 : "${HCI_API_BASE_URL:=https://hercules-ci.com}"
-: "${HCI_LATEST_JOBS_LIMIT:=20}"
 : "${HCI_PROJECT:=github/whitestrake/nixos}"
 
 log() {
@@ -309,99 +307,31 @@ stop_final_gate_job_name_resolver() {
   HCI_AGENT_JOB_NAME_RESOLVER_PID=""
 }
 
-hci_github_status_context() {
-  local job_name
+find_hci_job_id_for_revision() {
+  local revision="$1"
+  local job_name page path
 
   job_name="$(hci_job_name)" || return 1
-  printf 'ci/hercules/onPush/%s\n' "$job_name"
-}
+  path="/api/v1/site/$HCI_PROJECT_SITE/account/$HCI_PROJECT_ACCOUNT/project/$HCI_PROJECT_REPO/jobs?rev=$revision&name=$job_name&handler=OnPush"
+  page="$(hci_api_get "$path")" || return 1
 
-github_repository() {
-  printf '%s\n' "${GITHUB_REPOSITORY:-$HCI_PROJECT_ACCOUNT/$HCI_PROJECT_REPO}"
-}
-
-find_hci_job_id_for_revision() {
-  local jobs_json="$1"
-  local revision="$2"
-  local job_name
-
-  job_name="$(hci_job_name)"
+  if ! jq -e 'type == "object" and (.items | type == "array")' <<< "$page" >/dev/null; then
+    log "WARNING: HCI project jobs response was not a PagedJobs object."
+    return 1
+  fi
 
   jq -er \
     --arg revision "$revision" \
-    --arg site "$HCI_PROJECT_SITE" \
-    --arg account "$HCI_PROJECT_ACCOUNT" \
-    --arg repo "$HCI_PROJECT_REPO" \
     --arg jobName "$job_name" \
     '
       [
-        .[]?
-        | select(.project.siteSlug == $site)
-        | select(.project.ownerSlug == $account)
-        | select(.project.slug == $repo)
-        | .jobs[]?
+        .items[]?
         | select(.source.revision == $revision)
         | select(.jobName == $jobName)
-        | .id
-      ][0] // empty
-    ' <<< "$jobs_json"
-}
-
-find_hci_job_index_for_revision_statuses() {
-  local statuses_json="$1"
-  local revision="$2"
-  local context
-
-  context="$(hci_github_status_context)"
-
-  jq -er \
-    --arg context "$context" \
-    --arg revision "$revision" \
-    '
-      [
-        .[]?
-        | select(.context == $context)
-        | select((.target_url? // "") | test("/jobs/[0-9]+$"))
-        | {
-            state: (.state // ""),
-            updatedAt: (.updated_at // .created_at // ""),
-            index: (.target_url | capture("/jobs/(?<index>[0-9]+)$").index)
-          }
       ]
-      | sort_by(.updatedAt)
-      | last
-      | .index // empty
-    ' <<< "$statuses_json"
-}
-
-find_hci_job_id_for_index() {
-  local jobs_json="$1"
-  local index="$2"
-  local revision="$3"
-  local job_name
-
-  job_name="$(hci_job_name)"
-
-  jq -er \
-    --arg index "$index" \
-    --arg revision "$revision" \
-    --arg site "$HCI_PROJECT_SITE" \
-    --arg account "$HCI_PROJECT_ACCOUNT" \
-    --arg repo "$HCI_PROJECT_REPO" \
-    --arg jobName "$job_name" \
-    '
-      [
-        .[]? as $group
-        | $group.jobs[]?
-        | select((.index | tostring) == $index)
-        | select(.source.revision == $revision)
-        | select(.jobName == $jobName)
-        | select(((.forgeName // $group.project.siteSlug // "") == $site))
-        | select(((.ownerName // $group.project.ownerSlug // "") == $account))
-        | select(((.repoName // $group.project.slug // "") == $repo))
-        | .id
-      ][0] // empty
-    ' <<< "$jobs_json"
+      | sort_by(.index // 0, .startTime // "")
+      | last.id // empty
+    ' <<< "$page"
 }
 
 classify_hci_job() {
@@ -450,59 +380,6 @@ hci_api_get() {
     --retry-all-errors \
     -H "Authorization: Bearer $HCI_API_TOKEN" \
     "$HCI_API_BASE_URL$path"
-}
-
-github_api_get() {
-  local path="$1"
-  local curl_args=(
-    curl -fsS
-    --connect-timeout 10
-    --max-time 60
-    --retry 3
-    --retry-delay 2
-    --retry-all-errors
-    -H "Accept: application/vnd.github+json"
-    -H "X-GitHub-Api-Version: 2022-11-28"
-  )
-
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
-  fi
-
-  "${curl_args[@]}" "$GITHUB_API_URL$path"
-}
-
-find_hci_job_id_for_revision_status() {
-  local revision="$1"
-  local repository statuses_json job_index jobs_json job_id
-
-  if [ "$HCI_PROJECT_SITE" != "github" ]; then
-    return 1
-  fi
-
-  repository="$(github_repository)"
-
-  if ! statuses_json="$(github_api_get "/repos/$repository/commits/$revision/statuses?per_page=100")"; then
-    log "WARNING: failed to fetch GitHub commit statuses for $repository revision $revision."
-    return 1
-  fi
-
-  if ! job_index="$(find_hci_job_index_for_revision_statuses "$statuses_json" "$revision")" || [ -z "$job_index" ]; then
-    return 1
-  fi
-
-  if ! jobs_json="$(hci_api_get "/api/v1/jobs?index=$job_index")"; then
-    log "WARNING: failed to fetch Hercules CI job index $job_index from GitHub status target."
-    return 1
-  fi
-
-  if ! job_id="$(find_hci_job_id_for_index "$jobs_json" "$job_index" "$revision")" || [ -z "$job_id" ]; then
-    log "WARNING: GitHub status target referenced Hercules CI job index $job_index, but it did not match $HCI_PROJECT revision $revision."
-    return 1
-  fi
-
-  log "Found Hercules CI job $job_id from GitHub status target jobs/$job_index."
-  printf '%s\n' "$job_id"
 }
 
 set_agent_hostname() {
@@ -731,25 +608,14 @@ wait_for_job_id() {
   local revision="$1"
   local deadline="$2"
   local job_discovery_deadline
-  local jobs_json job_id
+  local job_id
 
   HCI_AGENT_JOB_NAME="$(hci_job_name)" || return 1
   export HCI_AGENT_JOB_NAME
   job_discovery_deadline=$((SECONDS + HCI_AGENT_JOB_DISCOVERY_SECONDS))
 
   while [ "$SECONDS" -lt "$deadline" ] && [ "$SECONDS" -lt "$job_discovery_deadline" ]; do
-    if job_id="$(find_hci_job_id_for_revision_status "$revision")" && [ -n "$job_id" ]; then
-      printf '%s\n' "$job_id"
-      return 0
-    fi
-
-    if ! jobs_json="$(hci_api_get "/api/v1/jobs?latest=$HCI_LATEST_JOBS_LIMIT")"; then
-      log "WARNING: failed to fetch latest Hercules CI jobs; retrying."
-      sleep "$HCI_AGENT_POLL_SECONDS"
-      continue
-    fi
-
-    if job_id="$(find_hci_job_id_for_revision "$jobs_json" "$revision")" && [ -n "$job_id" ]; then
+    if job_id="$(find_hci_job_id_for_revision "$revision")" && [ -n "$job_id" ]; then
       printf '%s\n' "$job_id"
       return 0
     fi
