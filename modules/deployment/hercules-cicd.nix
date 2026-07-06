@@ -19,7 +19,7 @@ in {
   flake-file.inputs.hercules-ci-effects.inputs.nixpkgs.follows = "nixpkgs";
   imports = [inputs.hercules-ci-effects.flakeModule];
 
-  flake.deployment.deployables =
+  flake.deploy.targets =
     flakeLib.mapAttrs mkDeploymentDeployable
     (flakeLib.filterAttrs
       (_name: cfg: cfg.config.services.cachix-agent.enable or false)

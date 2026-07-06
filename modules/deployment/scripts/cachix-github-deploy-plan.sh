@@ -55,7 +55,7 @@ fi
 mkdir -p "$output_dir"
 
 deployables="$(
-  nix eval --accept-flake-config --json .#deployment.deployables
+  nix eval --accept-flake-config --json .#deploy.targets
 )"
 
 if ! jq -e '
@@ -71,7 +71,7 @@ if ! jq -e '
     and (.value.deployPin | type == "string" and startswith("deployed-host-"))
   )
 ' <<< "$deployables" >/dev/null; then
-  echo "ERROR: .#deployment.deployables is malformed." >&2
+  echo "ERROR: .#deploy.targets is malformed." >&2
   jq . <<< "$deployables" >&2 || true
   exit 1
 fi
