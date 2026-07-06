@@ -66,7 +66,7 @@ jobs:
           CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
           CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
-          CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "3"
+          CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "1"
           DEPLOY_HOST: ${{ matrix.host }}
           DEPLOY_SYSTEM: ${{ matrix.system }}
           DEPLOY_STORE_PATH: ${{ matrix.storePath }}

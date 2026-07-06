@@ -23,7 +23,6 @@
       cachixDeployToken = {};
       cachixPersonalToken = {};
       githubWhitestrakeNixosDeploymentsToken = {};
-      githubWhitestrakeNixosStatusReadToken = {};
       herculesClusterJoinToken.owner =
         config.systemd.services.hercules-ci-agent.serviceConfig.User;
     };
@@ -77,11 +76,6 @@
           kind = "Secret";
           data = {token = config.sops.placeholder.githubWhitestrakeNixosDeploymentsToken;};
           condition = productionBranchCondition;
-        };
-        "githubWhitestrakeNixosStatusRead" = {
-          kind = "Secret";
-          data = {token = config.sops.placeholder.githubWhitestrakeNixosStatusReadToken;};
-          condition = repoCondition;
         };
       };
     };

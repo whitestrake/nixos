@@ -82,14 +82,16 @@ in {
       deployPin = "deployed-host-${name}";
     };
 
-    mkBuiltJob = name: _cfg: {
+    mkBuiltJob = kind: name: _cfg: {
       host = name;
-      jobName = mkConfigurationJobName "nixosConfiguration" name;
-      toplevelAttrPath = ["nixosConfigurations" name "config" "system" "build" "toplevel"];
+      jobName = mkConfigurationJobName kind name;
+      toplevelAttrPath = ["${kind}s" name "config" "system" "build" "toplevel"];
       buildPin = "built-host-${name}";
     };
 
-    builtJobs = lib.mapAttrsToList mkBuiltJob (self.nixosConfigurations or {});
+    builtJobs =
+      (lib.mapAttrsToList (mkBuiltJob "nixosConfiguration") (self.nixosConfigurations or {}))
+      ++ (lib.mapAttrsToList (mkBuiltJob "darwinConfiguration") (self.darwinConfigurations or {}));
     deployableJobs = lib.mapAttrsToList mkDeployableJob deployableConfigurations;
 
     mkDeliverablesEffect = {
@@ -104,7 +106,6 @@ in {
         secretsMap =
           lib.genAttrs (
             ["cachixPush"]
-            ++ ["githubWhitestrakeNixosStatusRead"]
             ++ lib.optional createGitHubDeployment "githubWhitestrakeNixosDeployments"
           )
           lib.id;
@@ -113,9 +114,7 @@ in {
           export CACHIX_CACHE_NAME="whitestrake"
           export HCI_DEPLOYMENT_MODE=${escapeShellArg mode}
           export HCI_DEPLOYMENT_BRANCH=${escapeShellArg config.repo.branch}
-          export HCI_DEPLOYMENT_REF=${escapeShellArg config.repo.ref}
           export HCI_DEPLOYMENT_REV=${escapeShellArg config.repo.rev}
-          export HCI_DEPLOYMENT_SHORT_REV=${escapeShellArg config.repo.shortRev}
           export HCI_REQUIRED_JOB_NAMES=${escapeShellArg (builtins.toJSON requiredJobNames)}
           export HCI_BUILT_JOBS=${escapeShellArg (builtins.toJSON builtJobs)}
           export HCI_DEPLOYABLE_JOBS=${escapeShellArg (builtins.toJSON deployableJobs)}
@@ -125,9 +124,8 @@ in {
             then "true"
             else "false"
           )}
-          export CACHIX_BUILT_PIN_KEEP_REVISIONS="10"
+          export CACHIX_BUILT_PIN_KEEP_REVISIONS="3"
           export CACHIX_AUTH_TOKEN="$(readSecretString cachixPush .token)"
-          export GITHUB_TOKEN="$(readSecretString githubWhitestrakeNixosStatusRead .token)"
           export GITHUB_REPOSITORY="whitestrake/nixos"
           ${optionalString createGitHubDeployment ''
             export GITHUB_DEPLOYMENT_TOKEN="$(readSecretString githubWhitestrakeNixosDeployments .token)"
