@@ -1,5 +1,5 @@
 name: "Mount sparsebundle Nix root"
-description: "Create or attach a sparsebundle-backed /nix image and clean up in post if still mounted."
+description: "Create or attach a sparsebundle-backed /nix image."
 
 inputs:
   image-size:
@@ -10,7 +10,10 @@ inputs:
     required: true
 
 runs:
-  using: "node24"
-  main: "main.js"
-  post: "post.js"
-  post-if: "always()"
+  using: "composite"
+  steps:
+    - shell: bash
+      env:
+        ACTION_IMAGE_SIZE: ${{ inputs.image-size }}
+        ACTION_SYSTEM: ${{ inputs.system }}
+      run: ${{ github.action_path }}/main.sh
