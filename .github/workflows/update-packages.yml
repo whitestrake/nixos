@@ -108,6 +108,5 @@ jobs:
             _This PR was created automatically by the package update workflow._
           labels: |
             dependencies
-            automated
           commit-message: "chore(pkgs): update ${{ matrix.package }}${{ steps.update.outputs.title_suffix }}"
           delete-branch: true

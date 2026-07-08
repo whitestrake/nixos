@@ -32,6 +32,7 @@ jobs:
           branch: update-flake-lock
           commit-msg: "chore: bump flake.lock"
           pr-title: "chore: bump flake.lock"
+          pr-labels: dependencies
           pr-body: |
             Automated changes by the [update-flake-lock](https://github.com/DeterminateSystems/update-flake-lock) GitHub Action.
 
