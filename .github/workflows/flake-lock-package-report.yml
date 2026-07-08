@@ -80,10 +80,19 @@ jobs:
             --base-sha "${{ steps.pr.outputs.base_sha }}" \
             --output package-report.md
 
+      - name: Create GitHub App token
+        if: ${{ steps.pr.outputs.stale == 'false' }}
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
+          permission-issues: write
+
       - name: Update package report comment
         if: ${{ steps.pr.outputs.stale == 'false' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: |
           set -euo pipefail
@@ -91,7 +100,7 @@ jobs:
           marker="<!-- flake-lock-package-report:comment -->"
           comment_id="$(
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id" \
+              --jq ".[] | select(.body | contains(\"$marker\")) | .id" \
               | head -n 1
           )"
 
