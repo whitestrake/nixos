@@ -247,6 +247,42 @@
       programs.home-manager.enable = true;
     };
 
+    hmLinux = {
+      # service-wrapper uses Ubuntu-style `service <unit> <command>`, so override
+      # zsh's stock SysV-focused completion with systemd unit names.
+      programs.zsh.siteFunctions._service = ''
+        #compdef service
+
+        local curcontext="''${curcontext-}" state line ret=1
+        typeset -A opt_args
+
+        _service_wrapper_services() {
+          local -a units services
+
+          if (( $+commands[systemctl] )); then
+            units=(''${''${(f)"$(_call_program services systemctl list-unit-files --type=service --full --no-legend --no-pager "''${PREFIX}*.service" 2>/dev/null)"}%%[[:space:]]*})
+            services=(''${''${(M)units:#*.service}%.service})
+            if (( ''${#services} )); then
+              _describe -t services "systemd service" services
+              return
+            fi
+          fi
+
+          _services
+        }
+
+        _arguments -s \
+          "(-h --help)"{-h,--help}"[print help information]" \
+          "(-V --version)"{-V,--version}"[print version information]" \
+          "(-)--status-all[list all services]" \
+          "1:service:_service_wrapper_services" \
+          "2:command:(start stop restart try-restart reload force-reload status force-stop --full-restart)" \
+          "*::argument:_files" && ret=0
+
+        return ret
+      '';
+    };
+
     hmDarwin = {pkgs, ...}: {
       programs.git.ignores = [".DS_Store"];
       programs.ghostty = {
