@@ -11,6 +11,8 @@
       programs = {
         alejandra.enable = true;
         actionlint.enable = true;
+        ruff-check.enable = true;
+        ruff-format.enable = true;
         shellcheck.enable = true;
         yamlfmt = {
           enable = true;

@@ -17,8 +17,6 @@ jobs:
         uses: actions/checkout@v7
       - name: Install Nix
         uses: ./.github/actions/install-nix
-      - name: Update flake.lock
-        run: nix flake update --accept-flake-config
       - name: Create GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -27,16 +25,13 @@ jobs:
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v8
+      - name: Update flake.lock
+        uses: DeterminateSystems/update-flake-lock@834c491b2ece4de0bbd00d85214bb5e83b4da5c6
         with:
           token: ${{ steps.app-token.outputs.token }}
-          branch: nix-update/flake-lock
-          title: "chore: bump flake.lock"
-          body: |
-            Automated update of `flake.lock`.
-          labels: |
-            dependencies
-            automated
-          commit-message: "chore: bump flake.lock"
-          delete-branch: true
+          branch: update-flake-lock
+          commit-msg: "chore: bump flake.lock"
+          pr-title: "chore: bump flake.lock"
+          pr-body: |
+            {{ env.GIT_COMMIT_MESSAGE }}
+          nix-options: --accept-flake-config
