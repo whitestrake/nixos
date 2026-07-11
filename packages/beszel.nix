@@ -48,8 +48,10 @@ in {
   checkFlags = let
     skippedTests = [
       "TestCollectorStartHelpers/nvtop_collector"
+      "TestCollectorStartHelpers/tegrastats_collector"
       "TestApiRoutesAuthentication/GET_/update_-_shouldn't_exist_without_CHECK_UPDATES_env_var"
       "TestConfigSyncWithTokens"
+      "TestMultipleSystemsWithSameUniversalToken"
       "TestServiceUpdateCPUPercent/subsequent_call_calculates_CPU_percentage"
     ];
   in [

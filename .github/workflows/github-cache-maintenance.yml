@@ -50,7 +50,7 @@ jobs:
               "system": "aarch64-linux",
               "runner": "ubuntu-24.04-arm",
               "cacheKind": "ext4",
-              "imageSize": "8G",
+              "imageSize": "16G",
               "imageDir": "nix-root-ci-aarch64-linux",
               "cachePrefix": "nix-root-ci-aarch64-linux-ext4-v1"
             },

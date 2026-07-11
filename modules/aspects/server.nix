@@ -21,12 +21,6 @@
       in {
         nix.settings.auto-optimise-store = true;
 
-        nixpkgs.overlays = [
-          (final: prev: {
-            dhcpcd = final.unstable.dhcpcd;
-          })
-        ];
-
         # Allow sudo via SSH key.
         security.pam.sshAgentAuth.enable = true;
         security.pam.services.sudo.sshAgentAuth = true;
