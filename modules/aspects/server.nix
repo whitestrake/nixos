@@ -20,6 +20,7 @@
         tailscaleReadyCommand = "${config.services.tailscale.package}/bin/tailscale status --peers=false";
       in {
         nix.settings.auto-optimise-store = true;
+        networking.dhcpcd.persistent = true;
 
         # Allow sudo via SSH key.
         security.pam.sshAgentAuth.enable = true;
