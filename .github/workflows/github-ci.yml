@@ -74,7 +74,7 @@ jobs:
                     cacheKind: "ext4",
                     cachePrefix: "nix-root-ci-aarch64-linux-ext4-v1",
                     imageDir: "nix-root-ci-aarch64-linux",
-                    imageSize: "8G"
+                    imageSize: "16G"
                   }
                 elif .system == "x86_64-linux" then
                   . + {
