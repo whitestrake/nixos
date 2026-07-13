@@ -1,18 +1,18 @@
 {pkgs, ...}: let
-  version = "0.144.1";
+  version = "0.144.3";
 
   systemMap = {
     "aarch64-darwin" = {
       url = "https://github.com/openai/codex/releases/download/rust-v${version}/codex-aarch64-apple-darwin.tar.gz";
-      hash = "sha256-iOcqyL0wgV99GOYtrDM9wgzjrRy6lL4WSaGXfdm/27g=";
+      hash = "sha256-JJqvEmRK3Th250CZjLoOrI19F16QOt2MvI2Oqh8C4rU=";
     };
     "x86_64-linux" = {
       url = "https://github.com/openai/codex/releases/download/rust-v${version}/codex-x86_64-unknown-linux-musl.tar.gz";
-      hash = "sha256-hAka4gxl/MfUEg25fRvVfX/435x2Cft4HHjC671PWig=";
+      hash = "sha256-ubSujptWHGTfvF71LGMZy6dQrIfePH9ViFAmIx466ok=";
     };
     "aarch64-linux" = {
       url = "https://github.com/openai/codex/releases/download/rust-v${version}/codex-aarch64-unknown-linux-musl.tar.gz";
-      hash = "sha256-ufjvX5jkbO1Nu9N1akIj4+4pmkV/9IijMFvqRV2otbg=";
+      hash = "sha256-3XbP1aLPm88OMiSv4o4jBlz9JyYuBuD/vI+kA0PwkFo=";
     };
   };
 
