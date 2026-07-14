@@ -5,16 +5,15 @@
       den.aspects.komodo-periphery
     ];
 
-    nixos = {pkgs, ...}: {
+    nixos = {config, ...}: {
       # Docker Service
       virtualisation.docker.enable = true;
-      virtualisation.docker.package = pkgs.docker_29;
       virtualisation.docker.autoPrune.enable = true;
       virtualisation.docker.liveRestore = false;
       systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
       den.deploy.health = {
         requiredSystemdUnits = ["docker.service"];
-        requiredCommands.docker = "${pkgs.docker_29}/bin/docker info";
+        requiredCommands.docker = "${config.virtualisation.docker.package}/bin/docker info";
       };
 
       environment.shellAliases = {
