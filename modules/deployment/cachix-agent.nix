@@ -30,6 +30,10 @@
       enable = true;
       credentialsFile = config.sops.secrets.cachixAgentToken.path;
     };
+    services.networkLiveness.checks.cachix-agent = {
+      inhibitPath = "/run/cachix-deploy-in-progress";
+      inhibitMaxAgeSeconds = 600;
+    };
     den.deploy.health.requiredSystemdUnits = ["cachix-agent.service"];
 
     systemd.services.nh-clean.unitConfig = lib.mkIf (config.programs.nh.clean.enable or false) {

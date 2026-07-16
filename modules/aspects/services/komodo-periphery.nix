@@ -19,6 +19,7 @@
         '';
       };
 
+      services.networkLiveness.checks.komodo-periphery = {};
       systemd.services.komodo-periphery = {
         after = ["network-online.target"];
         wants = ["network-online.target"];
