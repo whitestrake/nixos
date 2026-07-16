@@ -3,6 +3,7 @@
     den.aspects.hercules.agent
     den.aspects.hercules.prewarm
     den.aspects.hercules.nixbuild-linux-broker
+    den.aspects.hercules.store-replication
   ];
 
   den.aspects.hercules.agent.nixos = {
