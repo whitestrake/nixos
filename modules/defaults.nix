@@ -122,6 +122,29 @@
         system.defaults.LaunchServices.LSQuarantine = false;
         programs.zsh.enable = true;
 
+        launchd.daemons.nix-store-gc = {
+          path = [config.environment.systemPath];
+          serviceConfig.StartCalendarInterval.Minute = 15;
+          command = "${pkgs.writeShellScript "nix-store-gc" ''
+            set -Eeuo pipefail
+            exec > >(/usr/bin/logger -t nix-store-gc) 2>&1
+            trap 'status=$?; echo "failed at line $LINENO with exit $status"; exit $status' ERR
+
+            target_kib=$((50 * 1024 * 1024)) # 50 GiB
+            trigger_kib=$((60 * 1024 * 1024)) # 60 GiB
+            used_kib=$(/bin/df -Pk /nix | /usr/bin/awk 'NR == 2 { print $3 }')
+
+            ((used_kib >= trigger_kib)) || exit 0
+
+            ${lib.getExe pkgs.nh} clean all --keep-since 30d --keep 5 --no-gc
+
+            used_kib=$(/bin/df -Pk /nix | /usr/bin/awk 'NR == 2 { print $3 }')
+            ((used_kib > target_kib)) || exit 0
+
+            exec nix store gc --max "$((used_kib - target_kib))K"
+          ''}";
+        };
+
         fonts.packages = with pkgs; [
           nerd-fonts.meslo-lg
           nerd-fonts.fira-code
