@@ -81,7 +81,7 @@ jobs:
       HCI_AGENT_SYSTEM: aarch64-linux
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-linux-ext4-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-linux
-      NIX_ROOT_IMAGE_SIZE: 16G
+      NIX_ROOT_IMAGE_SIZE: 32G
       NIX_ROOT_SYSTEM: aarch64-linux
     steps:
       - name: Checkout repository
