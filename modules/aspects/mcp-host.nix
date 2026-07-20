@@ -6,13 +6,13 @@
     pkgs,
     ...
   }: let
-    tailscale = "${config.services.tailscale.package}/bin/tailscale";
+    tailscale = lib.getExe config.services.tailscale.package;
     tailnetServiceHost = name: "mcp-${name}.${host.tailnetSuffix}";
 
     services = {
       homeassistant = {
         port = 8761;
-        command = "${pkgs.myPkgs.ha-mcp}/bin/ha-mcp-web";
+        command = lib.getExe' pkgs.myPkgs.ha-mcp "ha-mcp-web";
         env = {
           MCP_HOST = "127.0.0.1";
           MCP_PORT = "8761";
@@ -26,7 +26,7 @@
 
       komodo = {
         port = 8762;
-        command = "${pkgs.myPkgs.komodo-mcp-server}/bin/komodo-mcp-server";
+        command = lib.getExe pkgs.myPkgs.komodo-mcp-server;
         env = {
           MCP_TRANSPORT = "http";
           MCP_BIND_HOST = "127.0.0.1";
@@ -43,7 +43,7 @@
 
       proxmox = {
         port = 8763;
-        command = "${pkgs.myPkgs.proxmox-mcp-plus}/bin/proxmox-mcp-plus";
+        command = lib.getExe pkgs.myPkgs.proxmox-mcp-plus;
         env = {
           MCP_HOST = "127.0.0.1";
           MCP_PORT = "8763";
@@ -67,14 +67,14 @@
 
       tailscale = {
         port = 8765;
-        command = "${pkgs.mcp-proxy}/bin/mcp-proxy";
+        command = lib.getExe pkgs.mcp-proxy;
         args = [
           "--host"
           "127.0.0.1"
           "--port"
           "8765"
           "--pass-environment"
-          "${pkgs.myPkgs."tailscale-mcp"}/bin/tailscale-mcp"
+          (lib.getExe pkgs.myPkgs."tailscale-mcp")
         ];
         env = {
           TAILSCALE_PROFILE = "core";

@@ -6,7 +6,11 @@
 
   imports = [inputs.treefmt-nix.flakeModule];
 
-  perSystem = {pkgs, ...}: {
+  perSystem = {
+    lib,
+    pkgs,
+    ...
+  }: {
     treefmt = {
       programs = {
         alejandra.enable = true;
@@ -31,7 +35,7 @@
 
       settings = {
         formatter.nil = {
-          command = "${pkgs.nil}/bin/nil";
+          command = lib.getExe pkgs.nil;
           options = ["diagnostics" "--deny-warnings"];
           includes = ["*.nix"];
           type = "check";

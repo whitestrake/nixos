@@ -5,7 +5,11 @@
       den.aspects.komodo-periphery
     ];
 
-    nixos = {config, ...}: {
+    nixos = {
+      config,
+      lib,
+      ...
+    }: {
       # Docker Service
       virtualisation.docker.enable = true;
       virtualisation.docker.autoPrune.enable = true;
@@ -13,7 +17,7 @@
       systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
       den.deploy.health = {
         requiredSystemdUnits = ["docker.service"];
-        requiredCommands.docker = "${config.virtualisation.docker.package}/bin/docker info";
+        requiredCommands.docker = "${lib.getExe config.virtualisation.docker.package} info";
       };
 
       environment.shellAliases = {

@@ -18,7 +18,7 @@
       sops.secrets.beszelEnv = {};
       services.beszel.agent = {
         enable = lib.mkDefault true;
-        package = pkgs.myPkgs.beszel;
+        package = pkgs.myPkgs.beszel-agent-bin;
         environmentFile = config.sops.secrets.beszelEnv.path;
         environment.SYSTEM_NAME = lib.mkDefault (lib.strings.toSentenceCase config.networking.hostName);
       };

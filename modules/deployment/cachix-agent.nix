@@ -73,7 +73,7 @@
         RemainAfterExit = false;
       };
       script = let
-        expected_bin = "${config.services.cachix-agent.package}/bin/cachix";
+        expected_bin = lib.getExe config.services.cachix-agent.package;
       in ''
         # If a Cachix Deploy is active, exit immediately and let the deploy
         # health-check script handle the restart via systemd-run.
@@ -171,7 +171,7 @@
         healthCfg.requiredCommands;
 
       agentRestartCheck = let
-        expected_bin = "${cfg.services.cachix-agent.package}/bin/cachix";
+        expected_bin = lib.getExe cfg.services.cachix-agent.package;
       in ''
         # Check if the Cachix Agent binary changed during this switch. If so,
         # schedule a delayed asynchronous restart via systemd-run. The delay

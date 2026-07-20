@@ -206,12 +206,12 @@ in {
 
           systemd.services.target = {
             wantedBy = ["multi-user.target"];
-            serviceConfig.ExecStart = "${pkgs.python3}/bin/python -m http.server 8123 --bind 127.0.0.1";
+            serviceConfig.ExecStart = "${lib.getExe pkgs.python3} -m http.server 8123 --bind 127.0.0.1";
           };
 
           systemd.services.broken-witness = {
             wantedBy = ["multi-user.target"];
-            serviceConfig.ExecStart = "${pkgs.python3}/bin/python -m http.server 8124 --bind 127.0.0.1";
+            serviceConfig.ExecStart = "${lib.getExe pkgs.python3} -m http.server 8124 --bind 127.0.0.1";
           };
 
           environment.systemPackages = [pkgs.curl];
