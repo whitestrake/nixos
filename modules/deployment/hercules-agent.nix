@@ -237,6 +237,7 @@
 
   den.aspects.hercules.prewarm.nixos = {
     config,
+    lib,
     pkgs,
     ...
   }: let
@@ -329,8 +330,8 @@
       restartIfChanged = false;
       serviceConfig = {
         Type = "oneshot";
-        ExecCondition = "${agentHasWorkers}/bin/hci-agent-has-workers";
-        ExecStart = "${prewarmScript}/bin/hci-prewarm-configurations";
+        ExecCondition = lib.getExe agentHasWorkers;
+        ExecStart = lib.getExe prewarmScript;
         Nice = 19;
         IOSchedulingClass = "idle";
         IOSchedulingPriority = 7;

@@ -1,6 +1,10 @@
 {...}: {
   den.aspects.netronome = {
-    nixos = {pkgs, ...}: {
+    nixos = {
+      lib,
+      pkgs,
+      ...
+    }: {
       # Netronome Speedtest Agent
       systemd.services.netronome = {
         description = "Netronome Agent - Network Speed Testing and Monitoring";
@@ -19,7 +23,7 @@
 
         serviceConfig = {
           Type = "simple";
-          ExecStart = "${pkgs.myPkgs.netronome}/bin/netronome agent --tailscale";
+          ExecStart = "${lib.getExe pkgs.myPkgs.netronome-bin} agent --tailscale";
           Restart = "always";
           RestartSec = 10;
 

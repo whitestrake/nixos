@@ -17,7 +17,7 @@
       ...
     }: {
       config = let
-        tailscaleReadyCommand = "${config.services.tailscale.package}/bin/tailscale status --peers=false";
+        tailscaleReadyCommand = "${lib.getExe config.services.tailscale.package} status --peers=false";
       in {
         nix.settings.auto-optimise-store = true;
         networking.dhcpcd.persistent = true;
@@ -69,7 +69,7 @@
             "tailscaled.service"
           ];
           requiredCommands = {
-            dns = "${pkgs.dig}/bin/dig +short whitestrake.net";
+            dns = "${lib.getExe pkgs.dig} +short whitestrake.net";
             tailscale = tailscaleReadyCommand;
           };
         };

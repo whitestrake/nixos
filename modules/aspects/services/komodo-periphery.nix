@@ -2,6 +2,7 @@
   den.aspects.komodo-periphery = {
     nixos = {
       config,
+      lib,
       pkgs,
       ...
     }: {
@@ -28,7 +29,7 @@
         path = with pkgs; [bash config.virtualisation.docker.package openssl];
         serviceConfig = {
           EnvironmentFile = config.sops.templates."komodo-periphery.env".path;
-          ExecStart = "${pkgs.myPkgs.komodo}/bin/periphery";
+          ExecStart = lib.getExe pkgs.myPkgs.komodo-periphery-bin;
           Restart = "always";
           RestartSec = "5s";
         };

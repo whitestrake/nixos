@@ -21,6 +21,12 @@ python3Packages.buildPythonApplication rec {
     setuptools
   ];
 
+  nativeCheckInputs = with python3Packages; [
+    pytestCheckHook
+    pytest-asyncio
+    pytest-timeout
+  ];
+
   pythonRelaxDeps = true;
 
   dependencies = with python3Packages;
@@ -37,8 +43,15 @@ python3Packages.buildPythonApplication rec {
     ]
     ++ httpx.optional-dependencies.socks;
 
-  # Tests require a running Home Assistant instance.
-  doCheck = false;
+  postInstall = ''
+    test -f "$out/${python3Packages.python.sitePackages}/ha_mcp/resources/skills-vendor/skills/home-assistant-best-practices/SKILL.md"
+  '';
+
+  doCheck = true;
+  enabledTestPaths = [
+    "tests/src/unit/test_resources.py"
+    "tests/src/unit/test_skill_loader.py"
+  ];
 
   passthru.updateScript = nix-update-script {
     extraArgs = [

@@ -134,7 +134,7 @@ in {
             for peer in "''${peers[@]}"; do
               (
                 echo "event=copy status=start peer=$peer paths=$path_count"
-                if ${config.nix.package}/bin/nix copy \
+                if ${lib.getExe config.nix.package} copy \
                   --no-check-sigs \
                   --to "ssh-ng://nix-ssh@$peer" \
                   --stdin \

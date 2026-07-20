@@ -231,13 +231,13 @@
         };
         languages = {
           language-server = {
-            nil.command = "${pkgs.nil}/bin/nil";
+            nil.command = lib.getExe pkgs.nil;
           };
           language = [
             {
               name = "nix";
               auto-format = true;
-              formatter.command = "${pkgs.alejandra}/bin/alejandra";
+              formatter.command = lib.getExe pkgs.alejandra;
               language-servers = ["nil"];
             }
           ];

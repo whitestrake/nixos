@@ -108,7 +108,7 @@
         enable = true;
         servers = {
           nixos = {
-            command = "${inputs.nix-mcp.packages.${host.system}.nix-mcp}/bin/nix-mcp";
+            command = lib.getExe inputs.nix-mcp.packages.${host.system}.nix-mcp;
             env.PATH = lib.makeBinPath [pkgs.nix];
           };
           homeassistant.url = mcpServiceUrl "homeassistant";
@@ -125,7 +125,7 @@
 
       programs.codex = {
         enable = true;
-        package = pkgs.myPkgs.codex;
+        package = pkgs.myPkgs.codex-bin;
         enableMcpIntegration = false;
       };
 
