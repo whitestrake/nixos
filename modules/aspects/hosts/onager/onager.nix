@@ -40,12 +40,7 @@
       services.qemuGuest.enable = true;
       services.zfs.autoScrub.enable = true;
 
-      zramSwap = {
-        enable = true;
-        algorithm = "zstd";
-        memoryPercent = 50;
-        priority = 100;
-      };
+      zramSwap.enable = true;
 
       networking.hostId = "79cdc322";
     };

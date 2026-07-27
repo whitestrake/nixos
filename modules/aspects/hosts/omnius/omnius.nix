@@ -39,6 +39,7 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
       boot.zfs.extraPools = ["storage"];
       services.zfs.autoScrub.enable = true;
+      zramSwap.enable = true;
 
       # Hostname and TZ
       networking.hostId = "4018c181";
