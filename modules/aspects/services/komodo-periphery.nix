@@ -1,40 +1,30 @@
-{...}: {
+{inputs, ...}: let
+  peripheryModule = "services/admin/komodo-periphery.nix";
+in {
   den.aspects.komodo-periphery = {
     nixos = {
       config,
-      lib,
       pkgs,
       ...
     }: {
-      # Komodo Periphery Agent
-      sops.secrets.komodoOnboardingKey = {};
-      sops.templates."komodo-periphery.env" = {
-        content = ''
-          PERIPHERY_ROOT_DIRECTORY=/opt/docker
-          PERIPHERY_REPO_DIR=/opt/docker/komodo/repos
-          PERIPHERY_STACK_DIR=/opt/docker/komodo/stacks
-          PERIPHERY_CORE_ADDRESS=https://komodo.whitestrake.net
-          PERIPHERY_CONNECT_AS=${config.networking.hostName}
-          PERIPHERY_ONBOARDING_KEY=${config.sops.placeholder.komodoOnboardingKey}
-          PERIPHERY_INCLUDE_DISK_MOUNTS=/etc/hostname
-        '';
-      };
+      # Disable the stable periphery module and import the unstable one
+      disabledModules = [peripheryModule];
+      imports = ["${inputs.nixpkgs-unstable}/nixos/modules/${peripheryModule}"];
 
-      services.networkLiveness.checks.komodo-periphery = {};
-      systemd.services.komodo-periphery = {
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        wantedBy = ["multi-user.target"];
-        description = "Agent to connect with Komodo Core";
-        path = with pkgs; [bash config.virtualisation.docker.package openssl];
-        serviceConfig = {
-          EnvironmentFile = config.sops.templates."komodo-periphery.env".path;
-          ExecStart = lib.getExe pkgs.myPkgs.komodo-periphery-bin;
-          Restart = "always";
-          RestartSec = "5s";
+      sops.secrets.komodoOnboardingKey = {};
+      services.komodo-periphery = {
+        enable = true;
+        package = pkgs.myPkgs.komodo-periphery-bin;
+        user = "root";
+        group = "root";
+        outbound = {
+          coreAddress = "https://komodo.whitestrake.net";
+          connectAs = config.networking.hostName;
+          onboardingKeyFile = config.sops.secrets.komodoOnboardingKey.path;
         };
       };
 
+      services.networkLiveness.checks.komodo-periphery = {};
       den.deploy.health.requiredSystemdUnits = ["komodo-periphery.service"];
     };
   };
