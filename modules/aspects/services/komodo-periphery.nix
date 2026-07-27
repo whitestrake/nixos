@@ -23,6 +23,7 @@ in {
           onboardingKeyFile = config.sops.secrets.komodoOnboardingKey.path;
         };
       };
+      systemd.services.komodo-periphery.path = [config.system.path];
 
       services.networkLiveness.checks.komodo-periphery = {};
       den.deploy.health.requiredSystemdUnits = ["komodo-periphery.service"];
