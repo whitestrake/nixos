@@ -69,6 +69,7 @@ in
           trap cleanup EXIT
 
           python3 - "$repo_root" "$file_path" "$@" << 'EOF'
+          import os
           import re
           import sys
           import urllib.request
@@ -78,12 +79,15 @@ in
           repo_root = sys.argv[1]
           file_path = sys.argv[2]
           args = sys.argv[3:]
+          headers = {'User-Agent': 'nix-update'}
+          if token := os.environ.get('GITHUB_TOKEN'):
+              headers['Authorization'] = f'Bearer {token}'
 
           if len(args) > 0:
               new_version = args[0]
           else:
               url = "https://api.github.com/repos/caddyserver/caddy/releases/latest"
-              req = urllib.request.Request(url, headers={'User-Agent': 'nix-update'})
+              req = urllib.request.Request(url, headers=headers)
               with urllib.request.urlopen(req) as response:
                   data = json.loads(response.read().decode())
                   new_version = data['tag_name'].lstrip('v')
@@ -111,7 +115,7 @@ in
 
           print("Fetching latest caddy-dns/cloudflare plugin version...")
           url_plugin = "https://api.github.com/repos/caddy-dns/cloudflare/tags"
-          req_plugin = urllib.request.Request(url_plugin, headers={'User-Agent': 'nix-update'})
+          req_plugin = urllib.request.Request(url_plugin, headers=headers)
           with urllib.request.urlopen(req_plugin) as response:
               tags = json.loads(response.read().decode())
 
