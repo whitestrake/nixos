@@ -1,6 +1,9 @@
 {den, ...}: let
   inherit (den.lib.policy) pipe;
-  queueDirectory = "/run/hci-store-replication";
+  queueDirectory = "/nix/var/nix/gcroots/hci-store-replication";
+  minimumRetrySeconds = 60;
+  maximumRetrySeconds = 3600;
+  maximumRetentionSeconds = 86400;
 in {
   den.quirks.hciStorePeers.description = "Hercules CI store replication membership";
 
@@ -45,21 +48,18 @@ in {
         fi
 
         umask 077
-        tmp="$(${pkgs.coreutils}/bin/mktemp /run/hci-store-replication.XXXXXXXX)" || {
-          echo "hci-store-replication: could not create queue manifest" >&2
-          exit 0
-        }
-        trap '${pkgs.coreutils}/bin/rm -f -- "$tmp"' EXIT
+        root="$queue/root.$BASHPID.$RANDOM"
+        while [ -e "$root" ] || [ -L "$root" ]; do
+          root="$queue/root.$BASHPID.$RANDOM"
+        done
 
-        # OUT_PATHS is space-separated; Nix store paths cannot contain spaces.
-        # Globbing is disabled above so store-path punctuation stays literal.
-        if ! ${pkgs.coreutils}/bin/printf '%s\n' $out_paths > "$tmp"; then
-          echo "hci-store-replication: could not write queue manifest" >&2
-          exit 0
-        fi
-
-        if ! ${pkgs.coreutils}/bin/mv -- "$tmp" "$queue/''${tmp##*/}"; then
-          echo "hci-store-replication: could not enqueue output paths" >&2
+        # Register all outputs in one Nix call so they remain live even if GC
+        # overlaps the handoff to the asynchronous replication worker.
+        if ! ${config.nix.package}/bin/nix-store \
+          --add-root "$root" \
+          --realise $out_paths \
+          >/dev/null; then
+          echo "hci-store-replication: could not root queued output paths" >&2
         fi
 
         exit 0
@@ -98,43 +98,114 @@ in {
 
         script = ''
           set -u
+          set -o pipefail
           shopt -s nullglob
 
           queue=${lib.escapeShellArg queueDirectory}
           peers=(${lib.concatMapStringsSep " " ({source, ...}: lib.escapeShellArg "${source.host.name}.${source.host.tailnetSuffix}") hciStorePeers})
           export NIX_SSHOPTS=${lib.escapeShellArg "-i ${config.sops.secrets.hciStoreReplicationKey.path} -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"}
 
+          wait_to_retry() {
+            local age now remaining retry_delay
+
+            now="$(${pkgs.coreutils}/bin/date +%s)"
+            age=$((now - oldest_queued_at))
+            remaining=$((${toString maximumRetentionSeconds} - age))
+            if ((remaining <= 0)); then
+              return
+            fi
+
+            retry_delay=$age
+            if ((retry_delay < ${toString minimumRetrySeconds})); then
+              retry_delay=${toString minimumRetrySeconds}
+            elif ((retry_delay > ${toString maximumRetrySeconds})); then
+              retry_delay=${toString maximumRetrySeconds}
+            fi
+            if ((retry_delay > remaining)); then
+              retry_delay=$remaining
+            fi
+
+            echo "event=batch status=waiting age_seconds=$age retry_seconds=$retry_delay"
+            ${pkgs.coreutils}/bin/sleep "$retry_delay"
+          }
+
           while :; do
-            manifests=("$queue"/*)
-            if ((''${#manifests[@]} == 0)); then
+            roots=("$queue"/*)
+            if ((''${#roots[@]} == 0)); then
               exit 0
             fi
 
-            batch="$(${pkgs.coreutils}/bin/mktemp /run/hci-store-replication-batch.XXXXXXXX)" || {
-              echo "event=batch status=failed reason=mktemp" >&2
+            now="$(${pkgs.coreutils}/bin/date +%s)"
+            oldest_queued_at=
+            retained_roots=()
+            for root in "''${roots[@]}"; do
+              queued_at="$(${pkgs.coreutils}/bin/stat -c %Y -- "$root" 2>/dev/null || true)"
+
+              if [ ! -L "$root" ] || [ -z "$queued_at" ]; then
+                echo "event=queue status=expired reason=invalid-root root=$root" >&2
+                ${pkgs.coreutils}/bin/rm -f -- "$root"
+                continue
+              fi
+
+              age=$((now - queued_at))
+              if ((age >= ${toString maximumRetentionSeconds})); then
+                target="$(${pkgs.coreutils}/bin/readlink -- "$root" 2>/dev/null || true)"
+                echo "event=queue status=expired reason=max-age path=''${target:-unknown} age_seconds=$age" >&2
+                ${pkgs.coreutils}/bin/rm -f -- "$root"
+                continue
+              fi
+
+              if [ -z "$oldest_queued_at" ] || ((queued_at < oldest_queued_at)); then
+                oldest_queued_at=$queued_at
+              fi
+              retained_roots+=("$root")
+            done
+            roots=("''${retained_roots[@]}")
+
+            if ((''${#roots[@]} == 0)); then
               exit 0
-            }
+            fi
+
+            if ! batch="$(${pkgs.coreutils}/bin/mktemp /run/hci-store-replication-batch.XXXXXXXX)"; then
+              echo "event=batch status=failed reason=mktemp" >&2
+              wait_to_retry
+              continue
+            fi
             trap '${pkgs.coreutils}/bin/rm -f -- "$batch"' EXIT
 
-            if ! ${pkgs.coreutils}/bin/sort -u -- "''${manifests[@]}" > "$batch"; then
-              echo "event=batch status=failed reason=sort" >&2
-              exit 0
+            if ! ${pkgs.coreutils}/bin/readlink -- "''${roots[@]}" | ${pkgs.coreutils}/bin/sort -u > "$batch"; then
+              echo "event=batch status=failed reason=read-roots" >&2
+              ${pkgs.coreutils}/bin/rm -f -- "$batch"
+              trap - EXIT
+              wait_to_retry
+              continue
             fi
 
             if [ ! -s "$batch" ]; then
-              ${pkgs.coreutils}/bin/rm -f -- "''${manifests[@]}" "$batch"
+              ${pkgs.coreutils}/bin/rm -f -- "''${roots[@]}" "$batch"
               trap - EXIT
               continue
             fi
 
             path_count="$(${pkgs.coreutils}/bin/wc -l < "$batch" | ${pkgs.coreutils}/bin/tr -d ' ')"
-            echo "event=batch status=start paths=$path_count peers=''${#peers[@]} manifests=''${#manifests[@]}"
+            echo "event=batch status=start paths=$path_count peers=''${#peers[@]} roots=''${#roots[@]}"
+
+            now="$(${pkgs.coreutils}/bin/date +%s)"
+            copy_timeout=$((oldest_queued_at + ${toString maximumRetentionSeconds} - now))
+            if ((copy_timeout <= 0)); then
+              ${pkgs.coreutils}/bin/rm -f -- "$batch"
+              trap - EXIT
+              continue
+            elif ((copy_timeout > ${toString maximumRetrySeconds})); then
+              copy_timeout=${toString maximumRetrySeconds}
+            fi
 
             pids=()
             for peer in "''${peers[@]}"; do
               (
                 echo "event=copy status=start peer=$peer paths=$path_count"
-                if ${lib.getExe config.nix.package} copy \
+                if ${pkgs.coreutils}/bin/timeout --signal=KILL "$copy_timeout" \
+                  ${lib.getExe config.nix.package} copy \
                   --no-check-sigs \
                   --to "ssh-ng://nix-ssh@$peer" \
                   --stdin \
@@ -156,10 +227,17 @@ in {
               fi
             done
 
-            ${pkgs.coreutils}/bin/rm -f -- "''${manifests[@]}" "$batch"
-            trap - EXIT
+            if ((failures == 0)); then
+              ${pkgs.coreutils}/bin/rm -f -- "''${roots[@]}" "$batch"
+              trap - EXIT
+              echo "event=batch status=complete paths=$path_count peers=''${#peers[@]} failures=0"
+              continue
+            fi
 
-            echo "event=batch status=complete paths=$path_count peers=''${#peers[@]} failures=$failures"
+            ${pkgs.coreutils}/bin/rm -f -- "$batch"
+            trap - EXIT
+            echo "event=batch status=retry paths=$path_count peers=''${#peers[@]} failures=$failures" >&2
+            wait_to_retry
           done
         '';
       };
