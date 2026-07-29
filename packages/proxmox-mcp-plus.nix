@@ -6,13 +6,13 @@
 }:
 python3Packages.buildPythonApplication rec {
   pname = "proxmox-mcp-plus";
-  version = "0.5.10";
+  version = "0.5.12";
   pyproject = true;
 
   src = fetchPypi {
     pname = "proxmox_mcp_plus";
     inherit version;
-    hash = "sha256-o7dY70lCRZlwXZDIhmARLvkuGXIhYIE27G8GGPArnN8=";
+    hash = "sha256-aIMJOnX2RasZe2oqYVyaUTj5ubFrNmdFdYxVVtX5V/U=";
   };
 
   build-system = with python3Packages; [
