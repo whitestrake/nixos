@@ -1,9 +1,14 @@
 {
   den,
+  inputs,
   lib,
   ...
-}: {
+}: let
+  resolvedModule = "system/boot/resolved.nix";
+in {
   config = {
+    flake-file.inputs.nixpkgs-resolved-fix.url = "github:NixOS/nixpkgs/pull/546801/head";
+
     den.schema.user.classes = lib.mkDefault ["homeManager"];
     den.schema.host.options.tailnetSuffix = lib.mkOption {
       type = lib.types.str;
@@ -20,6 +25,10 @@
         pkgs,
         ...
       }: {
+        # Disable the stable resolved module and import the PR version.
+        disabledModules = [resolvedModule];
+        imports = ["${inputs.nixpkgs-resolved-fix}/nixos/modules/${resolvedModule}"];
+
         # Keep the WSL SSH agent bridge available outside interactive sessions.
         users.users.${config.wsl.defaultUser}.linger = true;
 
@@ -37,6 +46,8 @@
         services.resolved = {
           enable = true;
           settings.Resolve = {
+            DNS = null;
+            Domains = null;
             LLMNR = "false";
             MulticastDNS = "resolve";
           };

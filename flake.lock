@@ -282,6 +282,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-resolved-fix": {
+      "locked": {
+        "lastModified": 1785267017,
+        "narHash": "sha256-Sbi1R3/J77nWVPViL0l5W0eIc0x1CaPoils503fiJ+c=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "61e5a270cad395975a9d3234aa2b29dbee76b97e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "pull/546801/head",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "nixpkgs-unstable": {
       "locked": {
         "lastModified": 1784796856,
@@ -328,6 +344,7 @@
         "nix-mcp": "nix-mcp",
         "nixos-wsl": "nixos-wsl",
         "nixpkgs": "nixpkgs_2",
+        "nixpkgs-resolved-fix": "nixpkgs-resolved-fix",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "sops-nix": "sops-nix",
         "treefmt-nix": "treefmt-nix",
