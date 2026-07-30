@@ -392,8 +392,6 @@ set_agent_hostname() {
   if command -v scutil >/dev/null 2>&1; then
     sudo scutil --set HostName "$HCI_AGENT_HOSTNAME"
     sudo scutil --set LocalHostName "$HCI_AGENT_HOSTNAME"
-  elif command -v hostnamectl >/dev/null 2>&1; then
-    sudo hostnamectl set-hostname "$HCI_AGENT_HOSTNAME"
   fi
 
   sudo hostname "$HCI_AGENT_HOSTNAME"

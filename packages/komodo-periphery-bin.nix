@@ -32,7 +32,7 @@ in
 
     dontUnpack = true;
     nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.autoPatchelfHook];
-    buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.stdenv.cc.cc.lib pkgs.glibc];
+    buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.stdenv.cc.cc.lib pkgs.glibc pkgs.openssl];
 
     installPhase = ''
       runHook preInstall
