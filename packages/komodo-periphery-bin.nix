@@ -3,19 +3,19 @@
   pkgs,
   ...
 }: let
-  version = "2.2.0";
+  version = "2.3.0";
   assets = {
     "aarch64-darwin" = {
       name = "periphery-apple";
-      hash = "sha256-daB6rsUxuVDIiE2oNkdy9U2OyWOfTXIjmXvxJi+jzGg=";
+      hash = "sha256-kgnL1fHgPMq7ruPIwazazBey+DxN88YBdsMXpKiHrvI=";
     };
     "x86_64-linux" = {
       name = "periphery-x86_64";
-      hash = "sha256-rOkAeAXb/nWtc8dcNrsmhS+pCdglV38x9dE+7NPFJmA=";
+      hash = "sha256-CG65R4k88ChylSPQshUUJATTp5i8R2DMvgD7qwXcMcw=";
     };
     "aarch64-linux" = {
       name = "periphery-aarch64";
-      hash = "sha256-zLJT0l62asLCBBGS14h16cV1SGN9ZKvAAw4PIiQjmvE=";
+      hash = "sha256-w396ZNOCjpbGkcvX4oOM4V5bxU5kSDnk/O+XaLyyREM=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
@@ -32,7 +32,7 @@ in
 
     dontUnpack = true;
     nativeBuildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.autoPatchelfHook];
-    buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.stdenv.cc.cc.lib pkgs.glibc];
+    buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.stdenv.cc.cc.lib pkgs.glibc pkgs.openssl];
 
     installPhase = ''
       runHook preInstall
