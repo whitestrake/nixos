@@ -446,6 +446,7 @@ write_agent_files() {
     --arg clusterJoinTokenPath "$HCI_AGENT_CLUSTER_JOIN_FILE" \
     --arg binaryCachesPath "$HCI_AGENT_BINARY_CACHES_FILE" \
     --arg secretsJsonPath "$HCI_AGENT_SECRETS_FILE" \
+    --arg cacheName "$CACHIX_CACHE_NAME" \
     --argjson concurrentTasks "$HCI_AGENT_CONCURRENT_TASKS" \
     '{
       baseDirectory: $baseDirectory,
@@ -454,6 +455,9 @@ write_agent_files() {
       secretsJsonPath: $secretsJsonPath,
       nixUserIsTrusted: true,
       concurrentTasks: $concurrentTasks,
+      nixSettings: {
+        substituters: ("https://" + $cacheName + ".cachix.org?priority=30 https://cache.nixos.org?priority=40")
+      },
       nixVerbosity: "Talkative",
       logLevel: "InfoS"
     }' > "$HCI_AGENT_CONFIG_FILE"
