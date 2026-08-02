@@ -89,6 +89,7 @@
         clusterJoinTokenPath = config.sops.secrets.herculesClusterJoinToken.path;
         binaryCachesPath = config.sops.templates."binary-caches.json".path;
         secretsJsonPath = config.sops.templates."hercules-secrets.json".path;
+        nixSettings.substituters = "https://whitestrake.cachix.org?priority=30 https://cache.nixos.org?priority=40";
         nixVerbosity = "Notice";
       };
     };
