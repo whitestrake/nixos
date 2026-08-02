@@ -37,7 +37,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     i915-sriov = {
-      url = "github:strongtz/i915-sriov-dkms/2026.03.05.2";
+      url = "github:strongtz/i915-sriov-dkms/e3c384c19719afdd8fe480f5e39e2a49763843f6";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     import-tree.url = "github:vic/import-tree";
@@ -47,7 +47,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
-    nixpkgs-resolved-fix.url = "github:NixOS/nixpkgs/pull/546801/head";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";
