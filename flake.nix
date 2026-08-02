@@ -47,7 +47,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
-    nixpkgs-resolved-fix.url = "github:NixOS/nixpkgs/pull/546801/head";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     sops-nix = {
       url = "github:Mic92/sops-nix";
