@@ -65,6 +65,19 @@
         };
       };
 
+      grafana = {
+        port = 8764;
+        command = lib.getExe pkgs.mcp-grafana;
+        args = [
+          "--transport"
+          "streamable-http"
+          "--address"
+          "127.0.0.1:8764"
+        ];
+        env.GRAFANA_URL = "https://whitestrake.grafana.net";
+        secrets.GRAFANA_SERVICE_ACCOUNT_TOKEN = "grafanaMcpToken";
+      };
+
       tailscale = {
         port = 8765;
         command = lib.getExe pkgs.mcp-proxy;
