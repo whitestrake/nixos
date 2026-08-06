@@ -114,10 +114,7 @@
           homeassistant.url = mcpServiceUrl "homeassistant";
           komodo.url = mcpServiceUrl "komodo";
           proxmox.url = mcpServiceUrl "proxmox";
-          grafana = {
-            url = "https://mcp.grafana.com/mcp";
-            headers.X-Grafana-URL = "https://whitestrake.grafana.net/";
-          };
+          grafana.url = mcpServiceUrl "grafana";
           tailscale.url = mcpServiceUrl "tailscale";
           cloudflare.url = "https://mcp.cloudflare.com/mcp";
         };
