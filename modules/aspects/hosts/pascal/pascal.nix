@@ -41,11 +41,6 @@
           uid = config.users.users.mediaserver.uid;
           inherit credentials;
         };
-        "/mnt/nextcloud" = {
-          device = "//tempus.lab.whitestrake.net/Nextcloud";
-          uid = 33;
-          inherit credentials;
-        };
       };
 
       fileSystems."/mnt/downloads" = {
