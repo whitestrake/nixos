@@ -58,7 +58,7 @@ jobs:
             max-jobs = auto
 
       - name: Configure nixbuild.net
-        uses: nixbuild/nixbuild-action@v25
+        uses: nixbuild/nixbuild-action@v26
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
           settings: |
