@@ -9,6 +9,8 @@
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
       services.alloy.extraFlags = ["--stability.level=public-preview"];
+      services.prometheus.exporters.smartctl.enable = true;
+      services.prometheus.exporters.smartctl.listenAddress = "127.0.0.1";
       systemd.services.alloy = {
         environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
         serviceConfig =
@@ -27,6 +29,10 @@
           url            = sys.env("GCLOUD_FM_URL")
           id             = sys.env("GCLOUD_FM_COLLECTOR_ID")
           poll_frequency = sys.env("GCLOUD_FM_POLL_FREQUENCY")
+
+          attributes = {
+            "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}"
+          }
 
           basic_auth {
             username = sys.env("GCLOUD_FM_HOSTED_ID")
