@@ -31,7 +31,7 @@
           poll_frequency = sys.env("GCLOUD_FM_POLL_FREQUENCY")
 
           attributes = {
-            "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}"
+            "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}",
           }
 
           basic_auth {
