@@ -12,6 +12,7 @@
     includes = [
       den.aspects.server
       den.aspects.docker
+      den.aspects.docker-zfs-snapshots
     ];
 
     nixos = {
@@ -39,6 +40,10 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
       boot.zfs.extraPools = ["storage"];
       services.zfs.autoScrub.enable = true;
+      services.sanoid.datasets."storage/stacks" = {
+        use_template = ["docker-state"];
+        recursive = "zfs";
+      };
       zramSwap.enable = true;
 
       # Hostname and TZ
