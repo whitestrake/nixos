@@ -1,7 +1,5 @@
 {den, ...}: {
   den.aspects.jaeger = {
-    nixBuilder.publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUdmMlhib1Q0L0N3L2JWeDdVSkZEZVdsVjNnRVJQZXhKc2hBQ0hSZTlqY3Ygcm9vdEBqYWVnZXI=";
-
     includes = [
       den.aspects.server
       den.aspects.docker
