@@ -4,6 +4,7 @@ set -euo pipefail
 : "${CACHIX_CACHE_NAME:=whitestrake}"
 : "${CACHIX_PUBLIC_KEY:=whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=}"
 : "${HCI_AGENT_CONCURRENT_TASKS:=1}"
+: "${HCI_AGENT_DRAIN_TIMEOUT_SECONDS:=600}"
 : "${HCI_AGENT_HOSTNAME:=}"
 : "${HCI_AGENT_JOB_DISCOVERY_SECONDS:=60}"
 : "${HCI_AGENT_JOB_NAME:=}"
@@ -19,6 +20,9 @@ set -euo pipefail
 : "${HCI_AGENT_TOOLS_GCROOT_DIR:=/nix/var/nix/gcroots/hci-agent-supervisor/tools}"
 : "${HCI_API_BASE_URL:=https://hercules-ci.com}"
 : "${HCI_PROJECT:=github/whitestrake/nixos}"
+
+HCI_AGENT_DEADLINE=0
+HCI_AGENT_JOB_FOUND=0
 
 log() {
   printf '%s\n' "$*" >&2
@@ -371,15 +375,27 @@ emit_job_status() {
 
 hci_api_get() {
   local path="$1"
+  local request_budget="${2:-60}"
+  local connect_timeout=10
 
-  curl -fsS \
-    --connect-timeout 10 \
-    --max-time 60 \
-    --retry 3 \
-    --retry-delay 2 \
-    --retry-all-errors \
-    -H "Authorization: Bearer $HCI_API_TOKEN" \
-    "$HCI_API_BASE_URL$path"
+  if [ "$request_budget" -le 0 ]; then
+    return 1
+  fi
+
+  if [ "$request_budget" -lt "$connect_timeout" ]; then
+    connect_timeout="$request_budget"
+  fi
+
+  printf 'Authorization: Bearer %s\n' "$HCI_API_TOKEN" |
+    curl -fsS \
+      --connect-timeout "$connect_timeout" \
+      --max-time "$request_budget" \
+      --retry 3 \
+      --retry-delay 2 \
+      --retry-max-time "$request_budget" \
+      --retry-all-errors \
+      --header @- \
+      "$HCI_API_BASE_URL$path"
 }
 
 set_agent_hostname() {
@@ -577,22 +593,155 @@ agent_worker_processes() {
     '
 }
 
-wait_for_agent_workers_on_failure() {
-  local status="$1"
-  local workers
+hci_system_queue_state() {
+  local deadline="$1"
+  local page path remaining state state_result
 
-  case "$status" in
-    0 | 130 | 143)
+  for state in Ready Dispatched; do
+    remaining=$((deadline - SECONDS))
+    if [ "$remaining" -le 0 ]; then
+      return 1
+    fi
+    if [ "$remaining" -gt 60 ]; then
+      remaining=60
+    fi
+
+    path="/api/v1/site/$HCI_PROJECT_SITE/account/$HCI_PROJECT_ACCOUNT/default-cluster/tasks?state=$state"
+    if ! page="$(hci_api_get "$path" "$remaining")"; then
+      log "WARNING: failed to fetch $state Hercules CI cluster tasks."
+      return 1
+    fi
+
+    if ! state_result="$(
+      jq -er \
+        --arg system "$HCI_AGENT_SYSTEM" \
+        '
+          def valid_base:
+            type == "object"
+            and (.id | type == "string")
+            and (.state | type == "string")
+            and (.creationTime | type == "string");
+
+          def valid_task:
+            type == "object"
+            and (keys | length) == 1
+            and (
+              if has("Build") then
+                (.Build | valid_base and (.system | type == "string"))
+              elif has("Effect") then
+                (.Effect | valid_base and (.system | type == "string"))
+              elif has("Evaluation") then
+                (.Evaluation | valid_base)
+              else
+                false
+              end
+            );
+
+          if type != "object"
+            or (.items | type) != "array"
+            or (.more | type) != "boolean"
+            or (all(.items[]; valid_task) | not)
+          then
+            error("invalid PagedTasks response")
+          elif .more
+            or any(
+              .items[];
+              ((.Build.system? // .Effect.system? // "") == $system)
+            )
+          then
+            "busy"
+          else
+            "empty"
+          end
+        ' <<< "$page"
+    )"; then
+      log "WARNING: $state Hercules CI cluster tasks response was not a valid PagedTasks object."
+      return 1
+    fi
+
+    if [ "$state_result" = "busy" ]; then
+      printf 'busy\n'
       return 0
-      ;;
-  esac
-
-  while workers="$(agent_worker_processes)" && [ -n "$workers" ]; do
-    log "Hercules CI agent has active workers:"
-    log "$workers"
-    log "Supervisor is failing, but Hercules CI workers are active; keeping agent online."
-    sleep "$HCI_AGENT_POLL_SECONDS"
+    fi
   done
+
+  printf 'empty\n'
+}
+
+wait_for_agent_quiescence() {
+  local outer_deadline="$1"
+  local idle_observations=0
+  local queue_state request_deadline remaining sleep_seconds workers
+  local uncertainty_deadline=0
+
+  while [ "$SECONDS" -lt "$outer_deadline" ]; do
+    if workers="$(agent_worker_processes)" && [ -n "$workers" ]; then
+      idle_observations=0
+      uncertainty_deadline=0
+      log "Hercules CI agent has active workers:"
+      log "$workers"
+      log "HCI_AGENT_DRAIN state=busy source=local-worker system=$HCI_AGENT_SYSTEM"
+    else
+      if [ "$uncertainty_deadline" -eq 0 ]; then
+        request_deadline=$((SECONDS + HCI_AGENT_DRAIN_TIMEOUT_SECONDS))
+        if [ "$request_deadline" -gt "$outer_deadline" ]; then
+          request_deadline="$outer_deadline"
+        fi
+      else
+        request_deadline="$uncertainty_deadline"
+      fi
+
+      if queue_state="$(hci_system_queue_state "$request_deadline")"; then
+        uncertainty_deadline=0
+        case "$queue_state" in
+          busy)
+            idle_observations=0
+            log "HCI_AGENT_DRAIN state=busy source=cluster-queue system=$HCI_AGENT_SYSTEM"
+            ;;
+          empty)
+            idle_observations=$((idle_observations + 1))
+            log "HCI_AGENT_DRAIN state=empty system=$HCI_AGENT_SYSTEM idleObservations=$idle_observations"
+            if [ "$idle_observations" -ge 2 ]; then
+              log "HCI_AGENT_DRAIN state=quiescent system=$HCI_AGENT_SYSTEM"
+              return 0
+            fi
+            ;;
+          *)
+            log "ERROR: unexpected Hercules CI queue state: $queue_state"
+            return 1
+            ;;
+        esac
+      else
+        idle_observations=0
+        if [ "$uncertainty_deadline" -eq 0 ]; then
+          uncertainty_deadline="$request_deadline"
+        fi
+        log "HCI_AGENT_DRAIN state=unknown system=$HCI_AGENT_SYSTEM deadline=$uncertainty_deadline"
+        if [ "$SECONDS" -ge "$uncertainty_deadline" ]; then
+          log "ERROR: Hercules CI queue remained uncertain until the drain deadline."
+          return 1
+        fi
+      fi
+    fi
+
+    request_deadline="$outer_deadline"
+    if [ "$uncertainty_deadline" -gt 0 ] && [ "$uncertainty_deadline" -lt "$request_deadline" ]; then
+      request_deadline="$uncertainty_deadline"
+    fi
+    remaining=$((request_deadline - SECONDS))
+    if [ "$remaining" -le 0 ]; then
+      continue
+    fi
+
+    sleep_seconds="$HCI_AGENT_POLL_SECONDS"
+    if [ "$sleep_seconds" -gt "$remaining" ]; then
+      sleep_seconds="$remaining"
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  log "ERROR: Hercules CI agent did not become quiescent before the supervisor deadline."
+  return 1
 }
 
 cleanup() {
@@ -600,7 +749,18 @@ cleanup() {
 
   trap - EXIT
   stop_final_gate_job_name_resolver
-  wait_for_agent_workers_on_failure "$status"
+  case "$status" in
+    130 | 143)
+      ;;
+    *)
+      if [ "$HCI_AGENT_JOB_FOUND" -eq 1 ] \
+        && ! wait_for_agent_quiescence "$HCI_AGENT_DEADLINE"; then
+        if [ "$status" -eq 0 ]; then
+          status=1
+        fi
+      fi
+      ;;
+  esac
   stop_agent
   cleanup_agent_files
   exit "$status"
@@ -764,6 +924,7 @@ main() {
   require_env HCI_AGENT_SYSTEM
   require_env GITHUB_SHA
   require_env HERCULES_CI_CREDENTIALS_JSON
+  require_positive_integer HCI_AGENT_DRAIN_TIMEOUT_SECONDS
   require_positive_integer HCI_AGENT_JOB_DISCOVERY_SECONDS
   require_positive_integer HCI_AGENT_POLL_SECONDS
   require_positive_integer HCI_AGENT_REALISE_TIMEOUT_SECONDS
@@ -775,6 +936,7 @@ main() {
 
   HCI_API_TOKEN="$(extract_hci_token "$HERCULES_CI_CREDENTIALS_JSON")"
   deadline=$((SECONDS + HCI_AGENT_TIMEOUT_SECONDS))
+  HCI_AGENT_DEADLINE="$deadline"
 
   set_agent_hostname
   write_agent_files
@@ -795,6 +957,7 @@ main() {
   job_id="$(wait_for_job_id "$GITHUB_SHA" "$deadline")" || wait_status="$?"
   case "$wait_status" in
     0)
+      HCI_AGENT_JOB_FOUND=1
       emit_job_found_output true
       ;;
     2)
