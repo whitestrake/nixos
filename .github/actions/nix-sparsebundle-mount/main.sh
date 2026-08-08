@@ -36,6 +36,10 @@ if [ -L /nix ]; then
 fi
 
 if [ -d "$image_bundle" ]; then
+  started="$SECONDS"
+  hdiutil resize -size "$ACTION_IMAGE_SIZE" "$image_bundle"
+  duration="$((SECONDS - started))"
+  echo "NIX_ROOT_IMAGE_RESIZED system=$ACTION_SYSTEM path=$image_bundle size=$ACTION_IMAGE_SIZE durationSeconds=$duration"
   echo "NIX_ROOT_IMAGE_READY system=$ACTION_SYSTEM path=$image_bundle source=cache"
 else
   started="$SECONDS"
@@ -59,3 +63,31 @@ echo "NIX_ROOT_IMAGE_ATTACHED system=$ACTION_SYSTEM path=$image_bundle mountPoin
 
 sudo chown "$USER" /nix
 chmod u+rwx /nix
+
+size_number="${ACTION_IMAGE_SIZE%[KkMmGgTt]}"
+size_suffix="${ACTION_IMAGE_SIZE#"$size_number"}"
+if ! [[ "$size_number" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error ::unsupported sparsebundle image size: $ACTION_IMAGE_SIZE"
+  exit 1
+fi
+
+case "$size_suffix" in
+  "") requested_bytes="$size_number" ;;
+  [Kk]) requested_bytes=$((size_number * 1024)) ;;
+  [Mm]) requested_bytes=$((size_number * 1024 * 1024)) ;;
+  [Gg]) requested_bytes=$((size_number * 1024 * 1024 * 1024)) ;;
+  [Tt]) requested_bytes=$((size_number * 1024 * 1024 * 1024 * 1024)) ;;
+  *)
+    echo "::error ::unsupported sparsebundle image size: $ACTION_IMAGE_SIZE"
+    exit 1
+    ;;
+esac
+
+actual_bytes="$(diskutil info -plist /nix | plutil -extract TotalSize raw -)"
+minimum_bytes=$((requested_bytes * 99 / 100))
+if ! [[ "$actual_bytes" =~ ^[1-9][0-9]*$ ]] || [ "$actual_bytes" -lt "$minimum_bytes" ]; then
+  echo "::error ::mounted sparsebundle capacity is below the requested size: actualBytes=${actual_bytes:-unknown} requestedBytes=$requested_bytes"
+  exit 1
+fi
+
+echo "NIX_ROOT_IMAGE_CAPACITY_VERIFIED system=$ACTION_SYSTEM path=$image_bundle actualBytes=$actual_bytes requestedBytes=$requested_bytes"
