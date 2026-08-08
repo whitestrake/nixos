@@ -2,7 +2,6 @@
   # Server aspect wires in monitoring, deployment, health, and Tailscale networking
   den.aspects.server = {
     includes = [
-      den.aspects.distributed-builds
       den.aspects.monitoring
       den.aspects.cachix-agent
     ];

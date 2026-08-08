@@ -1,7 +1,5 @@
 {den, ...}: {
   den.aspects.orthus = {
-    nixBuilder.publicHostKey = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUI0YjJjYXpXdWt0OHZyNEV0a1J4b29SQkhrYSswVXVNSTlSejlpeWt3dFcgcm9vdEBvcnRodXM=";
-
     includes = [
       den.aspects.server
       den.aspects.docker
