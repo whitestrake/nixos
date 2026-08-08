@@ -3,8 +3,72 @@
     nixos = {
       config,
       lib,
+      pkgs,
       ...
-    }: {
+    }: let
+      zfsMetrics = pkgs.writeShellApplication {
+        name = "alloy-zfs-metrics";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.jq
+          config.boot.zfs.package
+        ];
+        text = ''
+          set -eu
+
+          output=/var/lib/alloy/zfs.prom
+          last_success=/var/lib/alloy/zfs-scrub-last-success.json
+          status_tmp="$(mktemp /var/lib/alloy/zfs-status.XXXXXX)"
+          metrics_tmp="$(mktemp /var/lib/alloy/zfs.prom.XXXXXX)"
+          last_tmp="$(mktemp /var/lib/alloy/zfs-scrub-last-success.XXXXXX)"
+          trap 'rm -f "$status_tmp" "$metrics_tmp" "$last_tmp"' EXIT
+
+          zpool status -j -p > "$status_tmp"
+          if ! test -s "$last_success"; then
+            printf '{}\n' > "$last_success"
+          fi
+
+          jq --slurpfile previous "$last_success" '
+            reduce (.pools | to_entries[]) as $pool ($previous[0];
+              if (($pool.value.scan_stats.function // "") == "SCRUB"
+                  and ($pool.value.scan_stats.state // "") == "FINISHED"
+                  and (($pool.value.scan_stats.errors // "0") | tonumber) == 0)
+              then .[$pool.key] = (($pool.value.scan_stats.end_time // "0") | tonumber)
+              else .
+              end
+            )
+          ' "$status_tmp" > "$last_tmp"
+          mv "$last_tmp" "$last_success"
+
+          jq -r --slurpfile last "$last_success" '
+            .pools | to_entries[] |
+            .key as $pool |
+            .value as $status |
+            ($status.vdevs[$pool] // {}) as $root |
+            def metric($name; $value):
+              "\($name){pool=\($pool | @json)} \($value)";
+            metric("homelab_zfs_pool_healthy";
+              if $status.state == "ONLINE" then 1 else 0 end),
+            metric("homelab_zfs_pool_allocated_bytes";
+              (($root.alloc_space // "0") | tonumber)),
+            metric("homelab_zfs_pool_free_bytes";
+              ((($root.total_space // "0") | tonumber)
+               - (($root.alloc_space // "0") | tonumber))),
+            metric("homelab_zfs_pool_read_errors_total";
+              (($root.read_errors // "0") | tonumber)),
+            metric("homelab_zfs_pool_write_errors_total";
+              (($root.write_errors // "0") | tonumber)),
+            metric("homelab_zfs_pool_checksum_errors_total";
+              (($root.checksum_errors // "0") | tonumber)),
+            metric("homelab_zfs_pool_scrub_running";
+              if ($status.scan_stats.state // "") == "SCANNING" then 1 else 0 end),
+            metric("homelab_zfs_pool_scrub_last_success_timestamp_seconds";
+              ($last[0][$pool] // 0))
+          ' "$status_tmp" > "$metrics_tmp"
+          mv "$metrics_tmp" "$output"
+        '';
+      };
+    in {
       # Grafana Alloy
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
@@ -22,6 +86,34 @@
             User = "root";
             SupplementaryGroups = ["docker"];
           };
+      };
+
+      systemd.services.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
+        description = "Export bounded ZFS pool metrics for Alloy";
+        after = [
+          "alloy.service"
+          "zfs-import.target"
+        ];
+        requires = ["alloy.service"];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "root";
+          Group = "root";
+          UMask = "0022";
+          ExecStart = lib.getExe zfsMetrics;
+        };
+      };
+
+      systemd.timers.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
+        description = "Refresh bounded ZFS pool metrics for Alloy";
+        wantedBy = ["timers.target"];
+        timerConfig = {
+          OnBootSec = "2m";
+          OnUnitActiveSec = "1m";
+          AccuracySec = "1s";
+          RandomizedDelaySec = "5s";
+          Persistent = true;
+        };
       };
 
       environment.etc."alloy/config.alloy".text = ''
