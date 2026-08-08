@@ -318,6 +318,14 @@ jobs:
           esac
           printf 'mounted-device=%s\n' "$mounted_device" >> "$GITHUB_OUTPUT"
 
+          actual_bytes="$(diskutil info -plist /nix | plutil -extract TotalSize raw -)"
+          minimum_bytes=$((64 * 1024 * 1024 * 1024 * 99 / 100))
+          if ! [[ "$actual_bytes" =~ ^[1-9][0-9]*$ ]] || [ "$actual_bytes" -lt "$minimum_bytes" ]; then
+            echo "::error ::mounted Namespace sparsebundle capacity is below $NAMESPACE_NIX_STORE_IMAGE_SIZE: actualBytes=${actual_bytes:-unknown}"
+            exit 1
+          fi
+          echo "NAMESPACE_ARTIFACT_IMAGE_CAPACITY_VERIFIED path=$image_bundle actualBytes=$actual_bytes requestedSize=$NAMESPACE_NIX_STORE_IMAGE_SIZE"
+
           sudo chown "$USER" /nix
           chmod u+rwx /nix
 
