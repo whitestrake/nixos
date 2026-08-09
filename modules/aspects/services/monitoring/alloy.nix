@@ -68,6 +68,32 @@
           mv "$metrics_tmp" "$output"
         '';
       };
+      hostInfoMetrics = pkgs.writeShellApplication {
+        name = "alloy-host-info";
+        runtimeInputs = [
+          pkgs.coreutils
+          pkgs.systemd
+        ];
+        text = ''
+          set -eu
+
+          output=/var/lib/alloy/host-info.prom
+          temporary="$(mktemp /var/lib/alloy/host-info.prom.XXXXXX)"
+          trap 'rm -f "$temporary"' EXIT
+
+          virtualisation="$(systemd-detect-virt 2>/dev/null || true)"
+          case "$virtualisation" in
+            ""|none) platform=bare-metal ;;
+            kvm|qemu) platform=qemu-kvm ;;
+            *) platform="$virtualisation" ;;
+          esac
+
+          printf 'homelab_host_info{platform="%s",os="nixos",os_release="${config.system.nixos.release}"} 1\n' \
+            "$platform" > "$temporary"
+          chmod 0644 "$temporary"
+          mv "$temporary" "$output"
+        '';
+      };
     in {
       # Grafana Alloy
       sops.secrets.alloyEnv = {};
@@ -77,6 +103,7 @@
       services.prometheus.exporters.smartctl.listenAddress = "127.0.0.1";
       systemd.services.alloy = {
         environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
+        preStart = lib.getExe hostInfoMetrics;
         serviceConfig =
           {
             EnvironmentFile = config.sops.secrets.alloyEnv.path;
