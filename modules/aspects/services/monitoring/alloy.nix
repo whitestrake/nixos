@@ -151,6 +151,7 @@
 
           attributes = {
             "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}",
+            "telemetry.tailscale" = "${lib.boolToString config.services.tailscale.enable}",
           }
 
           basic_auth {
