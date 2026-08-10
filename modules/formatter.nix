@@ -41,6 +41,7 @@
           type = "check";
         };
 
+        formatter.actionlint.options = ["-config-file" ".github/actionlint.yaml"];
         formatter.shellcheck.options = ["-x"];
 
         excludes = [
