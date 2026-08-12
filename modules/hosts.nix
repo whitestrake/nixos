@@ -6,6 +6,7 @@
       rapier.users.whitestrake = {};
       sortie.users.whitestrake = {};
       onager.users.whitestrake = {};
+      legion.users.whitestrake = {};
       orthus.users.whitestrake = {};
       oculus.users.whitestrake = {};
       omnius.users.whitestrake = {};

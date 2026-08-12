@@ -9,6 +9,7 @@ keys:
   - &server_omnius age1jljlxfv5467pwlvwhcgtm8wmjzpvzgyqmz3ud6gzux5aylmsnyrqew63ar
   - &server_kronos age1gxjw8eat4z38t5yenm5jtdfg22kkgktvsjwrqfjsq4n66e80vqksk37xr2
   - &server_onager age1h3eha44ydayldgkwje0f2nhw7qj24pjrwxxzf4a0p067vjdv54nstwx623
+  - &server_legion age1uwpwv7urn5jmzkenchrhuqtttwuk29dlw8nwt8t0c9veg3f35s9q0txm6f
 creation_rules:
   - path_regex: modules/secrets/secrets\.yaml$
     key_groups:
@@ -23,3 +24,4 @@ creation_rules:
           - *server_omnius
           - *server_kronos
           - *server_onager
+          - *server_legion
