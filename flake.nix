@@ -41,6 +41,10 @@
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     import-tree.url = "github:vic/import-tree";
+    nix-amp = {
+      url = "github:whitestrake/nix-amp";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nix-mcp.url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
     nixos-wsl = {
       url = "github:nix-community/NixOS-WSL/main";

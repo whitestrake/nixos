@@ -223,6 +223,26 @@
         "type": "github"
       }
     },
+    "nix-amp": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1786556258,
+        "narHash": "sha256-gKW9N80tNWoAjNlwfkgO+2fY1xzhIlAigoH+FGiSwW4=",
+        "owner": "whitestrake",
+        "repo": "nix-amp",
+        "rev": "33d017c98011f1394edb67aac7b63734c108a7e8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "whitestrake",
+        "repo": "nix-amp",
+        "type": "github"
+      }
+    },
     "nix-mcp": {
       "inputs": {
         "flake-utils": "flake-utils",
@@ -340,6 +360,7 @@
         "home-manager": "home-manager",
         "i915-sriov": "i915-sriov",
         "import-tree": "import-tree",
+        "nix-amp": "nix-amp",
         "nix-mcp": "nix-mcp",
         "nixos-wsl": "nixos-wsl",
         "nixpkgs": "nixpkgs_2",

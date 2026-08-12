@@ -10,6 +10,7 @@
 
   den.aspects.legion = {
     includes = [
+      den.aspects.amp
       den.aspects.server.lab
     ];
 
