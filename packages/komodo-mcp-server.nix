@@ -5,16 +5,16 @@
 }:
 buildNpmPackage rec {
   pname = "komodo-mcp-server";
-  version = "1.4.1";
+  version = "1.5.0";
 
   src = fetchFromGitHub {
     owner = "MP-Tool";
     repo = "komodo-mcp-server";
     tag = version;
-    hash = "sha256-HI45wEn+fdpkJPeNuO6pCh7CAwzgx3qAiKFz3aCm1YA=";
+    hash = "sha256-lU8zjoUn54Su1bdbvZruKhVgAKIEfZkXUMl5US3i/Ck=";
   };
 
-  npmDepsHash = "sha256-7GqPQFtplcPXVQvsS1i+oyxu31AnPOw0wqX7jPuwBy0=";
+  npmDepsHash = "sha256-hEJbZ+dDumkJTpxfuT4Xf1tSBAn26w5Aeoi4lwHxsyA=";
   npmBuildScript = "build:prod";
 
   meta = {
