@@ -65,6 +65,7 @@
             metric("homelab_zfs_pool_scrub_last_success_timestamp_seconds";
               ($last[0][$pool] // 0))
           ' "$status_tmp" > "$metrics_tmp"
+          chmod 0644 "$metrics_tmp"
           mv "$metrics_tmp" "$output"
         '';
       };
