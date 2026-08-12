@@ -10,6 +10,7 @@
         name = "alloy-zfs-metrics";
         runtimeInputs = [
           pkgs.coreutils
+          pkgs.gawk
           pkgs.jq
           config.boot.zfs.package
         ];
@@ -19,11 +20,18 @@
           output=/var/lib/alloy/zfs.prom
           last_success=/var/lib/alloy/zfs-scrub-last-success.json
           status_tmp="$(mktemp /var/lib/alloy/zfs-status.XXXXXX)"
+          objects_tmp="$(mktemp /var/lib/alloy/zfs-objects.XXXXXX)"
+          monitor_tmp="$(mktemp /var/lib/alloy/zfs-monitor.XXXXXX)"
           metrics_tmp="$(mktemp /var/lib/alloy/zfs.prom.XXXXXX)"
           last_tmp="$(mktemp /var/lib/alloy/zfs-scrub-last-success.XXXXXX)"
-          trap 'rm -f "$status_tmp" "$metrics_tmp" "$last_tmp"' EXIT
+          trap 'rm -f "$status_tmp" "$objects_tmp" "$monitor_tmp" "$metrics_tmp" "$last_tmp"' EXIT
 
           zpool status -j -p > "$status_tmp"
+          zfs list -H -p -t filesystem,volume \
+            -o name,type,used,available,usedbydataset,usedbysnapshots,usedbychildren,quota,refquota \
+            > "$objects_tmp"
+          zfs get -H -p -o name,value,source -s local -t filesystem,volume \
+            grafana:monitor > "$monitor_tmp"
           if ! test -s "$last_success"; then
             printf '{}\n' > "$last_success"
           fi
@@ -65,6 +73,39 @@
             metric("homelab_zfs_pool_scrub_last_success_timestamp_seconds";
               ($last[0][$pool] // 0))
           ' "$status_tmp" > "$metrics_tmp"
+
+          awk -F '	' -v monitor_file="$monitor_tmp" '
+            FILENAME == monitor_file {
+              if ($2 == "include" || $2 == "exclude") {
+                monitor[$1] = $2
+              }
+              next
+            }
+            {
+              name = $1
+              type = $2
+              pool = name
+              sub(/\/.*/, "", pool)
+              selection = monitor[name]
+              if (selection == "") {
+                selection = "auto"
+              }
+              if ($8 != "0" && $8 != "-" && $8 != "none") {
+                headroom = "quota"
+              } else if ($9 != "0" && $9 != "-" && $9 != "none") {
+                headroom = "refquota"
+              } else {
+                headroom = "pool"
+              }
+              labels = sprintf("{name=\"%s\",pool=\"%s\",type=\"%s\",monitor=\"%s\",headroom=\"%s\"}", name, pool, type, selection, headroom)
+              print "homelab_zfs_object_used_bytes" labels " " $3
+              print "homelab_zfs_object_available_bytes" labels " " $4
+              print "homelab_zfs_object_usedbydataset_bytes" labels " " $5
+              print "homelab_zfs_object_usedbysnapshots_bytes" labels " " $6
+              print "homelab_zfs_object_usedbychildren_bytes" labels " " $7
+            }
+          ' "$monitor_tmp" "$objects_tmp" >> "$metrics_tmp"
+
           chmod 0644 "$metrics_tmp"
           mv "$metrics_tmp" "$output"
         '';
@@ -117,7 +158,7 @@
       };
 
       systemd.services.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Export bounded ZFS pool metrics for Alloy";
+        description = "Export bounded ZFS pool and object metrics for Alloy";
         after = [
           "alloy.service"
           "zfs-import.target"
@@ -133,7 +174,7 @@
       };
 
       systemd.timers.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Refresh bounded ZFS pool metrics for Alloy";
+        description = "Refresh bounded ZFS pool and object metrics for Alloy";
         wantedBy = ["timers.target"];
         timerConfig = {
           OnBootSec = "2m";
