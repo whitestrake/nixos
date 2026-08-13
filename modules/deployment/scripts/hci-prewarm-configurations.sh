@@ -408,19 +408,21 @@ agent_has_workers() {
 ensure_agent_idle() {
   local status
 
+  agent_idle_status=0
   if [ -z "$agent_service" ]; then
     return 0
   fi
 
   if agent_has_workers "$agent_service"; then
-    return 30
+    agent_idle_status=30
+    return 0
   else
     status=$?
   fi
 
   if [ "$status" = "2" ]; then
     log "event=idle status=unknown service=$agent_service message=skipping-prewarm-to-avoid-competing-with-hci"
-    return 31
+    agent_idle_status=31
   fi
 
   return 0
@@ -449,6 +451,7 @@ prewarm_attr() {
   local build_fetch_skipped
   local build_fetch_missed
 
+  prewarm_attr_status=0
   quoted_name="$(quote_attr_segment "$name")"
   attr="path:$checkout_dir#${kind}.${quoted_name}.config.system.build.toplevel"
   root="$rev_dir/$(root_segment "${kind}-${name}")"
@@ -457,7 +460,8 @@ prewarm_attr() {
   if root_is_valid "$root"; then
     target="$(root_target "$root")"
     log "event=config status=skip_valid_root kind=$kind name=$name attr=$attr root=$root target=$target build_outputs_root=$build_outputs_root duration_seconds=$((SECONDS - started))"
-    return 10
+    prewarm_attr_status=10
+    return 0
   fi
 
   if [ -e "$root" ] || [ -L "$root" ]; then
@@ -472,7 +476,8 @@ prewarm_attr() {
     log "event=config status=miss_eval_out_path kind=$kind name=$name attr=$attr duration_seconds=$((SECONDS - started))"
     log_nix_excerpt "eval-out-path" "$eval_output"
     rm -f "$eval_output"
-    return 20
+    prewarm_attr_status=20
+    return 0
   fi
 
   rm -f "$eval_output"
@@ -488,7 +493,8 @@ prewarm_attr() {
   if ! nix build "${nix_common_options[@]}" --dry-run "$attr" > "$dry_run_output" 2>&1; then
     log "event=config status=miss_dry_run kind=$kind name=$name attr=$attr out_path=$out_path duration_seconds=$((SECONDS - started))"
     log_nix_excerpt "dry-run" "$dry_run_output"
-    return 20
+    prewarm_attr_status=20
+    return 0
   fi
 
   will_build_derivations="$(dry_run_build_count "$dry_run_output")"
@@ -496,7 +502,8 @@ prewarm_attr() {
   parse_dry_run_drvs "$dry_run_output" "$drv_list"
   if ! resolve_drv_outputs "$drv_list" "$all_drv_outputs"; then
     log "event=config status=miss_drv_outputs kind=$kind name=$name attr=$attr out_path=$out_path duration_seconds=$((SECONDS - started))"
-    return 20
+    prewarm_attr_status=20
+    return 0
   fi
 
   grep -F -x -v -- "$out_path" "$all_drv_outputs" > "$build_outputs" || true
@@ -517,7 +524,8 @@ prewarm_attr() {
     build_fetch_missed="$FETCH_MISSED"
     log "event=config status=fetch_build_outputs_summary kind=$kind name=$name planned=$build_output_count fetched=$build_fetch_fetched skipped=$build_fetch_skipped missed=$build_fetch_missed"
     log "event=config status=miss_build_outputs kind=$kind name=$name attr=$attr out_path=$out_path duration_seconds=$((SECONDS - started))"
-    return 20
+    prewarm_attr_status=20
+    return 0
   fi
   build_fetch_fetched="$FETCH_FETCHED"
   build_fetch_skipped="$FETCH_SKIPPED"
@@ -532,7 +540,8 @@ prewarm_attr() {
   log "event=config status=fetch_final kind=$kind name=$name path=$out_path"
   if ! fetch_store_paths "final-output" "$all_drv_outputs"; then
     log "event=config status=miss_final kind=$kind name=$name attr=$attr out_path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED duration_seconds=$((SECONDS - started))"
-    return 20
+    prewarm_attr_status=20
+    return 0
   fi
   log "event=config status=fetch_final_summary kind=$kind name=$name path=$out_path fetched=$FETCH_FETCHED skipped=$FETCH_SKIPPED missed=$FETCH_MISSED"
 
@@ -715,6 +724,7 @@ prewarm_revision() {
   local kind names_file kind_count name status
   local checkout_rev
 
+  prewarm_revision_status=0
   if current_root_has_revision "$current_root" "$rev"; then
     log "event=revision status=skip_current slot=$slot ref=$ref rev=$rev current=$current_root rev_dir=$rev_dir"
     return 0
@@ -745,10 +755,8 @@ prewarm_revision() {
         continue
       fi
 
-      set +e
       ensure_agent_idle
-      status=$?
-      set -e
+      status="$agent_idle_status"
       if [ "$status" -ne 0 ]; then
         log "event=idle status=stop slot=$slot kind=$kind name=$name reason=worker-check-failed worker_check_status=$status"
         stopped_for_workers=1
@@ -756,10 +764,8 @@ prewarm_revision() {
       fi
 
       total=$((total + 1))
-      set +e
       prewarm_attr "$kind" "$name" "$rev_dir"
-      status=$?
-      set -e
+      status="$prewarm_attr_status"
 
       case "$status" in
         0)
@@ -788,12 +794,14 @@ prewarm_revision() {
 
   if [ "$stopped_for_workers" = "1" ]; then
     log "event=promotion status=skipped slot=$slot reason=agent-became-busy rev=$rev rev_dir=$rev_dir"
-    return 30
+    prewarm_revision_status=30
+    return 0
   fi
 
   if [ "$missed" -gt 0 ]; then
     log "event=promotion status=skipped slot=$slot reason=misses rev=$rev rev_dir=$rev_dir missed=$missed"
-    return 20
+    prewarm_revision_status=20
+    return 0
   fi
 
   promote_current_root "$current_root" "$rev" "$rev_dir"
@@ -843,6 +851,35 @@ prune_slot_roots() {
   done < <(find "$gcroot_dir" -maxdepth 1 -mindepth 1 -type d -name 'rev-*' | sort)
 }
 
+finish_prewarm_revision() {
+  local status="$1"
+  local revision="$2"
+
+  case "$status" in
+    0)
+      prune_slot_roots
+      log "event=finish status=success mode=hci-discovery duration_seconds=$((SECONDS - run_started))"
+      ;;
+    20)
+      log "event=finish status=failed slot=master reason=misses rev=$revision duration_seconds=$((SECONDS - run_started))"
+      prune_slot_roots
+      return 1
+      ;;
+    30)
+      log "event=finish status=deferred slot=master reason=agent-became-busy rev=$revision duration_seconds=$((SECONDS - run_started))"
+      prune_slot_roots
+      ;;
+    *)
+      fail "unexpected prewarm revision status $status for slot master"
+      ;;
+  esac
+}
+
+run_prewarm_revision() {
+  prewarm_revision "master" "refs/heads/$branch" "$rev" "$gcroot_dir/master/current"
+  finish_prewarm_revision "$prewarm_revision_status" "$rev"
+}
+
 jobs_file="$(mktemp)"
 tmp_files+=("$jobs_file")
 
@@ -866,28 +903,4 @@ if [ "$hci_state" != "green" ]; then
   exit 0
 fi
 
-set +e
-prewarm_revision "master" "refs/heads/$branch" "$rev" "$gcroot_dir/master/current"
-status=$?
-set -e
-
-case "$status" in
-  0)
-    ;;
-  20)
-    log "event=finish status=failed slot=master reason=misses rev=$rev duration_seconds=$((SECONDS - run_started))"
-    prune_slot_roots
-    exit 1
-    ;;
-  30)
-    log "event=finish status=deferred slot=master reason=agent-became-busy rev=$rev duration_seconds=$((SECONDS - run_started))"
-    prune_slot_roots
-    exit 0
-    ;;
-  *)
-    fail "unexpected prewarm revision status $status for slot master"
-    ;;
-esac
-
-prune_slot_roots
-log "event=finish status=success mode=hci-discovery duration_seconds=$((SECONDS - run_started))"
+run_prewarm_revision
