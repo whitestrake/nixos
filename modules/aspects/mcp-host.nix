@@ -26,15 +26,15 @@
 
       komodo = {
         port = 8762;
-        command = lib.getExe pkgs.myPkgs.komodo-mcp-server;
-        env = {
-          MCP_TRANSPORT = "http";
-          MCP_BIND_HOST = "127.0.0.1";
-          MCP_BASE_URL = "https://${tailnetServiceHost "komodo"}";
-          MCP_PORT = "8762";
-          MCP_ALLOWED_HOSTS = "${tailnetServiceHost "komodo"},${tailnetServiceHost "komodo"}:443,localhost,127.0.0.1";
-          MCP_TRUST_PROXY = "loopback";
-        };
+        command = lib.getExe pkgs.mcp-proxy;
+        args = [
+          "--host"
+          "127.0.0.1"
+          "--port"
+          "8762"
+          "--pass-environment"
+          (lib.getExe pkgs.myPkgs.komodo-mcp-server)
+        ];
         secrets = {
           KOMODO_URL = "komodoURL";
           KOMODO_API_KEY = "komodoKey";
