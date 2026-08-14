@@ -24,24 +24,6 @@
         };
       };
 
-      komodo = {
-        port = 8762;
-        command = lib.getExe pkgs.mcp-proxy;
-        args = [
-          "--host"
-          "127.0.0.1"
-          "--port"
-          "8762"
-          "--pass-environment"
-          (lib.getExe pkgs.myPkgs.komodo-mcp-server)
-        ];
-        secrets = {
-          KOMODO_URL = "komodoURL";
-          KOMODO_API_KEY = "komodoKey";
-          KOMODO_API_SECRET = "komodoSecret";
-        };
-      };
-
       proxmox = {
         port = 8763;
         command = lib.getExe pkgs.myPkgs.proxmox-mcp-plus;

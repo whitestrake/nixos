@@ -42,6 +42,9 @@
     }: {
       sops.secrets = {
         githubToken = {};
+        komodoURL.owner = user.userName;
+        komodoKey.owner = user.userName;
+        komodoSecret.owner = user.userName;
       };
       sops.templates."gh-hosts" = {
         owner = user.userName;
@@ -112,13 +115,26 @@
             env.PATH = lib.makeBinPath [pkgs.nix];
           };
           homeassistant.url = mcpServiceUrl "homeassistant";
-          komodo.url = mcpServiceUrl "komodo";
+          komodo = {
+            command = lib.getExe pkgs.myPkgs.komodo-mcp-server;
+            cwd = "${config.xdg.stateHome}/komodo-mcp-server";
+            env = {
+              LOG_LEVEL = "error";
+              LOG_AUDIT_FILE = "/dev/null";
+              LOG_AUDIT_TOOL_IO = "off";
+              KOMODO_URL.file = osConfig.sops.secrets.komodoURL.path;
+              KOMODO_API_KEY.file = osConfig.sops.secrets.komodoKey.path;
+              KOMODO_API_SECRET.file = osConfig.sops.secrets.komodoSecret.path;
+            };
+          };
           proxmox.url = mcpServiceUrl "proxmox";
           grafana.url = mcpServiceUrl "grafana";
           tailscale.url = mcpServiceUrl "tailscale";
           cloudflare.url = "https://mcp.cloudflare.com/mcp";
         };
       };
+
+      xdg.stateFile."komodo-mcp-server/.keep".text = "";
 
       programs.codex = {
         enable = true;
