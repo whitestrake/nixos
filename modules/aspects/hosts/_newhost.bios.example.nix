@@ -10,11 +10,6 @@ in
   if hostName == "hosts"
   then {}
   else {
-    flake-file.inputs.disko = {
-      url = "github:nix-community/disko/latest";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     den.aspects.${hostName} = {
       includes = [
         den.aspects.server
