@@ -6,14 +6,14 @@
 }:
 python3Packages.buildPythonApplication rec {
   pname = "ha-mcp";
-  version = "8.2.0";
+  version = "8.3.0";
   pyproject = true;
 
   src = fetchFromGitHub {
     owner = "homeassistant-ai";
     repo = "ha-mcp";
     tag = "v${version}";
-    hash = "sha256-ZV/ipRn6suVDaYY5E26b+zDyX2DWHX+0JIdFTdxfXoc=";
+    hash = "sha256-2lWLF3gYVBVot8bHKlPW+FfwyY/R68Ky5tiF0jPStCg=";
     fetchSubmodules = true;
   };
 
