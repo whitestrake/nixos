@@ -291,7 +291,7 @@
         settings = {
           auto-update = "download";
           auto-update-channel = "stable";
-          shell-integration-features = "ssh-env,ssh-terminfo";
+          shell-integration-features = "ssh-env";
           background = "#040405";
           foreground = "#a2a2a2";
           bold-color = "#cecece";
