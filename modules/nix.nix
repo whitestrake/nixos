@@ -10,7 +10,7 @@
       nix = {
         # Determinate Nix handles nix daemon on macOS.
         enable = false;
-        settings.trusted-users = ["@staff"];
+        settings.trusted-users = ["@admin"];
       };
 
       # Because we disable nix-darwin's management of the nix daemon, we must
