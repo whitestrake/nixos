@@ -3,7 +3,6 @@
     includes = [
       den.aspects.server
       den.aspects.docker
-      den.aspects.hercules
     ];
 
     nixos = {...}: {

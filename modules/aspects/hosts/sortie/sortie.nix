@@ -9,7 +9,6 @@
       den.aspects.docker
       den.aspects.i915-sriov
       den.aspects.dev-tools
-      den.aspects.hercules
     ];
 
     nixos = {

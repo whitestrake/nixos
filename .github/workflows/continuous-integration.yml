@@ -1,0 +1,367 @@
+name: "Continuous Integration"
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: "Linux"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    outputs:
+      deploy-targets: ${{ steps.build.outputs.deploy-targets }}
+      records: ${{ steps.build.outputs.records }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+
+      - name: Configure nixbuild.net
+        uses: nixbuild/nixbuild-action@dea5d365a01d55dc038487801216ea5983c8b9c8 # v26
+        with:
+          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
+          settings: |
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build Linux configurations
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          df -h
+          started="$SECONDS"
+
+          nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
+            --flake .#ci.linux \
+            --systems 'x86_64-linux aarch64-linux' \
+            --store ssh-ng://eu.nixbuild.net \
+            --option builders '' \
+            --option max-jobs 2 \
+            --no-nom \
+            --result-file "$RUNNER_TEMP/ci-linux-results.json" \
+            -j 50
+
+          echo "NIXBUILD_FAST_BUILD_COMPLETE store=ssh-ng://eu.nixbuild.net durationSeconds=$((SECONDS - started))"
+          deploy_targets="$(nix eval --accept-flake-config --json .#deploy.targets)"
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-linux-results.json")"
+          expected_rollback_paths="$(jq -ce '[.[].rollbackScript] | unique | sort' <<< "$deploy_targets")"
+          built_rollback_paths="$(
+            jq -ce '
+              [
+                .results[]
+                | select(
+                    .type == "BUILD"
+                    and .success
+                    and (.attr | startswith("deploy-health-rollback-script-"))
+                  )
+                | .outputs.out
+              ]
+              | unique
+              | sort
+            ' "$RUNNER_TEMP/ci-linux-results.json"
+          )"
+
+          if [ "$built_rollback_paths" != "$expected_rollback_paths" ]; then
+            echo "::error ::Successful nix-fast-build rollback outputs do not match deploy targets."
+            echo "Expected: $expected_rollback_paths"
+            echo "Built:    $built_rollback_paths"
+            exit 1
+          fi
+
+          {
+            printf 'deploy-targets=%s\n' "$deploy_targets"
+            printf 'records=%s\n' "$records"
+          } >> "$GITHUB_OUTPUT"
+
+  darwin:
+    name: "Darwin"
+    runs-on: macos-26
+    timeout-minutes: 355
+    outputs:
+      records: ${{ steps.build.outputs.records }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 64g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Restore sparsebundle Nix root cache
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: reader
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+
+      - name: Push build results to Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+
+      - name: Build Darwin configurations
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          df -h
+          started="$SECONDS"
+
+          nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
+            --flake .#ci.darwin \
+            --systems aarch64-darwin \
+            --no-nom \
+            --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
+            -j 50
+
+          echo "NIX_FAST_BUILD_COMPLETE system=aarch64-darwin durationSeconds=$((SECONDS - started))"
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-darwin-results.json")"
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+
+  complete:
+    name: "CI completed"
+    runs-on: ubuntu-24.04
+    needs:
+      - linux
+      - darwin
+    if: always()
+    outputs:
+      deploy: ${{ steps.promote.outputs.deploy }}
+      deployment-matrix: ${{ steps.promote.outputs.deployment-matrix }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check build results
+        shell: bash
+        env:
+          DARWIN_RESULT: ${{ needs.darwin.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+        run: |
+          set -euo pipefail
+
+          if [ "$LINUX_RESULT" != success ] || [ "$DARWIN_RESULT" != success ]; then
+            echo "::error ::CI did not complete successfully: linux=$LINUX_RESULT darwin=$DARWIN_RESULT"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate, promote, and deploy successfully built configurations
+        id: promote
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          DARWIN_RECORDS: ${{ needs.darwin.outputs.records }}
+          DEPLOY_TARGETS: ${{ needs.linux.outputs.deploy-targets }}
+          GITHUB_DEPLOYMENT_TOKEN: ${{ github.token }}
+          LINUX_RECORDS: ${{ needs.linux.outputs.records }}
+        run: |
+          set -euo pipefail
+
+          source modules/deployment/scripts/cachix-pin-functions.sh
+
+          records="$(
+            printf '%s\n%s\n' "$LINUX_RECORDS" "$DARWIN_RECORDS" | jq -sce '
+              (add | sort_by(.host)) as $records
+              | ($records | group_by(.host) | map(select(length > 1) | .[0].host))
+                as $duplicates
+              | if ($duplicates | length) > 0
+                then error("duplicate CI configuration names: \($duplicates | join(", "))")
+                else $records
+                end
+            '
+          )"
+
+          if ! jq -en \
+            --argjson records "$records" \
+            --argjson targets "$DEPLOY_TARGETS" \
+            '
+              def recordPath($host):
+                (($records[] | select(.host == $host) | .storePath) // "");
+
+              ($targets | type == "object" and length > 0)
+              and all(
+                $targets | to_entries[];
+                (.key | type == "string" and length > 0)
+                and (.value | type == "object")
+                and (.value.system | type == "string" and length > 0)
+                and (.value.storePath | type == "string" and startswith("/nix/store/"))
+                and (.value.rollbackScript | type == "string" and startswith("/nix/store/"))
+                and (.value.deployPin | type == "string" and startswith("deployed-host-"))
+                and recordPath(.key) == .value.storePath
+              )
+            ' >/dev/null; then
+            echo "::error ::Deploy targets are malformed or do not match successful NFB outputs."
+            exit 1
+          fi
+
+          mapfile -t store_paths < <(
+            jq -r '.[].storePath' <<< "$records"
+            jq -r '.[].rollbackScript' <<< "$DEPLOY_TARGETS"
+          )
+          cachix_verify_store_paths_http whitestrake "${store_paths[@]}"
+
+          echo "Validated successful configuration and rollback outputs in Cachix."
+          pins="$(cachix_fetch_pins whitestrake)"
+          built_pin_delta="$(
+            jq -cn \
+              --argjson pins "$pins" \
+              --argjson records "$records" \
+              '
+                def pinPath($name):
+                  (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
+
+                $records
+                | map(
+                    . as $record
+                    | ("built-host-" + $record.host) as $pin
+                    | pinPath($pin) as $current
+                    | select($current != $record.storePath)
+                    | {
+                        host: $record.host,
+                        pin: $pin,
+                        currentStorePath: $current,
+                        targetStorePath: $record.storePath
+                      }
+                  )
+                | sort_by(.host)
+              '
+          )"
+          deployment_matrix="$(
+            jq -cn \
+              --argjson pins "$pins" \
+              --argjson targets "$DEPLOY_TARGETS" \
+              '
+                def pinPath($name):
+                  (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
+
+                {
+                  include: (
+                    $targets
+                    | to_entries
+                    | map(
+                        select(pinPath(.value.deployPin) != .value.storePath)
+                        | {
+                            host: .key,
+                            system: .value.system,
+                            storePath: .value.storePath,
+                            rollbackScript: .value.rollbackScript
+                          }
+                      )
+                    | sort_by(.host)
+                  )
+                }
+              '
+          )"
+
+          echo "Prospective Cachix built-pin changes for $GITHUB_SHA:"
+          jq . <<< "$built_pin_delta"
+          echo "Prospective Cachix deployment matrix for $GITHUB_SHA:"
+          jq . <<< "$deployment_matrix"
+          {
+            echo "### Prospective Cachix promotion and deployment"
+            echo
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo
+            echo "#### Built-pin changes"
+            echo
+            echo '```json'
+            jq . <<< "$built_pin_delta"
+            echo '```'
+            echo
+            echo "#### Deployment matrix"
+            echo
+            echo '```json'
+            jq . <<< "$deployment_matrix"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$GITHUB_REF" != refs/heads/master ]; then
+            exit 0
+          fi
+
+          current_rev="$(
+            curl -fsS \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_DEPLOYMENT_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" \
+              | jq -r '.object.sha // empty'
+          )"
+          if [ "$current_rev" != "$GITHUB_SHA" ]; then
+            echo "Skipping stale CI promotion and deployment: run=$GITHUB_SHA current=$current_rev"
+            exit 0
+          fi
+
+          if [ "$GITHUB_REF" = refs/heads/master ]; then
+            echo "Preview only: skipping Cachix pin promotion and deployment."
+            exit 0
+          fi
+
+          while IFS=$'\t' read -r host store_path; do
+            pin_name="built-host-$host"
+            if [ "$(cachix_pin_path "$pins" "$pin_name")" = "$store_path" ]; then
+              echo "Built state already pinned: $pin_name -> $store_path"
+            else
+              echo "Pinning built state: $pin_name -> $store_path"
+              cachix_pin_store_path whitestrake "$pin_name" "$store_path" 3
+            fi
+          done < <(jq -r '.[] | [.host, .storePath] | @tsv' <<< "$records")
+
+          if [ "$(jq -r '.include | length' <<< "$deployment_matrix")" = 0 ]; then
+            echo "No deployable hosts changed; not dispatching continuous deployment."
+            exit 0
+          fi
+
+          printf 'deployment-matrix=%s\n' "$(jq -c . <<< "$deployment_matrix")" >> "$GITHUB_OUTPUT"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: "Continuous Deployment"
+    needs: complete
+    if: ${{ needs.complete.outputs.deploy == 'true' }}
+    uses: ./.github/workflows/continuous-deployment.yml
+    with:
+      deployment_sha: ${{ github.sha }}
+      deployment_source: "continuous-integration"
+      force: false
+      matrix: ${{ needs.complete.outputs.deployment-matrix }}
+    secrets:
+      CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

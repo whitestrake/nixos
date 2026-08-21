@@ -1,13 +1,13 @@
 name: "Continuous Deployment"
 run-name: >-
   ${{
-    inputs.deployment_source == 'hercules-ci'
-    && 'HCI Automated Continuous Deployment'
+    inputs.deployment_source == 'continuous-integration'
+    && 'CI Automated Continuous Deployment'
     || 'Triggered Deployment'
   }}
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       deployment_sha:
         description: "Commit SHA to deploy."
@@ -16,7 +16,6 @@ on:
       deployment_source:
         description: "Deployment source label."
         required: true
-        default: "github-actions"
         type: string
       matrix:
         description: "Deployment matrix JSON."
@@ -24,20 +23,81 @@ on:
         type: string
       force:
         description: "Redeploy even when deployed-host-* already matches the target."
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      CACHIX_ACTIVATE_TOKEN:
         required: true
-        default: "false"
-        type: string
+      CACHIX_AUTH_TOKEN:
+        required: true
 
 concurrency:
   group: cachix-deploy-master
   cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: "Check deployment revision"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.revision.outputs.proceed }}
+    steps:
+      - name: Refuse stale automated deployment
+        id: revision
+        shell: bash
+        env:
+          DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
+          DEPLOYMENT_SOURCE: ${{ inputs.deployment_source }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          case "$DEPLOYMENT_SOURCE" in
+            github-actions)
+              echo "Manual deployment; stale-revision check bypassed."
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            continuous-integration)
+              ;;
+            *)
+              echo "::error ::Unknown deployment source: $DEPLOYMENT_SOURCE"
+              exit 1
+              ;;
+          esac
+
+          if [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error ::Automated deployments must target master: $GITHUB_REF"
+            exit 1
+          fi
+
+          current_rev="$(
+            curl -fsS \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+              | jq -er '.object.sha // empty'
+          )"
+
+          if [ "$DEPLOYMENT_SHA" != "$current_rev" ]; then
+            echo "Skipping stale automated deployment: requested=$DEPLOYMENT_SHA current=$current_rev"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: "Deploy ${{ matrix.host }}"
+    needs: preflight
+    if: ${{ needs.preflight.outputs.proceed == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

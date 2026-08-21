@@ -6,7 +6,6 @@
       den.aspects.i915-sriov
       den.aspects.dev-tools
       den.aspects.mcp-host
-      den.aspects.hercules
     ];
 
     nixos = {

@@ -1,5 +1,4 @@
 name: "GitHub CI"
-run-name: "GitHub CI"
 
 on:
   push:
@@ -7,6 +6,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: github-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   eval-ghci:
@@ -42,13 +45,13 @@ jobs:
                   name = name;
                   kind = "nixosConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
+                  attr = ".#ci.linux.${name}";
                 };
                 mkDarwin = name: cfg: {
                   name = name;
                   kind = "darwinConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
+                  attr = ".#ci.darwin.${name}";
                 };
                 nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
                 darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
@@ -85,7 +88,7 @@ jobs:
                     imageSize: "32G"
                   }
                 else
-                  empty
+                  error("unsupported CI system: \(.system)")
                 end
               )
             ' <<< "$records"

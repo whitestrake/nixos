@@ -18,7 +18,7 @@ runs:
         sudo mkdir -p /tmp/nix-builds
         sudo chmod 1777 /tmp/nix-builds
 
-    - uses: nixbuild/nix-quick-install-action@v35
+    - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
       with:
         nix_conf: |
           experimental-features = nix-command flakes

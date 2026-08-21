@@ -15,12 +15,7 @@ on:
         default: false
         type: boolean
 
-concurrency:
-  group: cachix-deploy-master
-  cancel-in-progress: false
-
 permissions:
-  actions: write
   contents: read
 
 jobs:
@@ -28,6 +23,9 @@ jobs:
     name: "Prepare manual deployment"
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    outputs:
+      deploy: ${{ steps.executor.outputs.deploy }}
+      matrix: ${{ steps.executor.outputs.matrix }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -65,13 +63,11 @@ jobs:
           echo "  selected count: $SELECTED_COUNT"
           echo "  selected hosts: $SELECTED_HOSTS"
 
-      - name: Dispatch Cachix deploy workflow
+      - name: Prepare Cachix deploy executor
+        id: executor
         if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          CACHIX_DEPLOY_BRANCH: ${{ github.ref_name }}
-          CACHIX_DEPLOY_REV: ${{ github.sha }}
           DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
         run: |
           set -euo pipefail
@@ -90,7 +86,7 @@ jobs:
             }' "$DEPLOY_PLAN_FILE"
           )"
 
-          echo "Dispatching Cachix deploy executor for:"
+          echo "Prepared Cachix deploy executor for:"
           jq -r '
             .include[]
             | "  - " + .host + " (" + .system + "): " + .storePath
@@ -99,9 +95,19 @@ jobs:
           echo "Executor matrix:"
           jq . <<< "$matrix"
 
-          gh workflow run continuous-deployment.yml \
-            --ref "$CACHIX_DEPLOY_BRANCH" \
-            -f deployment_sha="$CACHIX_DEPLOY_REV" \
-            -f deployment_source="github-actions" \
-            -f force="${{ inputs.force && 'true' || 'false' }}" \
-            -f matrix="$matrix"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: "Continuous Deployment"
+    needs: prepare
+    if: ${{ needs.prepare.outputs.deploy == 'true' }}
+    uses: ./.github/workflows/continuous-deployment.yml
+    with:
+      deployment_sha: ${{ github.sha }}
+      deployment_source: "github-actions"
+      force: ${{ inputs.force }}
+      matrix: ${{ needs.prepare.outputs.matrix }}
+    secrets:
+      CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
