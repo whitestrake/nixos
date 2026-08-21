@@ -329,11 +329,6 @@ jobs:
             exit 0
           fi
 
-          if [ "$GITHUB_REF" = refs/heads/master ]; then
-            echo "Preview only: skipping Cachix pin promotion and deployment."
-            exit 0
-          fi
-
           while IFS=$'\t' read -r host store_path; do
             pin_name="built-host-$host"
             if [ "$(cachix_pin_path "$pins" "$pin_name")" = "$store_path" ]; then
