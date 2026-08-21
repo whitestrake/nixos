@@ -43,6 +43,7 @@
         BAT_PAGING = "never";
         BAT_THEME = "TwoDark";
         CLICOLOR = "1";
+        NIX_SSHOPTS = "-oControlPath=none -oControlPersist=no";
       };
 
       home.shellAliases = {
@@ -70,7 +71,7 @@
             host="$1"
             cmd="''${2:-switch}"
 
-            NIX_SSHOPTS="-A" exec nixos-rebuild \
+            NIX_SSHOPTS="-A ''${NIX_SSHOPTS:-}" exec nixos-rebuild \
               --flake ".#$host" \
               --target-host "$host" \
               --build-host "$host" \
