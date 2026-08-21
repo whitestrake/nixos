@@ -28,7 +28,7 @@ jobs:
       matrix: ${{ steps.executor.outputs.matrix }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
 
@@ -68,23 +68,11 @@ jobs:
         if: ${{ steps.plan.outputs.preview != 'true' && steps.plan.outputs.selected_count != '0' }}
         shell: bash
         env:
-          DEPLOY_PLAN_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-plan.json
+          DEPLOY_MATRIX_FILE: ${{ runner.temp }}/cachix-deploy-plan/deploy-matrix.json
         run: |
           set -euo pipefail
 
-          matrix="$(
-            jq -c '{
-              include: (
-                .include
-                | map({
-                    host,
-                    system,
-                    storePath,
-                    rollbackScript
-                  })
-              )
-            }' "$DEPLOY_PLAN_FILE"
-          )"
+          matrix="$(jq -c . "$DEPLOY_MATRIX_FILE")"
 
           echo "Prepared Cachix deploy executor for:"
           jq -r '

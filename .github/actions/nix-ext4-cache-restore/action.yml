@@ -39,7 +39,7 @@ runs:
 
     - name: Restore ext4 image cache
       id: restore
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/${{ inputs.image-dir-name }}/nix-root.ext4.zst
         key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache-key-suffix }}

@@ -219,7 +219,7 @@ jobs:
       NIX_ROOT_SYSTEM: ${{ matrix.system }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
           persist-credentials: false
@@ -366,14 +366,14 @@ jobs:
 
       - name: Save ext4 Nix root cache
         if: ${{ success() && matrix.cacheKind == 'ext4' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/${{ matrix.imageDir }}/nix-root.ext4.zst
           key: ${{ steps.lane.outputs.cache_key }}
 
       - name: Save sparsebundle Nix root cache
         if: ${{ success() && matrix.cacheKind == 'sparsebundle' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/${{ matrix.imageDir }}/nix-root.sparsebundle
           key: ${{ steps.lane.outputs.cache_key }}

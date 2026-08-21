@@ -160,7 +160,6 @@ selected_json="$(
 
 selected_count="$(jq -r 'length' <<< "$selected_json")"
 matrix="$(jq -cn --argjson include "$selected_json" '{include: ($include | map({host, system, storePath, rollbackScript}))}')"
-deploy_plan="$(jq -cn --argjson include "$selected_json" '{include: $include}')"
 selected_hosts="$(jq -r 'if length == 0 then "[none]" else map(.host) | join(", ") end' <<< "$selected_json")"
 
 echo "Cachix deploy plan:"
@@ -191,7 +190,6 @@ done < <(
 if [ "$preview" = "true" ]; then
   selected_count=0
   matrix='{"include":[]}'
-  deploy_plan='{"include":[]}'
 else
   mapfile -t selected_paths < <(
     jq -r '.[] | .storePath, .rollbackScript' <<< "$selected_json"
@@ -204,4 +202,3 @@ write_output preview "$preview"
 write_output selected_hosts "$selected_hosts"
 
 printf '%s\n' "$matrix" > "$output_dir/deploy-matrix.json"
-printf '%s\n' "$deploy_plan" > "$output_dir/deploy-plan.json"
