@@ -52,6 +52,7 @@ jobs:
             --option builders '' \
             --option max-jobs 2 \
             --no-nom \
+            --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50
 
