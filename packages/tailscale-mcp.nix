@@ -7,11 +7,11 @@
 }:
 stdenvNoCC.mkDerivation rec {
   pname = "tailscale-mcp";
-  version = "0.16.0";
+  version = "0.17.1";
 
   src = fetchurl {
     url = "https://registry.npmjs.org/@yawlabs/tailscale-mcp/-/tailscale-mcp-${version}.tgz";
-    hash = "sha256-es1lCmiFDi/YkoanZzBWmr14lVn257utg0Fh44NLXxw=";
+    hash = "sha256-+3SuoALwk4rD6kcCnfLkUlnv0GjvTQSyrYMMEmi3TKg=";
   };
 
   sourceRoot = "package";
