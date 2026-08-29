@@ -1,4 +1,4 @@
-name: "Continuous Integration"
+name: "CI"
 
 on:
   push:
@@ -16,6 +16,9 @@ jobs:
     name: "Linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    permissions:
+      checks: write
+      contents: read
     outputs:
       deploy-targets: ${{ steps.build.outputs.deploy-targets }}
       records: ${{ steps.build.outputs.records }}
@@ -39,13 +42,16 @@ jobs:
       - name: Build Linux configurations
         id: build
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           df -h
           started="$SECONDS"
 
-          nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
+          python3 .github/scripts/nix_fast_build_checks.py --group linux -- \
+            nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
             --flake .#ci.linux \
             --systems 'x86_64-linux aarch64-linux' \
             --store ssh-ng://eu.nixbuild.net \
@@ -92,6 +98,9 @@ jobs:
     name: "Darwin"
     runs-on: macos-26
     timeout-minutes: 355
+    permissions:
+      checks: write
+      contents: read
     outputs:
       records: ${{ steps.build.outputs.records }}
     env:
@@ -135,6 +144,8 @@ jobs:
       - name: Build Darwin configurations
         id: build
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -155,7 +166,8 @@ jobs:
             echo "NIX_FAST_BUILD_SOURCE source=nix-run"
           fi
 
-          "${nix_fast_build[@]}" \
+          python3 .github/scripts/nix_fast_build_checks.py --group darwin -- \
+            "${nix_fast_build[@]}" \
             --flake .#ci.darwin \
             --systems aarch64-darwin \
             --no-nom \
@@ -167,7 +179,7 @@ jobs:
           printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
 
   complete:
-    name: "CI completed"
+    name: "Completed"
     runs-on: ubuntu-24.04
     needs:
       - linux
