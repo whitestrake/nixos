@@ -141,7 +141,21 @@ jobs:
           df -h
           started="$SECONDS"
 
-          nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
+          cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/$NIX_ROOT_SYSTEM/nix-fast-build"
+          nix_fast_build=()
+          if [ -d "$cached_nix_fast_build" ]; then
+            cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
+            if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
+              nix_fast_build=("$cached_nix_fast_build")
+              echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
+            fi
+          fi
+          if [ "${#nix_fast_build[@]}" -eq 0 ]; then
+            nix_fast_build=(nix run --inputs-from . nixpkgs-unstable#nix-fast-build --)
+            echo "NIX_FAST_BUILD_SOURCE source=nix-run"
+          fi
+
+          "${nix_fast_build[@]}" \
             --flake .#ci.darwin \
             --systems aarch64-darwin \
             --no-nom \

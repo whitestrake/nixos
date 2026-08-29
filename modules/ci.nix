@@ -1,4 +1,5 @@
 {
+  config,
   lib,
   self,
   ...
@@ -35,5 +36,13 @@ in {
   flake.ci = {
     linux = toplevels self.nixosConfigurations // rollbackScripts // checks;
     darwin = toplevels self.darwinConfigurations;
+    configurations =
+      lib.mapAttrs
+      (_: hosts:
+        lib.mapAttrs
+        (_: host:
+          (lib.getAttrFromPath host.intoAttr self).config.system.build.toplevel)
+        hosts)
+      config.den.hosts;
   };
 }

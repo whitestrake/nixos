@@ -117,6 +117,7 @@ jobs:
               and (.system | type == "string")
               and (.attr | type == "string")
               and (.storePath | type == "string")
+              and (.nixFastBuildStorePath | type == "string")
             )) then
               .
             else
@@ -165,7 +166,7 @@ jobs:
             fi
 
             fingerprint="$(
-              jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$builds_json" \
+              jq -r '.[] | [.kind, .name, .storePath, .nixFastBuildStorePath] | @tsv' <<< "$builds_json" \
                 | sort \
                 | sha256sum \
                 | cut -d " " -f1
@@ -276,31 +277,24 @@ jobs:
               let
                 targetSystem = builtins.getEnv "NIX_ROOT_SYSTEM";
                 flake = builtins.getFlake (toString ./.);
-                mkNixos = name: cfg: {
-                  inherit name cfg;
-                  kind = "nixosConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
-                };
-                mkDarwin = name: cfg: {
-                  inherit name cfg;
-                  kind = "darwinConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
-                };
-                records =
-                  builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}))
-                  ++ builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
-                selected = builtins.filter (record: record.system == targetSystem) records;
+                configurations = flake.ci.configurations.${targetSystem} or {};
+                kind =
+                  if builtins.match ".*-darwin" targetSystem == null
+                  then "nixosConfiguration"
+                  else "darwinConfiguration";
+                nixFastBuildStorePath =
+                  toString flake.inputs.nixpkgs-unstable.legacyPackages.${targetSystem}.nix-fast-build;
               in
-                map (record: {
-                  inherit (record) name kind system attr;
-                  storePath = toString record.cfg.config.system.build.toplevel;
-                }) selected
+                builtins.attrValues (builtins.mapAttrs (name: output: {
+                  inherit kind name nixFastBuildStorePath;
+                  system = targetSystem;
+                  attr = ".#ci.configurations.${targetSystem}.${name}";
+                  storePath = toString output;
+                }) configurations)
             '
           )"
           fingerprint="$(
-            jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$builds_json" \
+            jq -r '.[] | [.kind, .name, .storePath, .nixFastBuildStorePath] | @tsv' <<< "$builds_json" \
               | sort \
               | shasum -a 256 \
               | cut -d " " -f1

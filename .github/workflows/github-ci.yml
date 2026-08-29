@@ -46,12 +46,14 @@ jobs:
                   kind = "nixosConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
                   attr = ".#ci.linux.${name}";
+                  nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${cfg.pkgs.stdenv.hostPlatform.system}.nix-fast-build;
                 };
                 mkDarwin = name: cfg: {
                   name = name;
                   kind = "darwinConfiguration";
                   system = cfg.pkgs.stdenv.hostPlatform.system;
                   attr = ".#ci.darwin.${name}";
+                  nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${cfg.pkgs.stdenv.hostPlatform.system}.nix-fast-build;
                 };
                 nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
                 darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
@@ -195,12 +197,14 @@ jobs:
             --arg system "$NIX_ROOT_SYSTEM" \
             --arg attr "${{ matrix.build.attr }}" \
             --arg storePath "$store_path" \
+            --arg nixFastBuildStorePath "${{ matrix.build.nixFastBuildStorePath }}" \
             '{
               kind: $kind,
               name: $name,
               system: $system,
               attr: $attr,
-              storePath: $storePath
+              storePath: $storePath,
+              nixFastBuildStorePath: $nixFastBuildStorePath
             }' > "$RUNNER_TEMP/ghci-toplevel/record.json"
 
           echo "GHCI_READER_BUILD_COMPLETE system=$NIX_ROOT_SYSTEM name=${{ matrix.build.name }} attr=${{ matrix.build.attr }} outPath=$store_path durationSeconds=$duration"

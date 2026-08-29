@@ -1,9 +1,9 @@
 name: "Build Nix root"
-description: "Build configurations and root the outputs in a Nix root."
+description: "Realise a configuration lane with nix-fast-build and root its outputs."
 
 inputs:
   builds-json:
-    description: "Compact JSON array of build records with name and attr fields."
+    description: "Compact JSON array of build records."
     required: true
   system:
     description: "Nix system label for telemetry and gcroot placement."
@@ -53,26 +53,76 @@ runs:
             ;;
         esac
 
-        legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
+        cached_nix_fast_build="$root_dir/nix-fast-build"
+        nix_fast_build=()
+        if [ -d "$cached_nix_fast_build" ]; then
+          cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
+          if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
+            nix_fast_build=("$cached_nix_fast_build")
+            echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
+          fi
+        fi
+        if [ "${#nix_fast_build[@]}" -eq 0 ]; then
+          nix_fast_build=(nix run --inputs-from . --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
+          echo "NIX_FAST_BUILD_SOURCE source=nix-run"
+        fi
+
+        legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
         rm -rf "$legacy_root_dir"
         rm -rf "$root_dir"
         mkdir -p "$root_dir"
 
-        jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
-          while IFS=$'\t' read -r name attr; do
-            started="$SECONDS"
-            out_paths="$(run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" nix build \
-              --accept-flake-config \
-              --print-build-logs \
-              --print-out-paths \
-              --no-link \
-              "$attr")"
-            duration="$((SECONDS - started))"
+        result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
+        started="$SECONDS"
+        run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
+          --flake ".#ci.configurations.$GHCI_LANE_SYSTEM" \
+          --systems "$GHCI_LANE_SYSTEM" \
+          --option builders '' \
+          --option max-jobs 0 \
+          --no-nom \
+          --no-link \
+          --result-file "$result_file" \
+          -j 50
 
-            printf '%s\n' "$out_paths"
-            out_path="${out_paths##*$'\n'}"
-            ln -sfn "$out_path" "$root_dir/$name"
+        records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
+        expected="$(jq -ce '[.[] | {host: .name, storePath: .storePath}] | sort_by(.host)' <<< "$GHCI_BUILDS_JSON")"
+        if [ "$records" != "$expected" ]; then
+          echo "::error ::Successful nix-fast-build outputs do not match GHCI artifacts."
+          echo "Expected: $expected"
+          echo "Built:    $records"
+          exit 1
+        fi
 
-            echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+        jq -r '.[] | [.host, .storePath] | @tsv' <<< "$records" |
+          while IFS=$'\t' read -r name store_path; do
+            ln -sfn "$store_path" "$root_dir/$name"
+            echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM name=$name outPath=$store_path gcroot=$root_dir/$name"
           done
+
+        expected_nix_fast_build="$(
+          jq -er '
+            [.[].nixFastBuildStorePath] | unique
+            | if length == 1 then .[0] else error("expected exactly one nix-fast-build store path") end
+          ' <<< "$GHCI_BUILDS_JSON"
+        )"
+        nix_fast_build_paths="$(
+          nix build \
+            --accept-flake-config \
+            --inputs-from . \
+            --option max-jobs 0 \
+            --print-out-paths \
+            --no-link \
+            nixpkgs-unstable#nix-fast-build
+        )"
+        nix_fast_build_path="${nix_fast_build_paths##*$'\n'}"
+        if [ "$nix_fast_build_path" != "$expected_nix_fast_build" ]; then
+          echo "::error ::Realised nix-fast-build does not match the GHCI artifact."
+          echo "Expected: $expected_nix_fast_build"
+          echo "Realised: $nix_fast_build_path"
+          exit 1
+        fi
+        "$nix_fast_build_path/bin/nix-fast-build" --help >/dev/null
+        ln -sfn "$nix_fast_build_path" "$root_dir/nix-fast-build"
+
+        echo "NIX_FAST_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM outPath=$nix_fast_build_path gcroot=$root_dir/nix-fast-build durationSeconds=$((SECONDS - started))"
