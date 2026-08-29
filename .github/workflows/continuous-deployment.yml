@@ -1,4 +1,4 @@
-name: "Continuous Deployment"
+name: "CD"
 run-name: >-
   ${{
     inputs.deployment_source == 'continuous-integration'
@@ -7,6 +7,25 @@ run-name: >-
   }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      deployment_sha:
+        description: "Commit SHA to deploy."
+        required: true
+        type: string
+      deployment_source:
+        description: "Deployment source label."
+        required: true
+        type: string
+      matrix:
+        description: "Deployment matrix JSON."
+        required: true
+        type: string
+      force:
+        description: "Redeploy even when deployed-host-* already matches the target."
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       deployment_sha:
@@ -42,7 +61,7 @@ permissions:
 
 jobs:
   preflight:
-    name: "Check deployment revision"
+    name: "Preflight"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

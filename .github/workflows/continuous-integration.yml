@@ -185,10 +185,8 @@ jobs:
       - linux
       - darwin
     if: always()
-    outputs:
-      deploy: ${{ steps.promote.outputs.deploy }}
-      deployment-matrix: ${{ steps.promote.outputs.deployment-matrix }}
     permissions:
+      actions: write
       contents: read
     steps:
       - name: Check build results
@@ -209,13 +207,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate, promote, and deploy successfully built configurations
-        id: promote
+      - name: Validate, promote, and dispatch successfully built configurations
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           DARWIN_RECORDS: ${{ needs.darwin.outputs.records }}
           DEPLOY_TARGETS: ${{ needs.linux.outputs.deploy-targets }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_DEPLOYMENT_TOKEN: ${{ github.token }}
           LINUX_RECORDS: ${{ needs.linux.outputs.records }}
         run: |
@@ -371,19 +369,12 @@ jobs:
             exit 0
           fi
 
-          printf 'deployment-matrix=%s\n' "$(jq -c . <<< "$deployment_matrix")" >> "$GITHUB_OUTPUT"
-          echo "deploy=true" >> "$GITHUB_OUTPUT"
-
-  deploy:
-    name: "Continuous Deployment"
-    needs: complete
-    if: ${{ needs.complete.outputs.deploy == 'true' }}
-    uses: ./.github/workflows/continuous-deployment.yml
-    with:
-      deployment_sha: ${{ github.sha }}
-      deployment_source: "continuous-integration"
-      force: false
-      matrix: ${{ needs.complete.outputs.deployment-matrix }}
-    secrets:
-      CACHIX_ACTIVATE_TOKEN: ${{ secrets.CACHIX_ACTIVATE_TOKEN }}
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          matrix="$(jq -c . <<< "$deployment_matrix")"
+          echo "Dispatching continuous deployment matrix: $matrix"
+          cachix_with_retry gh workflow run continuous-deployment.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            --raw-field deployment_sha="$GITHUB_SHA" \
+            --raw-field deployment_source=continuous-integration \
+            --raw-field force=false \
+            --raw-field matrix="$matrix"
