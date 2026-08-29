@@ -60,7 +60,7 @@ class GitHubChecks:
         )
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(request) as response:
+                with urllib.request.urlopen(request, timeout=10) as response:
                     return json.load(response)
             except (OSError, urllib.error.HTTPError) as error:
                 if attempt < 2:

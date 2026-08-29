@@ -1,9 +1,11 @@
+import io
 import sys
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from nix_fast_build_checks import CheckPublisher, check_name, run
+from nix_fast_build_checks import CheckPublisher, GitHubChecks, check_name, run
 
 
 class FakeChecks:
@@ -84,6 +86,17 @@ class CheckPublisherTests(unittest.TestCase):
         self.publisher.finalize("cancelled")
 
         self.assertEqual(self.checks.updated[0][1]["conclusion"], "cancelled")
+
+
+class GitHubChecksTests(unittest.TestCase):
+    @mock.patch("nix_fast_build_checks.urllib.request.urlopen")
+    def test_requests_have_a_bounded_timeout(self, urlopen):
+        urlopen.return_value = io.BytesIO(b'{"id": 9}')
+
+        check_id = GitHubChecks("token", "example/repo").create(name="test")
+
+        self.assertEqual(check_id, 9)
+        urlopen.assert_called_once_with(mock.ANY, timeout=10)
 
 
 class RunTests(unittest.TestCase):
