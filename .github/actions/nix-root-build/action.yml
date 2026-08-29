@@ -55,16 +55,20 @@ runs:
 
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
         cached_nix_fast_build="$root_dir/nix-fast-build"
+        nix_fast_build_fallback=(nix run --inputs-from . --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
         nix_fast_build=()
+        nix_fast_build_source=""
         if [ -d "$cached_nix_fast_build" ]; then
           cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
           if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
             nix_fast_build=("$cached_nix_fast_build")
+            nix_fast_build_source="cache-root"
             echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
           fi
         fi
         if [ "${#nix_fast_build[@]}" -eq 0 ]; then
-          nix_fast_build=(nix run --inputs-from . --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
+          nix_fast_build=("${nix_fast_build_fallback[@]}")
+          nix_fast_build_source="nix-run"
           echo "NIX_FAST_BUILD_SOURCE source=nix-run"
         fi
 
@@ -75,15 +79,33 @@ runs:
 
         result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
         started="$SECONDS"
-        run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
-          --flake ".#ci.configurations.$GHCI_LANE_SYSTEM" \
-          --systems "$GHCI_LANE_SYSTEM" \
-          --option builders '' \
-          --option max-jobs 0 \
-          --no-nom \
-          --no-link \
-          --result-file "$result_file" \
-          -j 50
+        run_lane() {
+          run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
+            --flake ".#ci.configurations.$GHCI_LANE_SYSTEM" \
+            --systems "$GHCI_LANE_SYSTEM" \
+            --option builders '' \
+            --option max-jobs 0 \
+            --no-nom \
+            --no-link \
+            --result-file "$result_file" \
+            -j 50
+        }
+
+        if [ "$nix_fast_build_source" = "cache-root" ]; then
+          if run_lane; then
+            :
+          else
+            cached_status="$?"
+            echo "::warning ::Rooted nix-fast-build failed with status $cached_status; retrying with the current pinned version."
+            rm -f "$result_file"
+            nix_fast_build=("${nix_fast_build_fallback[@]}")
+            nix_fast_build_source="nix-run"
+            echo "NIX_FAST_BUILD_SOURCE source=nix-run reason=cache-root-failed"
+            run_lane
+          fi
+        else
+          run_lane
+        fi
 
         records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
         expected="$(jq -ce '[.[] | {host: .name, storePath: .storePath}] | sort_by(.host)' <<< "$GHCI_BUILDS_JSON")"

@@ -195,14 +195,12 @@ jobs:
             --arg kind "${{ matrix.build.kind }}" \
             --arg name "${{ matrix.build.name }}" \
             --arg system "$NIX_ROOT_SYSTEM" \
-            --arg attr "${{ matrix.build.attr }}" \
             --arg storePath "$store_path" \
             --arg nixFastBuildStorePath "${{ matrix.build.nixFastBuildStorePath }}" \
             '{
               kind: $kind,
               name: $name,
               system: $system,
-              attr: $attr,
               storePath: $storePath,
               nixFastBuildStorePath: $nixFastBuildStorePath
             }' > "$RUNNER_TEMP/ghci-toplevel/record.json"

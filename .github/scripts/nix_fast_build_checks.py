@@ -7,7 +7,6 @@ import signal
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -58,12 +57,13 @@ class GitHubChecks:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        for attempt in range(3):
+        attempts = 1 if method == "POST" else 3
+        for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     return json.load(response)
-            except (OSError, urllib.error.HTTPError) as error:
-                if attempt < 2:
+            except OSError as error:
+                if attempt + 1 < attempts:
                     retry_after = (getattr(error, "headers", None) or {}).get(
                         "Retry-After"
                     )
@@ -71,6 +71,7 @@ class GitHubChecks:
                         delay = float(retry_after)
                     except (TypeError, ValueError):
                         delay = 2 ** (attempt + 1)
+                    delay = min(max(delay, 0.0), 4.0)
                     time.sleep(delay)
                     continue
                 self.disabled = True
@@ -86,7 +87,7 @@ class GitHubChecks:
         return response.get("id") if response else None
 
     def update(self, check_id, **payload):
-        self._request(
+        return self._request(
             "PATCH",
             f"/repos/{self.repository}/check-runs/{check_id}",
             payload,
@@ -102,6 +103,7 @@ class CheckPublisher:
         self.run_id = run_id
         self.attempt = attempt
         self.outstanding = {}
+        self.seen = set()
         self.warned = False
 
     def _call(self, method, *args, **kwargs):
@@ -141,6 +143,9 @@ class CheckPublisher:
 
         success = event.get("success") is True
         if event_type == "EVAL":
+            if attr in self.seen:
+                return
+            self.seen.add(attr)
             if success:
                 check_id = self._call(
                     self.checks.create,
@@ -162,7 +167,7 @@ class CheckPublisher:
                 )
             return
 
-        check_id = self.outstanding.pop(attr, None)
+        check_id = self.outstanding.get(attr)
         if check_id is not None:
             conclusion = "success" if success else "failure"
             payload = self._completed(
@@ -174,21 +179,27 @@ class CheckPublisher:
             payload.pop("head_sha")
             payload.pop("external_id")
             payload.pop("details_url")
-            self._call(self.checks.update, check_id, **payload)
+            if self._call(self.checks.update, check_id, **payload) is not None:
+                self.outstanding.pop(attr, None)
 
     def finalize(self, conclusion):
+        summary = (
+            "Nix Fast Build completed successfully without a build event."
+            if conclusion == "success"
+            else "Nix Fast Build exited before this output completed."
+        )
         for attr, check_id in list(self.outstanding.items()):
             payload = self._completed(
                 attr,
                 conclusion,
-                "Nix Fast Build exited before this output completed.",
+                summary,
             )
             payload.pop("name")
             payload.pop("head_sha")
             payload.pop("external_id")
             payload.pop("details_url")
-            self._call(self.checks.update, check_id, **payload)
-        self.outstanding.clear()
+            if self._call(self.checks.update, check_id, **payload) is not None:
+                self.outstanding.pop(attr, None)
 
 
 def run(command, publisher):
@@ -224,7 +235,10 @@ def run(command, publisher):
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
-    publisher.finalize("cancelled" if interrupted else "failure")
+    conclusion = (
+        "cancelled" if interrupted else "success" if return_code == 0 else "failure"
+    )
+    publisher.finalize(conclusion)
     return return_code
 
 

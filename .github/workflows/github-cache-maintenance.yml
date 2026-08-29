@@ -73,14 +73,13 @@ jobs:
           ]'
 
           force_all() {
-            local reason="$1"
-            jq -c --arg source "fallback" --arg reason "$reason" '
-              map(. + { source: $source, reason: $reason, buildsJson: "[]", fingerprint: "" })
+            jq -c --arg source "fallback" '
+              map(. + { source: $source })
             ' <<< "$systems_json"
           }
 
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            refresh_matrix="$(force_all "workflow_dispatch")"
+            refresh_matrix="$(force_all)"
             printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
             echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=workflow_dispatch matrix=$refresh_matrix"
             exit 0
@@ -93,7 +92,7 @@ jobs:
           fi
 
           if [ "$DOWNLOAD_OUTCOME" != "success" ]; then
-            refresh_matrix="$(force_all "artifact_download_failed")"
+            refresh_matrix="$(force_all)"
             printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
             echo "::warning title=GHCI artifact download failed::Refreshing all cache lanes with lane-local eval fallback."
             echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=artifact_download_failed matrix=$refresh_matrix"
@@ -103,7 +102,7 @@ jobs:
           artifact_dir="$RUNNER_TEMP/ghci-toplevel"
           mapfile -d '' record_files < <(find "$artifact_dir" -name record.json -type f -print0 | sort -z)
           if [ "${#record_files[@]}" -eq 0 ]; then
-            refresh_matrix="$(force_all "missing_artifacts")"
+            refresh_matrix="$(force_all)"
             printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
             echo "::warning title=GHCI artifacts missing::Refreshing all cache lanes with lane-local eval fallback."
             echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=missing_artifacts matrix=$refresh_matrix"
@@ -115,7 +114,6 @@ jobs:
               (.kind | type == "string")
               and (.name | type == "string")
               and (.system | type == "string")
-              and (.attr | type == "string")
               and (.storePath | type == "string")
               and (.nixFastBuildStorePath | type == "string")
             )) then
@@ -124,7 +122,7 @@ jobs:
               error("invalid GHCI top-level artifact schema")
             end
           ' "${record_files[@]}")"; then
-            refresh_matrix="$(force_all "artifact_parse_failed")"
+            refresh_matrix="$(force_all)"
             printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
             echo "::warning title=GHCI artifact parse failed::Refreshing all cache lanes with lane-local eval fallback."
             echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=artifact_parse_failed matrix=$refresh_matrix"
@@ -139,7 +137,7 @@ jobs:
               --json key \
               --jq '.[].key'
           )"; then
-            refresh_matrix="$(force_all "cache_list_failed")"
+            refresh_matrix="$(force_all)"
             printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
             echo "::warning title=GitHub cache list failed::Refreshing all cache lanes with lane-local eval fallback."
             echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=cache_list_failed matrix=$refresh_matrix"
@@ -288,7 +286,6 @@ jobs:
                 builtins.attrValues (builtins.mapAttrs (name: output: {
                   inherit kind name nixFastBuildStorePath;
                   system = targetSystem;
-                  attr = ".#ci.configurations.${targetSystem}.${name}";
                   storePath = toString output;
                 }) configurations)
             '

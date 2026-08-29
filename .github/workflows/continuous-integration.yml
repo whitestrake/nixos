@@ -369,12 +369,11 @@ jobs:
             exit 0
           fi
 
-          matrix="$(jq -c . <<< "$deployment_matrix")"
-          echo "Dispatching continuous deployment matrix: $matrix"
-          cachix_with_retry gh workflow run continuous-deployment.yml \
+          echo "Dispatching continuous deployment matrix: $deployment_matrix"
+          gh workflow run continuous-deployment.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref "$GITHUB_REF_NAME" \
             --raw-field deployment_sha="$GITHUB_SHA" \
             --raw-field deployment_source=continuous-integration \
             --raw-field force=false \
-            --raw-field matrix="$matrix"
+            --raw-field matrix="$deployment_matrix"
