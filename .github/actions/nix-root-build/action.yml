@@ -40,18 +40,37 @@ runs:
 
         staged_links=()
         backup_links=()
+        root_targets=()
+        root_backups=()
+        root_states=()
+        root_mutation_started=false
+        root_rollback_attempted=false
+        root_rollback_status=0
+        root_rollback_succeeded=false
+        root_commit_succeeded=false
         cleanup_root_links() {
-          local link
-          for link in "${staged_links[@]}" "${backup_links[@]}"; do
-            if [ -n "$link" ]; then
-              rm -f "$link" || true
+          local link rollback_status
+          if [ "$root_mutation_started" = true ] && [ "$root_commit_succeeded" != true ] && [ "$root_rollback_attempted" != true ]; then
+            rollback_status=0
+            rollback_root_links || rollback_status=$?
+            if [ "$rollback_status" -ne 0 ]; then
+              echo "::error ::Nix root rollback failed; retaining backup links" >&2
             fi
+          fi
+          for link in "${staged_links[@]}"; do
+            rm -f "$link" || true
           done
+          if [ "$root_commit_succeeded" = true ] || [ "$root_rollback_succeeded" = true ]; then
+            for link in "${backup_links[@]}"; do
+              rm -f "$link" || true
+            done
+          fi
         }
 
         status=0
         trap cleanup_root_links EXIT
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
+        trap 'exit 130' INT TERM
 
         : "${NIX_ROOT_BUILD_TIMEOUT_SECONDS:=1800}"
         if ! [[ "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
@@ -126,6 +145,22 @@ runs:
           exit 1
         fi
 
+        record_lines="$(jq -er '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")"
+        new_host_names=""
+        while IFS=$'\t' read -r kind name store_path; do
+          case "$name" in
+            nix-fast-build)
+              echo "::error ::Nix root host name is reserved: $name"
+              exit 1
+              ;;
+            "" | [-.]* | *[!A-Za-z0-9_-]*)
+              echo "::error ::unsafe Nix root host name: $name"
+              exit 1
+              ;;
+          esac
+          new_host_names+="$name"$'\n'
+        done <<< "$record_lines"
+
         while IFS=$'\t' read -r kind name store_path; do
           nix build \
             --accept-flake-config \
@@ -134,7 +169,7 @@ runs:
             --no-link \
             "$store_path"
           echo "GHCI_WRITER_BUILD_READY system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path"
-        done < <(jq -r '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")
+        done <<< "$record_lines"
 
         expected_nix_fast_build="$(
           jq -er '
@@ -165,10 +200,6 @@ runs:
         backup_root_prefix="$root_dir/.nix-root-backup-${GHCI_LANE_SYSTEM}-$$"
         staged_names=()
         staged_paths=()
-        root_targets=()
-        root_backups=()
-        root_states=()
-        new_host_names="$(jq -er '.[] | .host' <<< "$records")"
 
         while IFS=$'\t' read -r kind name store_path; do
           staged_path="$staging_root_prefix.$name"
@@ -177,7 +208,7 @@ runs:
           staged_names+=("$name")
           staged_paths+=("$staged_path")
           echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path gcroot=$root_dir/$name"
-        done < <(jq -r '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")
+        done <<< "$record_lines"
         staged_nix_fast_build="$staging_root_prefix.nix-fast-build"
         ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
         staged_links+=("$staged_nix_fast_build")
@@ -186,19 +217,38 @@ runs:
 
         rollback_root_links() {
           local index target backup state
+          if [ "$root_rollback_attempted" = true ]; then
+            return "$root_rollback_status"
+          fi
+          root_rollback_attempted=true
+          root_rollback_status=0
           for ((index = ${#root_targets[@]} - 1; index >= 0; index--)); do
-            target="${root_targets[$index]}"
-            backup="${root_backups[$index]}"
-            state="${root_states[$index]}"
+            target="${root_targets[$index]-}"
+            backup="${root_backups[$index]-}"
+            state="${root_states[$index]-}"
+            [ -n "$target" ] || continue
             if [ "$state" = "new" ]; then
-              rm -f "$target" || true
+              if rm -f "$target"; then
+                :
+              else
+                root_rollback_status=1
+              fi
             fi
             if [ -n "$backup" ] && { [ -e "$backup" ] || [ -L "$backup" ]; }; then
-              mv -f "$backup" "$target" || true
+              if mv -f "$backup" "$target"; then
+                :
+              else
+                root_rollback_status=1
+              fi
             fi
           done
+          if [ "$root_rollback_status" -eq 0 ]; then
+            root_rollback_succeeded=true
+          fi
+          return "$root_rollback_status"
         }
 
+        root_mutation_started=true
         commit_status=0
         for index in "${!staged_names[@]}"; do
           name="${staged_names[$index]}"
@@ -212,46 +262,54 @@ runs:
           fi
           if [ -e "$target" ] || [ -L "$target" ]; then
             backup="$backup_root_prefix.$name"
+            root_targets+=("$target")
+            root_backups+=("$backup")
+            root_states+=("old")
+            root_index=$((${#root_targets[@]} - 1))
+            backup_links+=("$backup")
             if mv -f "$target" "$backup"; then
               :
             else
               commit_status=$?
               break
             fi
-            backup_links+=("$backup")
-          fi
-          root_targets+=("$target")
-          root_backups+=("$backup")
-          if [ -n "$backup" ]; then
-            root_states+=("old-moved")
+            root_states[$root_index]="new"
           else
-            root_states+=("untouched")
+            root_targets+=("$target")
+            root_backups+=("")
+            root_states+=("new")
           fi
           if mv -f "$staged_path" "$target"; then
-            root_states[index]="new"
+            :
           else
             commit_status=$?
             break
           fi
         done
         if [ "$commit_status" -ne 0 ]; then
-          rollback_root_links
+          rollback_status=0
+          rollback_root_links || rollback_status=$?
+          if [ "$rollback_status" -ne 0 ]; then
+            echo "::error ::Nix root rollback failed; retaining backup links" >&2
+          fi
           exit "$commit_status"
         fi
+
+        root_commit_succeeded=true
+
+        for old_link in "$root_dir"/* "$root_dir"/.[!.]* "$root_dir"/..?*; do
+          [ -L "$old_link" ] || continue
+          old_name="${old_link##*/}"
+          if [ "$old_name" != "nix-fast-build" ] && ! grep -Fqx -- "$old_name" <<< "$new_host_names"; then
+            rm -f "$old_link"
+            echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$old_name"
+          fi
+        done
 
         for backup in "${backup_links[@]}"; do
           rm -f "$backup"
         done
         backup_links=()
-
-        for old_link in "$root_dir"/* "$root_dir"/.[!.]* "$root_dir"/..?*; do
-          [ -L "$old_link" ] || continue
-          old_name="${old_link##*/}"
-          if [ "$old_name" != "nix-fast-build" ] && ! grep -Fqx "$old_name" <<< "$new_host_names"; then
-            rm -f "$old_link"
-            echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$old_name"
-          fi
-        done
 
         if [ -d "$legacy_root_dir" ]; then
           for old_link in "$legacy_root_dir"/* "$legacy_root_dir"/.[!.]* "$legacy_root_dir"/..?*; do
