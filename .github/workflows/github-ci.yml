@@ -382,12 +382,12 @@ jobs:
           cache_keys=""
           if [ "$CACHE_REQUESTED" = true ] && [ "$EVENT_NAME" = "workflow_run" ]; then
             if ! cache_keys="$(
-              gh cache list \
-                --repo "$GITHUB_REPOSITORY" \
-                --ref "$SOURCE_REF" \
-                --limit 100 \
-                --json key \
-                --jq '.[].key'
+              gh api "repos/$GITHUB_REPOSITORY/actions/caches" \
+                --method GET \
+                --paginate \
+                -f ref="$SOURCE_REF" \
+                -F per_page=100 \
+                --jq '.actions_caches[].key'
             )"; then
               echo "::warning ::GitHub cache listing failed; refreshing every requested cache lane."
               cache_keys=""
