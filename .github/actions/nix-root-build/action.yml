@@ -228,15 +228,30 @@ runs:
             state="${root_states[$index]-}"
             [ -n "$target" ] || continue
             if [ "$state" = "new" ]; then
-              if rm -f "$target"; then
-                :
-              else
+              if [ -L "$target" ]; then
+                if rm -f "$target"; then
+                  :
+                else
+                  root_rollback_status=1
+                fi
+              elif [ -e "$target" ]; then
                 root_rollback_status=1
               fi
             fi
             if [ -n "$backup" ] && { [ -e "$backup" ] || [ -L "$backup" ]; }; then
-              if mv -f "$backup" "$target"; then
-                :
+              if [ -e "$target" ] || [ -L "$target" ]; then
+                if [ -L "$target" ] && rm -f "$target"; then
+                  :
+                else
+                  root_rollback_status=1
+                fi
+              fi
+              if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+                if mv -f "$backup" "$target"; then
+                  :
+                else
+                  root_rollback_status=1
+                fi
               else
                 root_rollback_status=1
               fi
