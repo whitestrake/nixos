@@ -45,7 +45,25 @@ runs:
         }
 
         run_with_timeout() {
-          perl -e 'alarm shift; exec @ARGV' "$@"
+          perl -MPOSIX=setpgid -e '
+            $timeout = shift;
+            $pid = fork;
+            die "fork failed: $!" unless defined $pid;
+            if ($pid == 0) {
+              setpgid(0, 0);
+              exec @ARGV;
+              die "exec failed: $!";
+            }
+            setpgid($pid, $pid);
+            $SIG{ALRM} = sub {
+              kill "KILL", -$pid;
+            };
+            alarm $timeout;
+            waitpid($pid, 0);
+            $status = $?;
+            alarm 0;
+            exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+          ' "$@"
         }
 
         staged_links=()

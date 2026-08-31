@@ -2,9 +2,14 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+REPORT_TIMEOUT_SECONDS = 240
+STORE_PATH = re.compile(r"^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$")
 
 
 def write_report(record, namespace, name, report):
@@ -16,11 +21,26 @@ def write_report(record, namespace, name, report):
         / "record.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(record | {"packageReport": report}) + "\n")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as output:
+            temporary = Path(output.name)
+            json.dump(record | {"packageReport": report}, output)
+            output.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def failed(message):
     return {"status": "failed", "message": message, "diff": None}
+
+
+def store_path(value):
+    return isinstance(value, str) and STORE_PATH.fullmatch(value) is not None
 
 
 def main():
@@ -32,7 +52,7 @@ def main():
             or event.get("success") is not True
             or not isinstance(event.get("attr"), str)
             or not isinstance(event.get("outputs"), dict)
-            or not isinstance(event["outputs"].get("out"), str)
+            or not store_path(event["outputs"].get("out"))
         ):
             raise ValueError("expected one successful BUILD event")
         namespace, name = event["attr"].split(".")
@@ -58,12 +78,18 @@ def main():
             for record in current_records
             if record.get("system") == system and record.get("attr") == event["attr"]
         ]
-        if len(current) != 1 or current[0].get("storePath") != event["outputs"]["out"]:
+        if (
+            len(current) != 1
+            or not store_path(current[0].get("storePath"))
+            or current[0]["storePath"] != event["outputs"]["out"]
+        ):
             raise ValueError("missing current record for BUILD event")
         baseline = [
             record
             for record in baseline_records
-            if record.get("system") == system and record.get("attr") == event["attr"]
+            if isinstance(record, dict)
+            and record.get("system") == system
+            and record.get("attr") == event["attr"]
         ]
     except (
         AttributeError,
@@ -75,7 +101,7 @@ def main():
         print(f"invalid CI records: {error}", file=sys.stderr)
         return 1
 
-    if len(baseline) != 1:
+    if len(baseline) != 1 or not store_path(baseline[0].get("storePath")):
         write_report(
             current[0], namespace, name, failed("baseline artifact unavailable")
         )
@@ -83,9 +109,19 @@ def main():
 
     try:
         realised = subprocess.run(
-            ["nix-store", "--realise", baseline[0]["storePath"]],
+            [
+                "nix-store",
+                "--realise",
+                "--option",
+                "builders",
+                "",
+                "--option",
+                "max-jobs",
+                "0",
+                baseline[0]["storePath"],
+            ],
             stdout=subprocess.DEVNULL,
-            timeout=240,
+            timeout=REPORT_TIMEOUT_SECONDS,
             check=False,
         )
     except (KeyError, OSError, subprocess.TimeoutExpired):
@@ -112,12 +148,19 @@ def main():
             ],
             stdout=subprocess.PIPE,
             text=True,
+            timeout=REPORT_TIMEOUT_SECONDS,
             check=False,
         )
         if diff.returncode != 0:
             raise ValueError
         package_diff = json.loads(diff.stdout)
-    except (KeyError, OSError, ValueError, json.JSONDecodeError):
+    except (
+        KeyError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ):
         write_report(current[0], namespace, name, failed("closure diff failed"))
         return 0
 
