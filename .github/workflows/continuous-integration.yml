@@ -160,10 +160,14 @@ jobs:
             "$RUNNER_TEMP/ci-darwin-results.json" > "$RUNNER_TEMP/ci-darwin-records.json"
 
           # shellcheck disable=SC2016
-          nix_fast_build_paths="$(
+          ci_metadata="$(
             nix eval --impure --json --expr '
               let
                 flake = builtins.getFlake (toString ./.);
+                namespaces = [
+                  "darwinConfigurations"
+                  "nixosConfigurations"
+                ];
                 systems = [
                   "aarch64-darwin"
                   "aarch64-linux"
@@ -174,56 +178,41 @@ jobs:
                   builtins.map
                     (system: {
                       name = system;
-                      value =
-                        toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
+                      value = {
+                        attributes = builtins.concatMap
+                          (namespace:
+                            builtins.map
+                              (name: "${namespace}.${name}")
+                              (builtins.attrNames (flake.ci.${system}.${namespace} or {})))
+                          namespaces;
+                        nixFastBuildStorePath =
+                          toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
+                      };
                     })
                     systems
                 )
             '
           )"
 
-          enrich_records() {
-            input_file="$1"
-            store="$2"
-
-            jq -c '.[]' "$input_file" |
-              while IFS= read -r record; do
-                store_path="$(jq -er '.storePath' <<< "$record")"
-                if [ -n "$store" ]; then
-                  derivation="$(nix derivation show --store "$store" "$store_path")"
-                else
-                  derivation="$(nix derivation show "$store_path")"
-                fi
-                system="$(
-                  jq -er '
-                    (.derivations // .)
-                    | if type == "object" and length == 1
-                    then to_entries[0].value.system
-                    else error("expected exactly one evaluated derivation")
-                    end
-                    | select(type == "string" and length > 0)
-                  ' <<< "$derivation"
-                )"
-                nix_fast_build_store_path="$(
-                  jq -er --arg system "$system" '.[$system] // empty' \
-                    <<< "$nix_fast_build_paths"
-                )"
-                jq -c \
-                  --arg system "$system" \
-                  --arg nixFastBuildStorePath "$nix_fast_build_store_path" \
-                  '. + {
-                    system: $system,
-                    nixFastBuildStorePath: $nixFastBuildStorePath
-                  }' <<< "$record"
-              done
-          }
-
           mkdir -p "$RUNNER_TEMP/ci-build-records"
-          {
-            enrich_records "$RUNNER_TEMP/ci-linux-records.json" ssh-ng://eu.nixbuild.net
-            enrich_records "$RUNNER_TEMP/ci-darwin-records.json" ""
-          } | jq -sce '
-            sort_by(.system, .attr) as $records
+          jq -sce --argjson metadata "$ci_metadata" '
+            add
+            | map(
+                . as $record
+                | [
+                    $metadata
+                    | to_entries[]
+                    | select(.value.attributes | index($record.attr))
+                  ] as $matches
+                | if ($matches | length) == 1
+                  then . + {
+                    system: $matches[0].key,
+                    nixFastBuildStorePath: $matches[0].value.nixFastBuildStorePath
+                  }
+                  else error("expected exactly one system for CI attribute \($record.attr)")
+                  end
+              )
+            | sort_by(.system, .attr) as $records
             | ($records | map(
                 select(
                   .system != "aarch64-darwin"
@@ -266,7 +255,10 @@ jobs:
               then error("invalid CI build record")
               else $records
               end
-          ' > "$RUNNER_TEMP/ci-build-records/records.json"
+          ' \
+            "$RUNNER_TEMP/ci-linux-records.json" \
+            "$RUNNER_TEMP/ci-darwin-records.json" \
+            > "$RUNNER_TEMP/ci-build-records/records.json"
 
       - name: Upload build manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
