@@ -8,7 +8,7 @@
   in {
     inherit system;
     storePath = toString cfg.config.system.build.toplevel;
-    rollbackScript = toString self.packages.${system}.deploy-health-rollback-script;
+    rollbackScript = toString cfg.config.system.build.deployHealthRollbackScript;
     deployPin = "deployed-host-${name}";
   };
 in {
