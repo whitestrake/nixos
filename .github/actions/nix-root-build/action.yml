@@ -8,6 +8,14 @@ inputs:
   system:
     description: "Nix system label for telemetry and gcroot placement."
     required: true
+  package-report:
+    description: "Generate package reports from successful nix-fast-build events."
+    required: false
+    default: "false"
+  baseline-records-json:
+    description: "Compact JSON array of baseline build records."
+    required: false
+    default: "[]"
 
 runs:
   using: "composite"
@@ -17,6 +25,8 @@ runs:
       env:
         GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
+        GHCI_PACKAGE_REPORT: ${{ inputs.package-report }}
+        GHCI_BASELINE_RECORDS_JSON: ${{ inputs.baseline-records-json }}
       run: |
         set -Eeuo pipefail
 
@@ -87,6 +97,13 @@ runs:
             exit 1
             ;;
         esac
+        case "$GHCI_PACKAGE_REPORT" in
+          true | false) ;;
+          *)
+            echo "::error ::package-report must be true or false, got: $GHCI_PACKAGE_REPORT"
+            exit 1
+            ;;
+        esac
 
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
         cached_nix_fast_build="$root_dir/nix-fast-build"
@@ -128,28 +145,53 @@ runs:
           fi
         done <<< "$record_lines"
 
-        while IFS=$'\t' read -r kind name store_path; do
-          nix build \
-            --accept-flake-config \
-            --option builders '' \
-            --option max-jobs 0 \
-            --no-link \
-            "$store_path"
-          echo "GHCI_WRITER_BUILD_READY system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path"
-        done <<< "$record_lines"
-
         result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          dix_paths="$(
+            nix build \
+              --accept-flake-config \
+              --inputs-from . \
+              --option builders '' \
+              --option max-jobs 0 \
+              --print-out-paths \
+              --no-link \
+              nixpkgs-unstable#dix
+          )"
+          dix_path="${dix_paths##*$'\n'}"
+          export CI_LANE_SYSTEM="$GHCI_LANE_SYSTEM"
+          export CI_CURRENT_RECORDS_JSON="$GHCI_BUILDS_JSON"
+          export CI_BASELINE_RECORDS_JSON="$GHCI_BASELINE_RECORDS_JSON"
+          export CI_PACKAGE_REPORT_DIR="$RUNNER_TEMP/ci-package-reports"
+          export DIX_BIN="$dix_path/bin/dix"
+        fi
+
         started="$SECONDS"
         run_lane() {
-          run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
-            --flake ".#ci.bySystem.$GHCI_LANE_SYSTEM" \
-            --systems "$GHCI_LANE_SYSTEM" \
-            --option builders '' \
-            --option max-jobs 0 \
-            --no-nom \
-            --no-link \
-            --result-file "$result_file" \
-            -j 50
+          if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+            run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
+              python3 .github/scripts/nix_fast_build.py \
+              --build-hook .github/scripts/nix_fast_build_package_report.py \
+              -- \
+              "${nix_fast_build[@]}" \
+              --flake ".#ci.$GHCI_LANE_SYSTEM" \
+              --systems "$GHCI_LANE_SYSTEM" \
+              --option builders '' \
+              --option max-jobs 0 \
+              --no-nom \
+              --no-link \
+              --result-file "$result_file" \
+              -j 50
+          else
+            run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
+              --flake ".#ci.$GHCI_LANE_SYSTEM" \
+              --systems "$GHCI_LANE_SYSTEM" \
+              --option builders '' \
+              --option max-jobs 0 \
+              --no-nom \
+              --no-link \
+              --result-file "$result_file" \
+              -j 50
+          fi
         }
 
         if [ "$nix_fast_build_source" = "cache-root" ]; then
