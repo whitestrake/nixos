@@ -244,7 +244,7 @@ def run(command, publisher, build_hook):
         except PermissionError:
             if signum == 0:
                 return True
-            raise
+            return False
         return True
 
     def forward(signum, _frame):
