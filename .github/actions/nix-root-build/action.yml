@@ -42,7 +42,6 @@ runs:
         backup_links=()
         root_targets=()
         root_backups=()
-        root_states=()
         root_mutation_started=false
         root_rollback_attempted=false
         root_rollback_status=0
@@ -57,13 +56,17 @@ runs:
               echo "::error ::Nix root rollback failed; retaining backup links" >&2
             fi
           fi
-          for link in "${staged_links[@]}"; do
-            rm -f "$link" || true
-          done
-          if [ "$root_commit_succeeded" = true ] || [ "$root_rollback_succeeded" = true ]; then
-            for link in "${backup_links[@]}"; do
+          if [ "${#staged_links[@]}" -gt 0 ]; then
+            for link in "${staged_links[@]}"; do
               rm -f "$link" || true
             done
+          fi
+          if [ "$root_commit_succeeded" = true ] || [ "$root_rollback_succeeded" = true ]; then
+            if [ "${#backup_links[@]}" -gt 0 ]; then
+              for link in "${backup_links[@]}"; do
+                rm -f "$link" || true
+              done
+            fi
           fi
         }
 
@@ -146,7 +149,6 @@ runs:
         fi
 
         record_lines="$(jq -er '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")"
-        new_host_names=""
         while IFS=$'\t' read -r kind name store_path; do
           case "$name" in
             nix-fast-build)
@@ -158,7 +160,6 @@ runs:
               exit 1
               ;;
           esac
-          new_host_names+="$name"$'\n'
         done <<< "$record_lines"
 
         while IFS=$'\t' read -r kind name store_path; do
@@ -199,24 +200,21 @@ runs:
         staging_root_prefix="$root_dir/.nix-root-${GHCI_LANE_SYSTEM}-$$"
         backup_root_prefix="$root_dir/.nix-root-backup-${GHCI_LANE_SYSTEM}-$$"
         staged_names=()
-        staged_paths=()
 
         while IFS=$'\t' read -r kind name store_path; do
           staged_path="$staging_root_prefix.$name"
           ln -s "$store_path" "$staged_path"
           staged_links+=("$staged_path")
           staged_names+=("$name")
-          staged_paths+=("$staged_path")
           echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path gcroot=$root_dir/$name"
         done <<< "$record_lines"
         staged_nix_fast_build="$staging_root_prefix.nix-fast-build"
         ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
         staged_links+=("$staged_nix_fast_build")
         staged_names+=("nix-fast-build")
-        staged_paths+=("$staged_nix_fast_build")
 
         rollback_root_links() {
-          local index target backup state
+          local index target backup
           if [ "$root_rollback_attempted" = true ]; then
             return "$root_rollback_status"
           fi
@@ -225,27 +223,21 @@ runs:
           for ((index = ${#root_targets[@]} - 1; index >= 0; index--)); do
             target="${root_targets[$index]-}"
             backup="${root_backups[$index]-}"
-            state="${root_states[$index]-}"
             [ -n "$target" ] || continue
-            if [ "$state" = "new" ]; then
-              if [ -L "$target" ]; then
-                if rm -f "$target"; then
-                  :
-                else
-                  root_rollback_status=1
-                fi
-              elif [ -e "$target" ]; then
+            if [ -n "$backup" ] && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
+              continue
+            fi
+            if [ -L "$target" ]; then
+              if rm -f "$target"; then
+                :
+              else
                 root_rollback_status=1
               fi
+            elif [ -e "$target" ]; then
+              root_rollback_status=1
+              continue
             fi
-            if [ -n "$backup" ] && { [ -e "$backup" ] || [ -L "$backup" ]; }; then
-              if [ -e "$target" ] || [ -L "$target" ]; then
-                if [ -L "$target" ] && rm -f "$target"; then
-                  :
-                else
-                  root_rollback_status=1
-                fi
-              fi
+            if [ -n "$backup" ]; then
               if [ ! -e "$target" ] && [ ! -L "$target" ]; then
                 if mv -f "$backup" "$target"; then
                   :
@@ -267,7 +259,7 @@ runs:
         commit_status=0
         for index in "${!staged_names[@]}"; do
           name="${staged_names[$index]}"
-          staged_path="${staged_paths[$index]}"
+          staged_path="${staged_links[$index]}"
           target="$root_dir/$name"
           backup=""
           if [ -e "$target" ] && [ ! -L "$target" ]; then
@@ -277,10 +269,8 @@ runs:
           fi
           if [ -e "$target" ] || [ -L "$target" ]; then
             backup="$backup_root_prefix.$name"
-            root_targets+=("$target")
             root_backups+=("$backup")
-            root_states+=("old")
-            root_index=$((${#root_targets[@]} - 1))
+            root_targets+=("$target")
             backup_links+=("$backup")
             if mv -f "$target" "$backup"; then
               :
@@ -288,11 +278,9 @@ runs:
               commit_status=$?
               break
             fi
-            root_states[$root_index]="new"
           else
-            root_targets+=("$target")
             root_backups+=("")
-            root_states+=("new")
+            root_targets+=("$target")
           fi
           if mv -f "$staged_path" "$target"; then
             :
@@ -315,15 +303,17 @@ runs:
         for old_link in "$root_dir"/* "$root_dir"/.[!.]* "$root_dir"/..?*; do
           [ -L "$old_link" ] || continue
           old_name="${old_link##*/}"
-          if [ "$old_name" != "nix-fast-build" ] && ! grep -Fqx -- "$old_name" <<< "$new_host_names"; then
+          if [ "$old_name" != "nix-fast-build" ] && ! grep -Fqx -- "$old_name" <(printf '%s\n' "${staged_names[@]}"); then
             rm -f "$old_link"
             echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$old_name"
           fi
         done
 
-        for backup in "${backup_links[@]}"; do
-          rm -f "$backup"
-        done
+        if [ "${#backup_links[@]}" -gt 0 ]; then
+          for backup in "${backup_links[@]}"; do
+            rm -f "$backup"
+          done
+        fi
         backup_links=()
 
         if [ -d "$legacy_root_dir" ]; then
