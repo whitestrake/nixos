@@ -45,7 +45,7 @@ runs:
         }
 
         run_with_timeout() {
-          perl -MPOSIX=setpgid -e '
+          perl -MPOSIX=:sys_wait_h,setpgid -e '
             $timeout = shift;
             $pid = fork;
             die "fork failed: $!" unless defined $pid;
@@ -55,9 +55,26 @@ runs:
               die "exec failed: $!";
             }
             setpgid($pid, $pid);
-            $SIG{ALRM} = sub {
+            $terminating = 0;
+            sub terminate_child {
+              ($signal, $exit_status) = @_;
+              return if $terminating++;
+              kill $signal, -$pid;
+              for (1 .. 20) {
+                if (waitpid($pid, WNOHANG) == $pid) {
+                  exit $exit_status;
+                }
+                select undef, undef, undef, 0.1;
+              }
               kill "KILL", -$pid;
+              waitpid($pid, 0);
+              exit $exit_status;
+            }
+            $SIG{ALRM} = sub {
+              terminate_child("TERM", 124);
             };
+            $SIG{INT} = sub { terminate_child("INT", 130); };
+            $SIG{TERM} = sub { terminate_child("TERM", 143); };
             alarm $timeout;
             waitpid($pid, 0);
             $status = $?;
@@ -101,7 +118,8 @@ runs:
         status=0
         trap cleanup_root_links EXIT
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
-        trap 'exit 130' INT TERM
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
 
         : "${NIX_ROOT_BUILD_TIMEOUT_SECONDS:=1800}"
         if ! [[ "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
@@ -127,25 +145,22 @@ runs:
         cached_nix_fast_build="$root_dir/nix-fast-build"
         nix_fast_build_fallback=(nix run --inputs-from . --option builders '' --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
         nix_fast_build=()
-        nix_fast_build_source=""
         if [ -d "$cached_nix_fast_build" ]; then
           cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
           if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
             nix_fast_build=("$cached_nix_fast_build")
-            nix_fast_build_source="cache-root"
             echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
           fi
         fi
         if [ "${#nix_fast_build[@]}" -eq 0 ]; then
           nix_fast_build=("${nix_fast_build_fallback[@]}")
-          nix_fast_build_source="nix-run"
           echo "NIX_FAST_BUILD_SOURCE source=nix-run"
         fi
 
         legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
 
-        expected="$(jq -ce '[.[] | {kind, host: .name, storePath}] | sort_by(.kind, .host)' <<< "$GHCI_BUILDS_JSON")"
-        record_lines="$(jq -er '.[] | [.kind, .host, .storePath] | @tsv' <<< "$expected")"
+        expected="$(jq -ce '[.[] | {attr, kind, name, storePath}] | sort_by(.attr)' <<< "$GHCI_BUILDS_JSON")"
+        record_lines="$(jq -er '.[] | [.kind, .name, .storePath] | @tsv' <<< "$expected")"
         while IFS=$'\t' read -r kind name store_path; do
           case "$name" in
             nix-fast-build)
@@ -212,23 +227,13 @@ runs:
           fi
         }
 
-        if [ "$nix_fast_build_source" = "cache-root" ]; then
-          if run_lane; then
-            :
-          else
-            cached_status="$?"
-            echo "::warning ::Rooted nix-fast-build failed with status $cached_status; retrying with the current pinned version."
-            rm -f "$result_file"
-            nix_fast_build=("${nix_fast_build_fallback[@]}")
-            nix_fast_build_source="nix-run"
-            echo "NIX_FAST_BUILD_SOURCE source=nix-run reason=cache-root-failed"
-            run_lane
-          fi
-        else
-          run_lane
-        fi
+        run_lane
 
-        records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
+        records="$(
+          jq -ce '
+            map({attr, kind, name, storePath}) | sort_by(.attr)
+          ' < <(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")
+        )"
         if [ "$records" != "$expected" ]; then
           echo "::error ::Successful nix-fast-build outputs do not match GHCI artifacts."
           echo "Expected: $expected"
@@ -257,6 +262,15 @@ runs:
           echo "::error ::Realised nix-fast-build does not match the GHCI artifact."
           echo "Expected: $expected_nix_fast_build"
           echo "Realised: $nix_fast_build_path"
+          exit 1
+        fi
+        nix_fast_build_bin="$nix_fast_build_path/bin/nix-fast-build"
+        if [ ! -x "$nix_fast_build_bin" ]; then
+          echo "::error ::Realised nix-fast-build is not executable: $nix_fast_build_bin"
+          exit 1
+        fi
+        if ! "$nix_fast_build_bin" --help >/dev/null; then
+          echo "::error ::Realised nix-fast-build failed its --help preflight: $nix_fast_build_bin"
           exit 1
         fi
 
