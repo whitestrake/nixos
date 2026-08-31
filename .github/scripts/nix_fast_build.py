@@ -17,7 +17,9 @@ def now():
 
 
 def display_name(attr: str) -> str:
-    return attr.replace(".", " ")
+    path = attr.split(".")
+    path[0] = path[0].removesuffix("s")
+    return " ".join(path)
 
 
 class GitHubChecks:
@@ -196,13 +198,14 @@ class CheckPublisher:
                 self.outstanding.pop(attr, None)
 
 
-def run(command, publisher):
+def run(command, publisher, build_hook):
     process = subprocess.Popen(
         [*command, "--stream-json-lines"],
         stdout=subprocess.PIPE,
         text=True,
     )
     interrupted = False
+    hook_failed = False
     previous_handlers = {}
 
     def forward(signum, _frame):
@@ -218,12 +221,33 @@ def run(command, publisher):
         with process.stdout:
             for line in process.stdout:
                 try:
-                    publisher.handle(json.loads(line))
+                    event = json.loads(line)
                 except json.JSONDecodeError:
                     print(
                         "::warning::Ignoring malformed nix-fast-build event",
                         file=sys.stderr,
                     )
+                    continue
+                if publisher is not None:
+                    publisher.handle(event)
+                if (
+                    build_hook is not None
+                    and event.get("type") == "BUILD"
+                    and event.get("success") is True
+                ):
+                    try:
+                        if (
+                            subprocess.run(
+                                [build_hook],
+                                input=line,
+                                text=True,
+                                check=False,
+                            ).returncode
+                            != 0
+                        ):
+                            hook_failed = True
+                    except OSError:
+                        hook_failed = True
         return_code = process.wait()
     finally:
         for signum, handler in previous_handlers.items():
@@ -232,38 +256,44 @@ def run(command, publisher):
     conclusion = (
         "cancelled" if interrupted else "success" if return_code == 0 else "failure"
     )
-    publisher.finalize(conclusion)
-    return return_code
+    if publisher is not None:
+        publisher.finalize(conclusion)
+    if hook_failed:
+        print("::error::One or more nix-fast-build hooks failed", file=sys.stderr)
+    return return_code, hook_failed
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--publish-checks", action="store_true")
+    parser.add_argument("--build-hook")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.command[:1] == ["--"]:
-        args.command = args.command[1:]
-    if not args.command:
+    if args.command[:1] != ["--"] or len(args.command) == 1:
         parser.error("a nix-fast-build command is required after --")
+    args.command = args.command[1:]
 
-    repository = os.environ.get("GITHUB_REPOSITORY", "")
-    run_id = os.environ.get("GITHUB_RUN_ID", "")
-    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
-    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-    publisher = CheckPublisher(
-        GitHubChecks(
-            os.environ.get("GITHUB_TOKEN", ""),
-            repository,
-            os.environ.get("GITHUB_API_URL", "https://api.github.com"),
-        ),
-        os.environ.get("GITHUB_SHA", ""),
-        f"{server_url}/{repository}/actions/runs/{run_id}/attempts/{attempt}",
-        run_id,
-        attempt,
-    )
-    return_code = run(args.command, publisher)
+    publisher = None
+    if args.publish_checks:
+        repository = os.environ.get("GITHUB_REPOSITORY", "")
+        run_id = os.environ.get("GITHUB_RUN_ID", "")
+        attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+        server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+        publisher = CheckPublisher(
+            GitHubChecks(
+                os.environ.get("GITHUB_TOKEN", ""),
+                repository,
+                os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+            ),
+            os.environ.get("GITHUB_SHA", ""),
+            f"{server_url}/{repository}/actions/runs/{run_id}/attempts/{attempt}",
+            run_id,
+            attempt,
+        )
+    return_code, hook_failed = run(args.command, publisher, args.build_hook)
     if return_code < 0:
         os.kill(os.getpid(), -return_code)
-    return return_code
+    return return_code or hook_failed
 
 
 if __name__ == "__main__":
