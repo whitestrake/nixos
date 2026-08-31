@@ -188,15 +188,16 @@ jobs:
 
             jq -c '.[]' "$input_file" |
               while IFS= read -r record; do
-                drv_path="$(jq -er '.drvPath' <<< "$record")"
+                store_path="$(jq -er '.storePath' <<< "$record")"
                 if [ -n "$store" ]; then
-                  derivation="$(nix derivation show --store "$store" "$drv_path")"
+                  derivation="$(nix derivation show --store "$store" "$store_path")"
                 else
-                  derivation="$(nix derivation show "$drv_path")"
+                  derivation="$(nix derivation show "$store_path")"
                 fi
                 system="$(
                   jq -er '
-                    if type == "object" and length == 1
+                    (.derivations // .)
+                    | if type == "object" and length == 1
                     then to_entries[0].value.system
                     else error("expected exactly one evaluated derivation")
                     end
@@ -213,7 +214,7 @@ jobs:
                   '. + {
                     system: $system,
                     nixFastBuildStorePath: $nixFastBuildStorePath
-                  } | del(.drvPath)' <<< "$record"
+                  }' <<< "$record"
               done
           }
 

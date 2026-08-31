@@ -23,8 +23,8 @@ def configuration:
 
 ([.results[]
   | select(.type == "EVAL" and .success)
-  | . as $record
-  | ($record.attr | configuration) + {drvPath: $record.drvPath}
+  | .attr
+  | configuration
   ] | unique_by(.attr) | sort_by(.attr)) as $evaluated
 | ([.results[]
   | select(.type == "BUILD" and .success)
@@ -48,7 +48,6 @@ def configuration:
       . as $record
       | {
           attr: $record.attr,
-          drvPath: $record.drvPath,
           kind: $record.kind,
           name: $record.name,
           storePath: ($built[] | select(.attr == $record.attr) | .storePath)
