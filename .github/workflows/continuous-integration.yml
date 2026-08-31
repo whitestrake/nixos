@@ -1,8 +1,35 @@
 name: "CI"
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch'
+    && format('CI benchmark {0} [{1}, {2}]', inputs.benchmark_id, inputs.restore_mode, inputs.archive_mode)
+    || github.event.head_commit.message
+  }}
 
 on:
   push:
   workflow_dispatch:
+    inputs:
+      benchmark_id:
+        description: "Unique label for this benchmark run"
+        required: true
+        type: string
+      restore_mode:
+        description: "Restore the current Darwin Nix root cache"
+        required: true
+        default: cache
+        type: choice
+        options:
+          - cache
+          - fresh
+      archive_mode:
+        description: "Archive all flake inputs before nix-fast-build"
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - archive
 
 permissions:
   contents: read
@@ -25,6 +52,9 @@ jobs:
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
       NIX_ROOT_IMAGE_SIZE: 64g
       NIX_ROOT_SYSTEM: aarch64-darwin
+      CI_BENCHMARK_ID: ${{ inputs.benchmark_id || 'push' }}
+      CI_RESTORE_MODE: ${{ inputs.restore_mode || 'cache' }}
+      CI_ARCHIVE_MODE: ${{ inputs.archive_mode || 'none' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -34,7 +64,12 @@ jobs:
       - name: Restore sparsebundle Nix root cache
         uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
-          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-prefix: >-
+            ${{
+              env.CI_RESTORE_MODE == 'fresh'
+              && format('nix-root-ci-benchmark-fresh-{0}', github.run_id)
+              || env.NIX_ROOT_CACHE_KEY_PREFIX
+            }}
           cache-key-suffix: reader
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
@@ -50,6 +85,19 @@ jobs:
         with:
           extra-nix-conf: |
             max-jobs = auto
+
+      - name: Archive flake inputs
+        if: ${{ env.CI_ARCHIVE_MODE == 'archive' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          started="$SECONDS"
+          nix flake archive \
+            --json \
+            --no-write-lock-file \
+            . > "$RUNNER_TEMP/ci-flake-archive.json"
+          echo "NIX_FLAKE_ARCHIVE_COMPLETE benchmark=$CI_BENCHMARK_ID durationSeconds=$((SECONDS - started))"
 
       - name: Configure nixbuild.net
         uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
@@ -76,6 +124,7 @@ jobs:
 
           df -h
           started="$SECONDS"
+          echo "CI_BENCHMARK_CONFIG id=$CI_BENCHMARK_ID restore=$CI_RESTORE_MODE archive=$CI_ARCHIVE_MODE"
 
           cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
           nix_fast_build=()
