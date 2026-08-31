@@ -12,74 +12,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  linux:
-    name: "Linux"
-    runs-on: ubuntu-24.04
-    timeout-minutes: 355
-    permissions:
-      checks: write
-      contents: read
-    outputs:
-      deploy-targets: ${{ steps.build.outputs.deploy-targets }}
-      records: ${{ steps.build.outputs.records }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-
-      - name: Configure nixbuild.net
-        uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
-        with:
-          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
-          settings: |
-            caches = cachix://whitestrake
-            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build Linux configurations
-        id: build
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          df -h
-          started="$SECONDS"
-
-          python3 .github/scripts/nix_fast_build_checks.py -- \
-            nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
-            --flake .#ci.byPlatform.linux \
-            --systems 'x86_64-linux aarch64-linux' \
-            --store ssh-ng://eu.nixbuild.net \
-            --option builders '' \
-            --option max-jobs 2 \
-            --no-nom \
-            --retries 2 \
-            --result-file "$RUNNER_TEMP/ci-linux-results.json" \
-            -j 50
-
-          echo "NIXBUILD_FAST_BUILD_COMPLETE store=ssh-ng://eu.nixbuild.net durationSeconds=$((SECONDS - started))"
-          deploy_targets="$(nix eval --accept-flake-config --json .#deploy.targets)"
-          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-linux-results.json")"
-
-          {
-            printf 'deploy-targets=%s\n' "$deploy_targets"
-            printf 'records=%s\n' "$records"
-          } >> "$GITHUB_OUTPUT"
-
-  darwin:
-    name: "Darwin"
+  all-builds:
+    name: "All Builds"
     runs-on: macos-26
     timeout-minutes: 355
     permissions:
+      actions: write
       checks: write
       contents: read
-    outputs:
-      records: ${{ steps.build.outputs.records }}
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
       NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
@@ -111,6 +51,14 @@ jobs:
           extra-nix-conf: |
             max-jobs = auto
 
+      - name: Configure nixbuild.net
+        uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+        with:
+          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
+          settings: |
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
+
       - name: Push build results to Cachix
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
@@ -118,8 +66,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
 
-      - name: Build Darwin configurations
-        id: build
+      - name: Build all configurations
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -129,7 +76,7 @@ jobs:
           df -h
           started="$SECONDS"
 
-          cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/$NIX_ROOT_SYSTEM/nix-fast-build"
+          cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
           nix_fast_build=()
           if [ -d "$cached_nix_fast_build" ]; then
             cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
@@ -143,79 +90,211 @@ jobs:
             echo "NIX_FAST_BUILD_SOURCE source=nix-run"
           fi
 
-          python3 .github/scripts/nix_fast_build_checks.py -- \
+          linux_pid=""
+          darwin_pid=""
+
+          forward_and_wait() {
+            signal="$1"
+            status="$2"
+            trap - INT TERM
+
+            if [ -n "$linux_pid" ]; then
+              kill -"$signal" "$linux_pid" 2>/dev/null || true
+            fi
+            if [ -n "$darwin_pid" ]; then
+              kill -"$signal" "$darwin_pid" 2>/dev/null || true
+            fi
+            if [ -n "$linux_pid" ]; then
+              wait "$linux_pid" || true
+            fi
+            if [ -n "$darwin_pid" ]; then
+              wait "$darwin_pid" || true
+            fi
+            exit "$status"
+          }
+
+          trap 'forward_and_wait INT 130' INT
+          trap 'forward_and_wait TERM 143' TERM
+
+          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             "${nix_fast_build[@]}" \
-            --flake .#ci.byPlatform.darwin \
+            --flake .#ci.linux \
+            --systems 'x86_64-linux aarch64-linux' \
+            --eval-workers 3 \
+            --store ssh-ng://eu.nixbuild.net \
+            --option builders '' \
+            --option max-jobs 2 \
+            --retries 2 \
+            --result-file "$RUNNER_TEMP/ci-linux-results.json" \
+            -j 50 &
+          linux_pid="$!"
+
+          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+            "${nix_fast_build[@]}" \
+            --flake .#ci.darwin \
             --systems aarch64-darwin \
-            --no-nom \
+            --eval-workers 1 \
             --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
-            -j 50
+            -j 50 &
+          darwin_pid="$!"
 
-          echo "NIX_FAST_BUILD_COMPLETE system=aarch64-darwin durationSeconds=$((SECONDS - started))"
-          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-darwin-results.json")"
-          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+          set +e
+          wait "$linux_pid"
+          linux_status="$?"
+          linux_pid=""
+          wait "$darwin_pid"
+          darwin_status="$?"
+          darwin_pid=""
+          set -e
+          trap - INT TERM
 
-  complete:
-    name: "Completed"
-    runs-on: ubuntu-24.04
-    needs:
-      - linux
-      - darwin
-    if: always()
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Check build results
-        shell: bash
-        env:
-          DARWIN_RESULT: ${{ needs.darwin.result }}
-          LINUX_RESULT: ${{ needs.linux.result }}
-        run: |
-          set -euo pipefail
-
-          if [ "$LINUX_RESULT" != success ] || [ "$DARWIN_RESULT" != success ]; then
-            echo "::error ::CI did not complete successfully: linux=$LINUX_RESULT darwin=$DARWIN_RESULT"
+          echo "NIX_FAST_BUILD_COMPLETE linuxStatus=$linux_status darwinStatus=$darwin_status durationSeconds=$((SECONDS - started))"
+          if [ "$linux_status" -ne 0 ] || [ "$darwin_status" -ne 0 ]; then
+            echo "::error ::Nix Fast Build failed: linux=$linux_status darwin=$darwin_status"
             exit 1
           fi
 
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+          jq -ce -f .github/scripts/nix-fast-build-records.jq \
+            "$RUNNER_TEMP/ci-linux-results.json" > "$RUNNER_TEMP/ci-linux-records.json"
+          jq -ce -f .github/scripts/nix-fast-build-records.jq \
+            "$RUNNER_TEMP/ci-darwin-results.json" > "$RUNNER_TEMP/ci-darwin-records.json"
+
+          # shellcheck disable=SC2016
+          nix_fast_build_paths="$(
+            nix eval --impure --json --expr '
+              let
+                flake = builtins.getFlake (toString ./.);
+                systems = [
+                  "aarch64-darwin"
+                  "aarch64-linux"
+                  "x86_64-linux"
+                ];
+              in
+                builtins.listToAttrs (
+                  builtins.map
+                    (system: {
+                      name = system;
+                      value =
+                        toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
+                    })
+                    systems
+                )
+            '
+          )"
+
+          enrich_records() {
+            input_file="$1"
+            store="$2"
+
+            jq -c '.[]' "$input_file" |
+              while IFS= read -r record; do
+                drv_path="$(jq -er '.drvPath' <<< "$record")"
+                if [ -n "$store" ]; then
+                  derivation="$(nix derivation show --store "$store" "$drv_path")"
+                else
+                  derivation="$(nix derivation show "$drv_path")"
+                fi
+                system="$(
+                  jq -er '
+                    if type == "object" and length == 1
+                    then to_entries[0].value.system
+                    else error("expected exactly one evaluated derivation")
+                    end
+                    | select(type == "string" and length > 0)
+                  ' <<< "$derivation"
+                )"
+                nix_fast_build_store_path="$(
+                  jq -er --arg system "$system" '.[$system] // empty' \
+                    <<< "$nix_fast_build_paths"
+                )"
+                jq -c \
+                  --arg system "$system" \
+                  --arg nixFastBuildStorePath "$nix_fast_build_store_path" \
+                  '. + {
+                    system: $system,
+                    nixFastBuildStorePath: $nixFastBuildStorePath
+                  } | del(.drvPath)' <<< "$record"
+              done
+          }
+
+          mkdir -p "$RUNNER_TEMP/ci-build-records"
+          {
+            enrich_records "$RUNNER_TEMP/ci-linux-records.json" ssh-ng://eu.nixbuild.net
+            enrich_records "$RUNNER_TEMP/ci-darwin-records.json" ""
+          } | jq -sce '
+            sort_by(.system, .attr) as $records
+            | ($records | map(
+                select(
+                  .system != "aarch64-darwin"
+                  and .system != "aarch64-linux"
+                  and .system != "x86_64-linux"
+                )
+                | .system
+              ) | unique) as $unknown_systems
+            | ($records
+                | group_by([.system, .attr])
+                | map(select(length > 1) | "\(.[0].system):\(.[0].attr)"))
+              as $duplicate_attrs
+            | ($records
+                | group_by(.name)
+                | map(select(length > 1) | .[0].name))
+              as $duplicate_names
+            | ($records
+                | group_by(.system)
+                | map(
+                    select([.[].nixFastBuildStorePath] | unique | length > 1)
+                    | .[0].system
+                  ))
+              as $multiple_nix_fast_build_paths
+            | if ($unknown_systems | length) > 0
+              then error("unknown CI systems: \($unknown_systems | join(", "))")
+              elif ($duplicate_attrs | length) > 0
+              then error("duplicate CI attributes within a system: \($duplicate_attrs | join(", "))")
+              elif ($duplicate_names | length) > 0
+              then error("duplicate CI configuration names: \($duplicate_names | join(", "))")
+              elif ($multiple_nix_fast_build_paths | length) > 0
+              then error("multiple nix-fast-build paths for systems: \($multiple_nix_fast_build_paths | join(", "))")
+              elif all($records[]; (
+                (.attr | type == "string" and length > 0)
+                and (.kind | type == "string" and length > 0)
+                and (.name | type == "string" and length > 0)
+                and (.system | type == "string" and length > 0)
+                and (.storePath | type == "string" and startswith("/nix/store/"))
+                and (.nixFastBuildStorePath | type == "string" and startswith("/nix/store/"))
+              )) | not
+              then error("invalid CI build record")
+              else $records
+              end
+          ' > "$RUNNER_TEMP/ci-build-records/records.json"
+
+      - name: Upload build manifest
+        uses: actions/upload-artifact@v7
         with:
-          persist-credentials: false
+          name: ci-build-records
+          path: ${{ runner.temp }}/ci-build-records/records.json
+          compression-level: 0
+          retention-days: 7
 
       - name: Validate, promote, and dispatch successfully built configurations
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          DARWIN_RECORDS: ${{ needs.darwin.outputs.records }}
-          DEPLOY_TARGETS: ${{ needs.linux.outputs.deploy-targets }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_DEPLOYMENT_TOKEN: ${{ github.token }}
-          LINUX_RECORDS: ${{ needs.linux.outputs.records }}
         run: |
           set -euo pipefail
 
           source modules/deployment/scripts/cachix-pin-functions.sh
 
-          records="$(
-            printf '%s\n%s\n' "$LINUX_RECORDS" "$DARWIN_RECORDS" | jq -sce '
-              (add | sort_by(.host)) as $records
-              | ($records | group_by(.host) | map(select(length > 1) | .[0].host))
-                as $duplicates
-              | if ($duplicates | length) > 0
-                then error("duplicate CI configuration names: \($duplicates | join(", "))")
-                else $records
-                end
-            '
-          )"
+          records="$(jq -ce '.' "$RUNNER_TEMP/ci-build-records/records.json")"
+          deploy_targets="$(nix eval --accept-flake-config --json .#deploy.targets)"
 
           if ! jq -en \
             --argjson records "$records" \
-            --argjson targets "$DEPLOY_TARGETS" \
+            --argjson targets "$deploy_targets" \
             '
               def recordPath($host):
-                (($records[] | select(.host == $host) | .storePath) // "");
+                (($records[] | select(.name == $host) | .storePath) // "");
 
               ($targets | type == "object" and length > 0)
               and all(
@@ -233,9 +312,12 @@ jobs:
             exit 1
           fi
 
-          mapfile -t store_paths < <(
+          store_paths=()
+          while IFS= read -r store_path; do
+            store_paths+=("$store_path")
+          done < <(
             jq -r '.[].storePath' <<< "$records"
-            jq -r '.[].rollbackScript' <<< "$DEPLOY_TARGETS"
+            jq -r '.[].rollbackScript' <<< "$deploy_targets"
           )
           cachix_verify_store_paths_http whitestrake "${store_paths[@]}"
 
@@ -252,11 +334,11 @@ jobs:
                 $records
                 | map(
                     . as $record
-                    | ("built-host-" + $record.host) as $pin
+                    | ("built-host-" + $record.name) as $pin
                     | pinPath($pin) as $current
                     | select($current != $record.storePath)
                     | {
-                        host: $record.host,
+                        host: $record.name,
                         pin: $pin,
                         currentStorePath: $current,
                         targetStorePath: $record.storePath
@@ -268,7 +350,7 @@ jobs:
           deployment_matrix="$(
             jq -cn \
               --argjson pins "$pins" \
-              --argjson targets "$DEPLOY_TARGETS" \
+              --argjson targets "$deploy_targets" \
               '
                 def pinPath($name):
                   (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
@@ -339,7 +421,7 @@ jobs:
               echo "Pinning built state: $pin_name -> $store_path"
               cachix_pin_store_path whitestrake "$pin_name" "$store_path" 3
             fi
-          done < <(jq -r '.[] | [.host, .storePath] | @tsv' <<< "$records")
+          done < <(jq -r '.[] | [.name, .storePath] | @tsv' <<< "$records")
 
           if [ "$(jq -r '.include | length' <<< "$deployment_matrix")" = 0 ]; then
             echo "No deployable hosts changed; not dispatching continuous deployment."
