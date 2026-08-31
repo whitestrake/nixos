@@ -37,46 +37,36 @@ jobs:
           set -euo pipefail
 
           # shellcheck disable=SC2016
-          records="$(
+          lanes="$(
             nix eval --impure --json --expr '
               let
                 flake = builtins.getFlake (toString ./.);
-                configurations =
-                  builtins.concatLists (
-                    builtins.attrValues (
-                      builtins.mapAttrs
-                        (system: kinds:
-                          builtins.concatLists (
-                            builtins.attrValues (
-                              builtins.mapAttrs
-                                (kind: namedConfigurations:
-                                  builtins.attrValues (
-                                    builtins.mapAttrs
-                                      (name: _:
-                                        {
-                                          inherit kind name system;
-                                          attr = ".#ci.bySystem.${system}.${kind}.${name}";
-                                          nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
-                                        }
-                                      )
-                                      namedConfigurations
-                                  )
-                                )
-                                kinds
-                            )
-                          )
-                        )
-                        flake.ci.bySystem
-                    )
-                  );
               in
-                configurations
+                builtins.mapAttrs
+                  (system: kinds: {
+                    configurations = builtins.mapAttrs (_: named: builtins.attrNames named) kinds;
+                    nixFastBuildStorePath =
+                      toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
+                  })
+                  flake.ci.bySystem
             '
           )"
 
           builds="$(
             jq -c '
-              map(
+              [
+                to_entries[] as $lane
+                | $lane.value.configurations
+                | to_entries[] as $kind
+                | $kind.value[] as $name
+                | {
+                    system: $lane.key,
+                    kind: $kind.key,
+                    name: $name,
+                    attr: ".#ci.bySystem.\($lane.key).\($kind.key).\($name)",
+                    nixFastBuildStorePath: $lane.value.nixFastBuildStorePath
+                  }
+                |
                 if .system == "aarch64-darwin" then
                   . + {
                     runner: "macos-26",
@@ -104,8 +94,8 @@ jobs:
                 else
                   error("unsupported CI system: \(.system)")
                 end
-              )
-            ' <<< "$records"
+              ]
+            ' <<< "$lanes"
           )"
 
           {
