@@ -228,6 +228,12 @@ def run(command, publisher, build_hook):
                         file=sys.stderr,
                     )
                     continue
+                if not isinstance(event, dict):
+                    print(
+                        "::warning::Ignoring malformed nix-fast-build event",
+                        file=sys.stderr,
+                    )
+                    continue
                 if publisher is not None:
                     publisher.handle(event)
                 if (
