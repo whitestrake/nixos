@@ -15,16 +15,8 @@ def now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def check_name(group, attr):
-    if attr.startswith("deploy-health-rollback-script-"):
-        return None
-    if attr.startswith("check-"):
-        return f"CI / check {attr.removeprefix('check-')}"
-    kind = {
-        "linux": "nixosConfiguration",
-        "darwin": "darwinConfiguration",
-    }[group]
-    return f"CI / {kind} {attr}"
+def display_name(attr: str) -> str:
+    return attr.replace(".", " ")
 
 
 class GitHubChecks:
@@ -95,9 +87,8 @@ class GitHubChecks:
 
 
 class CheckPublisher:
-    def __init__(self, checks, group, head_sha, details_url, run_id, attempt):
+    def __init__(self, checks, head_sha, details_url, run_id, attempt):
         self.checks = checks
-        self.group = group
         self.head_sha = head_sha
         self.details_url = details_url
         self.run_id = run_id
@@ -119,26 +110,26 @@ class CheckPublisher:
             return None
 
     def _completed(self, attr, conclusion, summary):
-        return {
-            "name": check_name(self.group, attr),
+        payload = {
+            "name": display_name(attr),
             "head_sha": self.head_sha,
             "status": "completed",
             "conclusion": conclusion,
             "completed_at": now(),
-            "external_id": (f"nfb:{self.run_id}:{self.attempt}:{self.group}:{attr}"),
+            "external_id": f"nfb:{self.run_id}:{self.attempt}:{attr}",
             "details_url": self.details_url,
-            "output": {
+        }
+        if conclusion != "success":
+            payload["output"] = {
                 "title": f"{attr}: {conclusion}",
                 "summary": summary,
-            },
-        }
+            }
+        return payload
 
     def handle(self, event):
         event_type = event.get("type")
         attr = event.get("attr")
         if event_type not in {"EVAL", "BUILD"} or not isinstance(attr, str):
-            return
-        if check_name(self.group, attr) is None:
             return
 
         success = event.get("success") is True
@@ -149,13 +140,11 @@ class CheckPublisher:
             if success:
                 check_id = self._call(
                     self.checks.create,
-                    name=check_name(self.group, attr),
+                    name=display_name(attr),
                     head_sha=self.head_sha,
                     status="in_progress",
                     started_at=now(),
-                    external_id=(
-                        f"nfb:{self.run_id}:{self.attempt}:{self.group}:{attr}"
-                    ),
+                    external_id=f"nfb:{self.run_id}:{self.attempt}:{attr}",
                     details_url=self.details_url,
                 )
                 if check_id is not None:
@@ -244,7 +233,6 @@ def run(command, publisher):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--group", choices=("linux", "darwin"), required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
@@ -262,7 +250,6 @@ def main():
             repository,
             os.environ.get("GITHUB_API_URL", "https://api.github.com"),
         ),
-        args.group,
         os.environ.get("GITHUB_SHA", ""),
         f"{server_url}/{repository}/actions/runs/{run_id}/attempts/{attempt}",
         run_id,
