@@ -73,8 +73,7 @@ jobs:
               --arg sha "$expected_sha" \
               --arg branch "$expected_branch" \
               '
-                .name == "CI"
-                and .path == ".github/workflows/continuous-integration.yml"
+                .path == ".github/workflows/continuous-integration.yml"
                 and .status == "completed"
                 and .conclusion == "success"
                 and .head_sha == $sha
@@ -105,8 +104,7 @@ jobs:
                 [
                   .[] | .workflow_runs[]
                   | select(
-                      .name == "CI"
-                      and .path == ".github/workflows/continuous-integration.yml"
+                      .path == ".github/workflows/continuous-integration.yml"
                       and .status == "completed"
                       and .conclusion == "success"
                       and .head_sha == $sha
@@ -133,8 +131,7 @@ jobs:
                 [
                   .[] | .workflow_runs[]
                   | select(
-                      .name == "CI"
-                      and .path == ".github/workflows/continuous-integration.yml"
+                      .path == ".github/workflows/continuous-integration.yml"
                       and .status == "completed"
                       and .conclusion == "success"
                     )
@@ -245,11 +242,11 @@ jobs:
               base_sha="$(jq -r '.head_sha' <<< "$base_run_json")"
               base_run_id="$(jq -r '.id' <<< "$base_run_json")"
             fi
-            if [ -z "$base_run_id" ]; then
-              echo "::error ::No successful master CI run found for baseline $base_sha."
-              exit 1
+            if [ -n "$base_run_id" ]; then
+              validate_ci_run "$base_run_id" "$base_sha" master
+            else
+              echo "::warning ::No CI build records found for baseline $base_sha; package reports will mark the baseline unavailable."
             fi
-            validate_ci_run "$base_run_id" "$base_sha" master
           fi
 
           {
@@ -273,7 +270,8 @@ jobs:
           path: ${{ runner.temp }}/ci-current-records
 
       - name: Download baseline CI build records
-        if: ${{ steps.source.outputs.report_requested == 'true' }}
+        if: ${{ steps.source.outputs.report_requested == 'true' && steps.source.outputs.base_run_id != '' }}
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           run-id: ${{ steps.source.outputs.base_run_id }}
@@ -361,7 +359,7 @@ jobs:
 
           current_records="$(validate_records "$CURRENT_RECORDS_FILE" current)"
           baseline_records="[]"
-          if [ "$REPORT_REQUESTED" = true ]; then
+          if [ "$REPORT_REQUESTED" = true ] && [ -f "$BASELINE_RECORDS_FILE" ]; then
             baseline_records="$(validate_records "$BASELINE_RECORDS_FILE" baseline)"
           fi
 
