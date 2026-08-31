@@ -41,24 +41,36 @@ jobs:
             nix eval --impure --json --expr '
               let
                 flake = builtins.getFlake (toString ./.);
-                mkNixos = name: cfg: {
-                  name = name;
-                  kind = "nixosConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#ci.linux.${name}";
-                  nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${cfg.pkgs.stdenv.hostPlatform.system}.nix-fast-build;
-                };
-                mkDarwin = name: cfg: {
-                  name = name;
-                  kind = "darwinConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#ci.darwin.${name}";
-                  nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${cfg.pkgs.stdenv.hostPlatform.system}.nix-fast-build;
-                };
-                nixos = builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}));
-                darwin = builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
+                configurations =
+                  builtins.concatLists (
+                    builtins.attrValues (
+                      builtins.mapAttrs
+                        (system: kinds:
+                          builtins.concatLists (
+                            builtins.attrValues (
+                              builtins.mapAttrs
+                                (kind: namedConfigurations:
+                                  builtins.attrValues (
+                                    builtins.mapAttrs
+                                      (name: _:
+                                        {
+                                          inherit kind name system;
+                                          attr = ".#ci.bySystem.${system}.${kind}.${name}";
+                                          nixFastBuildStorePath = toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
+                                        }
+                                      )
+                                      namedConfigurations
+                                  )
+                                )
+                                kinds
+                            )
+                          )
+                        )
+                        flake.ci.bySystem
+                    )
+                  );
               in
-                nixos ++ darwin
+                configurations
             '
           )"
 

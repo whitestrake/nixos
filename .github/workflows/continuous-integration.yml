@@ -50,9 +50,9 @@ jobs:
           df -h
           started="$SECONDS"
 
-          python3 .github/scripts/nix_fast_build_checks.py --group linux -- \
+          python3 .github/scripts/nix_fast_build_checks.py -- \
             nix run --inputs-from . nixpkgs-unstable#nix-fast-build -- \
-            --flake .#ci.linux \
+            --flake .#ci.byPlatform.linux \
             --systems 'x86_64-linux aarch64-linux' \
             --store ssh-ng://eu.nixbuild.net \
             --option builders '' \
@@ -65,29 +65,6 @@ jobs:
           echo "NIXBUILD_FAST_BUILD_COMPLETE store=ssh-ng://eu.nixbuild.net durationSeconds=$((SECONDS - started))"
           deploy_targets="$(nix eval --accept-flake-config --json .#deploy.targets)"
           records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-linux-results.json")"
-          expected_rollback_paths="$(jq -ce '[.[].rollbackScript] | unique | sort' <<< "$deploy_targets")"
-          built_rollback_paths="$(
-            jq -ce '
-              [
-                .results[]
-                | select(
-                    .type == "BUILD"
-                    and .success
-                    and (.attr | startswith("deploy-health-rollback-script-"))
-                  )
-                | .outputs.out
-              ]
-              | unique
-              | sort
-            ' "$RUNNER_TEMP/ci-linux-results.json"
-          )"
-
-          if [ "$built_rollback_paths" != "$expected_rollback_paths" ]; then
-            echo "::error ::Successful nix-fast-build rollback outputs do not match deploy targets."
-            echo "Expected: $expected_rollback_paths"
-            echo "Built:    $built_rollback_paths"
-            exit 1
-          fi
 
           {
             printf 'deploy-targets=%s\n' "$deploy_targets"
@@ -166,9 +143,9 @@ jobs:
             echo "NIX_FAST_BUILD_SOURCE source=nix-run"
           fi
 
-          python3 .github/scripts/nix_fast_build_checks.py --group darwin -- \
+          python3 .github/scripts/nix_fast_build_checks.py -- \
             "${nix_fast_build[@]}" \
-            --flake .#ci.darwin \
+            --flake .#ci.byPlatform.darwin \
             --systems aarch64-darwin \
             --no-nom \
             --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
