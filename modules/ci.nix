@@ -36,12 +36,15 @@
 
   project = pathFields:
     lib.foldl'
-    (result: configuration:
-      lib.recursiveUpdate
-      result
-      (lib.setAttrByPath
-        (map (field: configuration.${field}) pathFields)
-        configuration.output))
+    (result: configuration: let
+      path = map (field: configuration.${field}) pathFields;
+    in
+      if lib.hasAttrByPath path result
+      then throw "duplicate CI projection path: ${lib.concatStringsSep "." path}"
+      else
+        lib.recursiveUpdate
+        result
+        (lib.setAttrByPath path configuration.output))
     {}
     configurations;
 
