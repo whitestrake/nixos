@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -41,9 +42,10 @@ class GitHubChecks:
         if self.disabled:
             return None
 
+        self.last_request_ambiguous = False
         request = urllib.request.Request(
             f"{self.api_url}{path}",
-            data=json.dumps(payload).encode(),
+            data=None if payload is None else json.dumps(payload).encode(),
             method=method,
             headers={
                 "Accept": "application/vnd.github+json",
@@ -72,10 +74,8 @@ class GitHubChecks:
                     delay = min(max(delay, 0.0), 4.0)
                     time.sleep(delay)
                     continue
-                self.disabled = True
-                self._warn(
-                    f"GitHub check publication disabled after API failure: {error}"
-                )
+                self.last_request_ambiguous = retryable
+                self._warn(f"GitHub check publication failed after API error: {error}")
                 break
         return None
 
@@ -83,7 +83,31 @@ class GitHubChecks:
         response = self._request(
             "POST", f"/repos/{self.repository}/check-runs", payload
         )
-        return response.get("id") if response else None
+        if response:
+            return response.get("id")
+        if (
+            not self.last_request_ambiguous
+            or payload.get("status") != "in_progress"
+            or not payload.get("external_id")
+        ):
+            return None
+
+        head_sha = urllib.parse.quote(payload["head_sha"], safe="")
+        response = self._request(
+            "GET",
+            f"/repos/{self.repository}/commits/{head_sha}/check-runs?filter=all&per_page=100",
+            None,
+        )
+        if not response:
+            return None
+        return next(
+            (
+                check.get("id")
+                for check in response.get("check_runs", [])
+                if check.get("external_id") == payload["external_id"]
+            ),
+            None,
+        )
 
     def update(self, check_id, **payload):
         return self._request(
@@ -203,16 +227,40 @@ def run(command, publisher, build_hook):
         [*command, "--stream-json-lines"],
         stdout=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     interrupted = False
     hook_failed = False
+    active_hook = None
+    terminating = False
     previous_handlers = {}
 
     def forward(signum, _frame):
-        nonlocal interrupted
+        nonlocal interrupted, terminating
         interrupted = True
-        if process.poll() is None:
-            process.send_signal(signum)
+        if terminating:
+            return
+        terminating = True
+        children = [
+            child
+            for child in (active_hook, process)
+            if child is not None and child.poll() is None
+        ]
+        for child in children:
+            try:
+                os.killpg(child.pid, signum)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 1
+        while children and time.monotonic() < deadline:
+            children = [child for child in children if child.poll() is None]
+            if children:
+                time.sleep(0.05)
+        for child in children:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -242,18 +290,19 @@ def run(command, publisher, build_hook):
                     and event.get("success") is True
                 ):
                     try:
-                        if (
-                            subprocess.run(
-                                [build_hook],
-                                input=line,
-                                text=True,
-                                check=False,
-                            ).returncode
-                            != 0
-                        ):
+                        active_hook = subprocess.Popen(
+                            [build_hook],
+                            stdin=subprocess.PIPE,
+                            text=True,
+                            start_new_session=True,
+                        )
+                        active_hook.communicate(line)
+                        if active_hook.returncode != 0:
                             hook_failed = True
                     except OSError:
                         hook_failed = True
+                    finally:
+                        active_hook = None
         return_code = process.wait()
     finally:
         for signum, handler in previous_handlers.items():

@@ -121,17 +121,34 @@ def main():
                 baseline[0]["storePath"],
             ],
             stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
             timeout=REPORT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (KeyError, OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as error:
         realised = None
+        detail = error.stderr or ""
+        if isinstance(detail, bytes):
+            detail = detail.decode(errors="replace")
+        detail = " ".join(detail.split())[:1000]
+        message = "baseline closure realisation timed out after 4m"
+        if detail:
+            message += f": {detail}"
+    except (KeyError, OSError) as error:
+        realised = None
+        message = f"baseline closure realisation failed: {str(error)[:1000]}"
+    if realised is not None and realised.returncode != 0:
+        detail = " ".join((realised.stderr or "").split())[:1000]
+        message = "baseline closure realisation failed"
+        if detail:
+            message += f": {detail}"
     if realised is None or realised.returncode != 0:
         write_report(
             current[0],
             namespace,
             name,
-            failed("baseline closure did not realise within 4m"),
+            failed(message),
         )
         return 0
 
