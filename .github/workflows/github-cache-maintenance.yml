@@ -261,6 +261,8 @@ jobs:
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
 
       - name: Evaluate fallback cache lane
         id: fallback
