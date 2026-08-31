@@ -126,6 +126,7 @@ jobs:
           started="$SECONDS"
           echo "CI_BENCHMARK_CONFIG id=$CI_BENCHMARK_ID restore=$CI_RESTORE_MODE archive=$CI_ARCHIVE_MODE"
 
+          nix_fast_build_prepare_started="$SECONDS"
           cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
           nix_fast_build=()
           if [ -d "$cached_nix_fast_build" ]; then
@@ -136,9 +137,17 @@ jobs:
             fi
           fi
           if [ "${#nix_fast_build[@]}" -eq 0 ]; then
-            nix_fast_build=(nix run --inputs-from . nixpkgs-unstable#nix-fast-build --)
-            echo "NIX_FAST_BUILD_SOURCE source=nix-run"
+            nix_fast_build_store_path="$(
+              nix build \
+                --inputs-from . \
+                --no-link \
+                --print-out-paths \
+                nixpkgs-unstable#nix-fast-build
+            )"
+            nix_fast_build=("$nix_fast_build_store_path/bin/nix-fast-build")
+            echo "NIX_FAST_BUILD_SOURCE source=nix-build path=${nix_fast_build[0]}"
           fi
+          echo "NIX_FAST_BUILD_PREPARE_COMPLETE durationSeconds=$((SECONDS - nix_fast_build_prepare_started))"
 
           linux_pid=""
           darwin_pid=""
