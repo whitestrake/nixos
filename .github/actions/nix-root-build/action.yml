@@ -250,12 +250,6 @@ runs:
           exit 1
         fi
 
-        expected_nix_fast_build="$(
-          jq -er '
-            [.[].nixFastBuildStorePath] | unique
-            | if length == 1 then .[0] else error("expected exactly one nix-fast-build store path") end
-          ' <<< "$GHCI_BUILDS_JSON"
-        )"
         nix_fast_build_paths="$(
           nix build \
             --accept-flake-config \
@@ -267,12 +261,6 @@ runs:
             nixpkgs-unstable#nix-fast-build
         )"
         nix_fast_build_path="${nix_fast_build_paths##*$'\n'}"
-        if [ "$nix_fast_build_path" != "$expected_nix_fast_build" ]; then
-          echo "::error ::Realised nix-fast-build does not match the GHCI artifact."
-          echo "Expected: $expected_nix_fast_build"
-          echo "Realised: $nix_fast_build_path"
-          exit 1
-        fi
         nix_fast_build_bin="$nix_fast_build_path/bin/nix-fast-build"
         if [ ! -x "$nix_fast_build_bin" ]; then
           echo "::error ::Realised nix-fast-build is not executable: $nix_fast_build_bin"

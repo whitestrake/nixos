@@ -67,24 +67,3 @@ cachix_verify_store_paths() {
 
   cachix_with_retry nix path-info --store "https://$cache_name.cachix.org" "$@" >/dev/null
 }
-
-cachix_verify_store_paths_http() {
-  local cache_name="$1"
-  local narinfo narinfo_store_path store_hash store_path
-  shift
-
-  for store_path; do
-    if [[ ! "$store_path" =~ ^/nix/store/([0-9abcdfghijklmnpqrsvwxyz]{32})-.+$ ]]; then
-      echo "Invalid Nix store path: $store_path" >&2
-      return 1
-    fi
-    store_hash="${BASH_REMATCH[1]}"
-    narinfo="$(cachix_with_retry curl -fsS "https://$cache_name.cachix.org/$store_hash.narinfo")" ||
-      return 1
-    narinfo_store_path="$(sed -n 's/^StorePath: //p' <<< "$narinfo")"
-    if [ "$narinfo_store_path" != "$store_path" ]; then
-      echo "Cachix narinfo StorePath mismatch for $store_path: ${narinfo_store_path:-[missing]}" >&2
-      return 1
-    fi
-  done
-}

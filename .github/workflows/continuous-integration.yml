@@ -59,16 +59,17 @@ jobs:
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Push build results to Cachix
+      - name: Configure Cachix
         uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
+          skipPush: true
 
       - name: Build all configurations
         shell: bash
         env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -134,6 +135,7 @@ jobs:
             --flake .#ci.darwin \
             --systems aarch64-darwin \
             --eval-workers 1 \
+            --cachix-cache whitestrake \
             --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
             -j 50 &
           darwin_pid="$!"
@@ -159,106 +161,152 @@ jobs:
           jq -ce -f .github/scripts/nix-fast-build-records.jq \
             "$RUNNER_TEMP/ci-darwin-results.json" > "$RUNNER_TEMP/ci-darwin-records.json"
 
-          # shellcheck disable=SC2016
-          ci_metadata="$(
-            nix eval --impure --json --expr '
-              let
-                flake = builtins.getFlake (toString ./.);
-                namespaces = [
-                  "darwinConfigurations"
-                  "nixosConfigurations"
-                ];
-                systems = [
-                  "aarch64-darwin"
-                  "aarch64-linux"
-                  "x86_64-linux"
-                ];
-              in
-                builtins.listToAttrs (
-                  builtins.map
-                    (system: {
-                      name = system;
-                      value = {
-                        attributes = builtins.concatMap
-                          (namespace:
-                            builtins.map
-                              (name: "${namespace}.${name}")
-                              (builtins.attrNames (flake.ci.${system}.${namespace} or {})))
-                          namespaces;
-                        nixFastBuildStorePath =
-                          toString flake.inputs.nixpkgs-unstable.legacyPackages.${system}.nix-fast-build;
-                      };
-                    })
-                    systems
-                )
-            '
+          records="$(
+            jq -sce 'add' \
+              "$RUNNER_TEMP/ci-linux-records.json" \
+              "$RUNNER_TEMP/ci-darwin-records.json"
           )"
 
+          if ! jq -e '
+            type == "array"
+            and length > 0
+            and all(.[]; (
+              type == "object"
+              and (.attr | type == "string" and test("^(nixosConfigurations|darwinConfigurations)\\.[A-Za-z0-9_-]+$"))
+              and (.kind | type == "string" and length > 0)
+              and (.name | type == "string" and test("^[A-Za-z0-9_-]+$"))
+              and (.storePath | type == "string" and test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$"))
+            ))
+          ' <<< "$records" >/dev/null; then
+            echo "::error ::Nix Fast Build produced malformed configuration records."
+            exit 1
+          fi
+
+          artifact_metadata_dir="$RUNNER_TEMP/ci-artifact-metadata"
+          mkdir -p "$artifact_metadata_dir"
+          artifact_pids=()
+          while IFS=$'\t' read -r index kind name store_path; do
+            (
+              set -euo pipefail
+
+              cache_store="https://whitestrake.cachix.org"
+              system="$(nix store cat --store "$cache_store" "$store_path/system")"
+              rollback_script=""
+              if [ "$kind" = "nixosConfiguration" ]; then
+                dependencies="$(nix store cat --store "$cache_store" "$store_path/extra-dependencies")"
+                rollback_matches="$(
+                  jq -cn \
+                    --arg dependencies "$dependencies" \
+                    --arg name "$name" \
+                    '[
+                      $dependencies
+                      | scan("/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+")
+                      | select(endswith("-deploy-health-rollback-script-" + $name))
+                    ]'
+                )"
+                rollback_count="$(jq -r 'length' <<< "$rollback_matches")"
+                if [ "$rollback_count" -gt 1 ]; then
+                  echo "::error ::Multiple host-specific rollback scripts found for $name."
+                  exit 1
+                elif [ "$rollback_count" = 1 ]; then
+                  rollback_script="$(jq -r '.[0]' <<< "$rollback_matches")"
+                fi
+              fi
+
+              jq -cn \
+                --argjson index "$index" \
+                --arg system "$system" \
+                --arg rollbackScript "$rollback_script" \
+                '{
+                  index: $index,
+                  system: $system
+                } + if $rollbackScript == "" then {} else {rollbackScript: $rollbackScript} end' \
+                > "$artifact_metadata_dir/$index.json"
+            ) &
+            artifact_pids+=("$!")
+          done < <(
+            jq -r 'to_entries[] | [.key, .value.kind, .value.name, .value.storePath] | @tsv' <<< "$records"
+          )
+
+          artifact_status=0
+          for artifact_pid in "${artifact_pids[@]}"; do
+            if ! wait "$artifact_pid"; then
+              artifact_status=1
+            fi
+          done
+          if [ "$artifact_status" -ne 0 ]; then
+            echo "::error ::Failed to read one or more CI artefacts from Cachix."
+            exit 1
+          fi
+
+          artifact_metadata="$(jq -sc '.' "$artifact_metadata_dir"/*.json)"
           mkdir -p "$RUNNER_TEMP/ci-build-records"
-          jq -sce --argjson metadata "$ci_metadata" '
-            add
-            | map(
-                . as $record
-                | [
-                    $metadata
-                    | to_entries[]
-                    | select(.value.attributes | index($record.attr))
-                  ] as $matches
-                | if ($matches | length) == 1
-                  then . + {
-                    system: $matches[0].key,
-                    nixFastBuildStorePath: $matches[0].value.nixFastBuildStorePath
-                  }
-                  else error("expected exactly one system for CI attribute \($record.attr)")
-                  end
-              )
-            | sort_by(.system, .attr) as $records
-            | ($records | map(
-                select(
-                  .system != "aarch64-darwin"
-                  and .system != "aarch64-linux"
-                  and .system != "x86_64-linux"
-                )
-                | .system
-              ) | unique) as $unknown_systems
-            | ($records
-                | group_by([.system, .attr])
-                | map(select(length > 1) | "\(.[0].system):\(.[0].attr)"))
-              as $duplicate_attrs
-            | ($records
-                | group_by(.name)
-                | map(select(length > 1) | .[0].name))
-              as $duplicate_names
-            | ($records
-                | group_by(.system)
-                | map(
-                    select([.[].nixFastBuildStorePath] | unique | length > 1)
-                    | .[0].system
+          jq -cne \
+            --argjson records "$records" \
+            --argjson metadata "$artifact_metadata" '
+              ($records | to_entries) as $entries
+              | if ($metadata | length) != ($entries | length) then
+                  error("Cachix artefact metadata count does not match build records")
+                elif (($metadata | map(.index) | sort) != [range(0; ($entries | length))]) then
+                  error("Cachix artefact metadata indexes are not unique and complete")
+                elif any($metadata[]; (
+                  type != "object"
+                  or (.index | type != "number")
+                  or (.system | type != "string")
+                  or (has("rollbackScript") and (.rollbackScript | type != "string"))
+                )) then
+                  error("invalid Cachix artefact metadata")
+                else
+                  $entries
+                  | map(
+                      . as $entry
+                      | ($metadata[] | select(.index == $entry.key)) as $metadata_entry
+                      | $entry.value
+                        + {system: $metadata_entry.system}
+                        + (if ($metadata_entry.rollbackScript // "") == ""
+                           then {}
+                           else {rollbackScript: $metadata_entry.rollbackScript}
+                           end)
+                    )
+                end
+              | sort_by(.system, .attr) as $records
+              | ($records
+                  | map(select(.system != "aarch64-darwin" and .system != "aarch64-linux" and .system != "x86_64-linux") | .system)
+                  | unique) as $unknown_systems
+              | ($records | group_by(.attr) | map(select(length > 1) | .[0].attr)) as $duplicate_attrs
+              | ($records | group_by(.name) | map(select(length > 1) | .[0].name)) as $duplicate_names
+              | if ($unknown_systems | length) > 0 then
+                  error("unknown CI systems: \($unknown_systems | join(", "))")
+                elif ($duplicate_attrs | length) > 0 then
+                  error("duplicate CI attributes: \($duplicate_attrs | join(", "))")
+                elif ($duplicate_names | length) > 0 then
+                  error("duplicate CI configuration names: \($duplicate_names | join(", "))")
+                elif (["aarch64-darwin", "aarch64-linux", "x86_64-linux"] - ($records | map(.system) | unique) | length) > 0 then
+                  error("CI records do not cover all systems")
+                elif any($records[]; (
+                  (.attr | type != "string" or test("^(nixosConfigurations|darwinConfigurations)\\.[A-Za-z0-9_-]+$") | not)
+                  or (.kind | type != "string" or length == 0)
+                  or (.name | type != "string" or test("^[A-Za-z0-9_-]+$") | not)
+                  or (.system | type != "string" or (. == "aarch64-darwin" or . == "aarch64-linux" or . == "x86_64-linux") | not)
+                  or (.storePath | type != "string" or test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$") | not)
+                  or (has("rollbackScript") and (
+                    . as $record
+                    | $record.kind != "nixosConfiguration"
+                      or ($record.rollbackScript | type != "string" or test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$") | not)
+                      or ($record.rollbackScript | endswith("-deploy-health-rollback-script-" + $record.name) | not)
                   ))
-              as $multiple_nix_fast_build_paths
-            | if ($unknown_systems | length) > 0
-              then error("unknown CI systems: \($unknown_systems | join(", "))")
-              elif ($duplicate_attrs | length) > 0
-              then error("duplicate CI attributes within a system: \($duplicate_attrs | join(", "))")
-              elif ($duplicate_names | length) > 0
-              then error("duplicate CI configuration names: \($duplicate_names | join(", "))")
-              elif ($multiple_nix_fast_build_paths | length) > 0
-              then error("multiple nix-fast-build paths for systems: \($multiple_nix_fast_build_paths | join(", "))")
-              elif all($records[]; (
-                (.attr | type == "string" and length > 0)
-                and (.kind | type == "string" and length > 0)
-                and (.name | type == "string" and length > 0)
-                and (.system | type == "string" and length > 0)
-                and (.storePath | type == "string" and startswith("/nix/store/"))
-                and (.nixFastBuildStorePath | type == "string" and startswith("/nix/store/"))
-              )) | not
-              then error("invalid CI build record")
-              else $records
-              end
-          ' \
-            "$RUNNER_TEMP/ci-linux-records.json" \
-            "$RUNNER_TEMP/ci-darwin-records.json" \
-            > "$RUNNER_TEMP/ci-build-records/records.json"
+                )) then
+                  error("invalid CI build record")
+                elif any($records[]; (
+                  (.attr | split(".")) as $parts
+                  | .name != $parts[1]
+                    or .kind != (if $parts[0] == "nixosConfigurations" then "nixosConfiguration" else "darwinConfiguration" end)
+                )) then
+                  error("CI build record identity does not match its attribute")
+                else
+                  $records
+                end
+            ' > "$RUNNER_TEMP/ci-build-records/records.json"
 
       - name: Upload build manifest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -280,41 +328,6 @@ jobs:
           source modules/deployment/scripts/cachix-pin-functions.sh
 
           records="$(jq -ce '.' "$RUNNER_TEMP/ci-build-records/records.json")"
-          deploy_targets="$(nix eval --accept-flake-config --json .#deploy.targets)"
-
-          if ! jq -en \
-            --argjson records "$records" \
-            --argjson targets "$deploy_targets" \
-            '
-              def recordPath($host):
-                (($records[] | select(.name == $host) | .storePath) // "");
-
-              ($targets | type == "object" and length > 0)
-              and all(
-                $targets | to_entries[];
-                (.key | type == "string" and length > 0)
-                and (.value | type == "object")
-                and (.value.system | type == "string" and length > 0)
-                and (.value.storePath | type == "string" and startswith("/nix/store/"))
-                and (.value.rollbackScript | type == "string" and startswith("/nix/store/"))
-                and (.value.deployPin | type == "string" and startswith("deployed-host-"))
-                and recordPath(.key) == .value.storePath
-              )
-            ' >/dev/null; then
-            echo "::error ::Deploy targets are malformed or do not match successful NFB outputs."
-            exit 1
-          fi
-
-          store_paths=()
-          while IFS= read -r store_path; do
-            store_paths+=("$store_path")
-          done < <(
-            jq -r '.[].storePath' <<< "$records"
-            jq -r '.[].rollbackScript' <<< "$deploy_targets"
-          )
-          cachix_verify_store_paths_http whitestrake "${store_paths[@]}"
-
-          echo "Validated successful configuration and rollback outputs in Cachix."
           pins="$(cachix_fetch_pins whitestrake)"
           built_pin_delta="$(
             jq -cn \
@@ -343,22 +356,23 @@ jobs:
           deployment_matrix="$(
             jq -cn \
               --argjson pins "$pins" \
-              --argjson targets "$deploy_targets" \
+              --argjson records "$records" \
               '
                 def pinPath($name):
                   (($pins[]? | select(.name == $name) | .lastRevision.storePath) // "");
 
                 {
                   include: (
-                    $targets
-                    | to_entries
+                    $records
                     | map(
-                        select(pinPath(.value.deployPin) != .value.storePath)
+                        select(has("rollbackScript"))
+                        | ("deployed-host-" + .name) as $deploy_pin
+                        | select(pinPath($deploy_pin) != .storePath)
                         | {
-                            host: .key,
-                            system: .value.system,
-                            storePath: .value.storePath,
-                            rollbackScript: .value.rollbackScript
+                            host: .name,
+                            system,
+                            storePath,
+                            rollbackScript
                           }
                       )
                     | sort_by(.host)

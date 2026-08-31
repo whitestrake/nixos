@@ -321,7 +321,14 @@ jobs:
                 and (.name | type == "string" and test("^[A-Za-z0-9_-]+$"))
                 and (.system | supportedSystem)
                 and (.storePath | storePath)
-                and (.nixFastBuildStorePath | storePath)
+                and (
+                  (has("rollbackScript") | not)
+                  or (. as $record
+                    | $record.kind == "nixosConfiguration"
+                      and ($record.rollbackScript | storePath)
+                      and ($record.rollbackScript | endswith("-deploy-health-rollback-script-" + $record.name))
+                  )
+                )
                 and (
                   (.attr | split(".")) as $parts
                   | .name == $parts[1]
@@ -335,10 +342,10 @@ jobs:
               )) | not then
                 error("invalid \($label) CI build record")
               elif (
-                group_by([.system, .attr])
+                group_by(.attr)
                 | any(.[]; length != 1)
               ) then
-                error("duplicate \($label) CI system attributes")
+                error("duplicate \($label) CI attributes")
               elif (
                 group_by(.name)
                 | any(.[]; length != 1)
@@ -362,6 +369,29 @@ jobs:
           if [ "$REPORT_REQUESTED" = true ] && [ -f "$BASELINE_RECORDS_FILE" ]; then
             baseline_records="$(validate_records "$BASELINE_RECORDS_FILE" baseline)"
           fi
+
+          flake_lock="$(
+            gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/flake.lock?ref=$SOURCE_SHA" \
+          )"
+          nixpkgs_locked="$(
+            jq -ceS '
+              . as $lock
+              | ($lock.nodes.root.inputs["nixpkgs-unstable"] // error("root input nixpkgs-unstable is missing")) as $node
+              | if ($node | type) != "string" then
+                  error("root input nixpkgs-unstable must reference a node")
+                elif (($lock.nodes[$node] // null) | type) != "object" then
+                  error("nixpkgs-unstable node is missing")
+                elif (($lock.nodes[$node].locked // null) | type) != "object" then
+                  error("nixpkgs-unstable locked object is missing")
+                elif ($lock.nodes[$node].locked | length) == 0 then
+                  error("nixpkgs-unstable locked object is empty")
+                else
+                  $lock.nodes[$node].locked
+                end
+            ' <<< "$flake_lock"
+          )"
 
           systems_json='[
             {
@@ -427,9 +457,12 @@ jobs:
                 <<< "$baseline_records"
             )"
             fingerprint="$(
-              jq -r '.[] | [.attr, .storePath, .nixFastBuildStorePath] | @tsv' \
+              jq -cS --argjson nixpkgsLocked "$nixpkgs_locked" \
+                '{
+                  nixpkgsUnstable: $nixpkgsLocked,
+                  records: map({attr, storePath})
+                }' \
                 <<< "$current_system_records" \
-                | sort \
                 | sha256sum \
                 | cut -d " " -f1
             )"
