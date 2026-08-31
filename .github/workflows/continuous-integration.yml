@@ -146,6 +146,30 @@ jobs:
             )"
             nix_fast_build=("$nix_fast_build_store_path/bin/nix-fast-build")
             echo "NIX_FAST_BUILD_SOURCE source=nix-build path=${nix_fast_build[0]}"
+
+            nix_eval_jobs_store_path="$(
+              nix build \
+                --inputs-from . \
+                --no-link \
+                --print-out-paths \
+                nixpkgs-unstable#nix-eval-jobs
+            )"
+            migration_started="$SECONDS"
+            set +e
+            perl -e 'alarm shift; exec @ARGV' \
+              60 \
+              "$nix_eval_jobs_store_path/bin/nix-eval-jobs" \
+              --workers 1 \
+              --expr '{}' \
+              >/dev/null
+            migration_status="$?"
+            set -e
+            if [ "$migration_status" -ne 0 ]; then
+              echo "::error ::Nix store migration preflight failed with status $migration_status."
+              lsof -F pcfn /nix/var/nix/db/big-lock || true
+              exit "$migration_status"
+            fi
+            echo "NIX_STORE_MIGRATION_PREFLIGHT_COMPLETE durationSeconds=$((SECONDS - migration_started))"
           fi
           echo "NIX_FAST_BUILD_PREPARE_COMPLETE durationSeconds=$((SECONDS - nix_fast_build_prepare_started))"
 
