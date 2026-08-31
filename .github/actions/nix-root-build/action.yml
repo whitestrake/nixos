@@ -152,7 +152,7 @@ runs:
 
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
         cached_nix_fast_build="$root_dir/nix-fast-build"
-        nix_fast_build_fallback=(nix run --inputs-from . --option builders '' --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
+        nix_fast_build_fallback=(nix run --option builders '' --option max-jobs auto ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build" --)
         nix_fast_build=()
         if [ -d "$cached_nix_fast_build" ]; then
           cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
@@ -219,6 +219,7 @@ runs:
               --systems "$GHCI_LANE_SYSTEM" \
               --option builders '' \
               --option max-jobs auto \
+              --retries 2 \
               --no-nom \
               --no-link \
               --result-file "$result_file" \
@@ -229,6 +230,7 @@ runs:
               --systems "$GHCI_LANE_SYSTEM" \
               --option builders '' \
               --option max-jobs auto \
+              --retries 2 \
               --no-nom \
               --no-link \
               --result-file "$result_file" \
@@ -253,12 +255,11 @@ runs:
         nix_fast_build_paths="$(
           nix build \
             --accept-flake-config \
-            --inputs-from . \
             --option builders '' \
-            --option max-jobs 0 \
+            --option max-jobs auto \
             --print-out-paths \
             --no-link \
-            nixpkgs-unstable#nix-fast-build
+            ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build"
         )"
         nix_fast_build_path="${nix_fast_build_paths##*$'\n'}"
         nix_fast_build_bin="$nix_fast_build_path/bin/nix-fast-build"

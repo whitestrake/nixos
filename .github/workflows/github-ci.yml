@@ -244,7 +244,19 @@ jobs:
             fi
             if [ -n "$base_run_id" ]; then
               validate_ci_run "$base_run_id" "$base_sha" master
-            else
+              baseline_available="$(
+                gh api \
+                  "repos/$GITHUB_REPOSITORY/actions/runs/$base_run_id/artifacts" \
+                  --method GET \
+                  -f name=ci-build-records \
+                  -F per_page=100 \
+                  --jq 'any(.artifacts[]; .expired == false)'
+              )"
+              if [ "$baseline_available" != true ]; then
+                base_run_id=""
+              fi
+            fi
+            if [ -z "$base_run_id" ]; then
               echo "::warning ::No CI build records found for baseline $base_sha; package reports will mark the baseline unavailable."
             fi
           fi
@@ -392,6 +404,11 @@ jobs:
                 end
             ' <<< "$flake_lock"
           )"
+          nix_fast_build_package_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/contents/packages/nix-fast-build.nix?ref=$SOURCE_SHA" \
+              --jq '.sha'
+          )"
 
           systems_json='[
             {
@@ -457,9 +474,12 @@ jobs:
                 <<< "$baseline_records"
             )"
             fingerprint="$(
-              jq -cS --argjson nixpkgsLocked "$nixpkgs_locked" \
+              jq -cS \
+                --argjson nixpkgsLocked "$nixpkgs_locked" \
+                --arg nixFastBuildPackage "$nix_fast_build_package_sha" \
                 '{
                   nixpkgsUnstable: $nixpkgsLocked,
+                  nixFastBuildPackage: $nixFastBuildPackage,
                   records: map({attr, storePath})
                 }' \
                 <<< "$current_system_records" \
