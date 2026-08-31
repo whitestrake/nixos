@@ -35,12 +35,26 @@ cachix_pin_payload() {
 }
 
 cachix_pin_store_path() {
-  cachix_with_retry curl -fsS \
+  local pins
+
+  if curl -fsS \
     -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
     -H "Content-Type: application/json" \
     --data "$(cachix_pin_payload "$2" "$3" "$4")" \
     "https://app.cachix.org/api/v1/cache/$1/pin" \
-    >/dev/null
+    >/dev/null; then
+    return 0
+  fi
+
+  echo "Cachix pin POST failed; reconciling the requested pin once." >&2
+  pins="$(cachix_fetch_pins "$1")" || return 1
+  if [ "$(cachix_pin_path "$pins" "$2")" = "$3" ]; then
+    echo "Cachix pin reconciled after an ambiguous POST failure: $2 -> $3" >&2
+    return 0
+  fi
+
+  echo "Cachix pin POST failed and the requested pin was not observed: $2 -> $3" >&2
+  return 1
 }
 
 cachix_verify_store_paths() {
