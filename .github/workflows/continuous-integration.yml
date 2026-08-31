@@ -166,7 +166,20 @@ jobs:
           trap 'forward_and_wait INT 130' INT
           trap 'forward_and_wait TERM 143' TERM
 
-          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+          run_timed_lane() {
+            lane="$1"
+            shift
+            lane_started="$SECONDS"
+            set +e
+            "$@"
+            lane_status="$?"
+            set -e
+            echo "NIX_FAST_BUILD_LANE_COMPLETE lane=$lane status=$lane_status durationSeconds=$((SECONDS - lane_started))"
+            return "$lane_status"
+          }
+
+          run_timed_lane linux \
+            python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             "${nix_fast_build[@]}" \
             --flake .#ci.linux \
             --systems 'x86_64-linux aarch64-linux' \
@@ -179,7 +192,8 @@ jobs:
             -j 50 &
           linux_pid="$!"
 
-          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+          run_timed_lane darwin \
+            python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             "${nix_fast_build[@]}" \
             --flake .#ci.darwin \
             --systems aarch64-darwin \
