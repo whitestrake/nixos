@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -55,7 +56,10 @@ class GitHubChecks:
                 with urllib.request.urlopen(request, timeout=10) as response:
                     return json.load(response)
             except OSError as error:
-                if attempt + 1 < attempts:
+                retryable = not isinstance(error, urllib.error.HTTPError) or (
+                    error.code in {408, 429} or 500 <= error.code <= 599
+                )
+                if retryable and attempt + 1 < attempts:
                     retry_after = (getattr(error, "headers", None) or {}).get(
                         "Retry-After"
                     )
@@ -70,6 +74,7 @@ class GitHubChecks:
                 self._warn(
                     f"GitHub check publication disabled after API failure: {error}"
                 )
+                break
         return None
 
     def create(self, **payload):
