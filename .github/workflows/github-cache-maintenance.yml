@@ -275,19 +275,23 @@ jobs:
               let
                 targetSystem = builtins.getEnv "NIX_ROOT_SYSTEM";
                 flake = builtins.getFlake (toString ./.);
-                configurations = flake.ci.configurations.${targetSystem} or {};
-                kind =
-                  if builtins.match ".*-darwin" targetSystem == null
-                  then "nixosConfiguration"
-                  else "darwinConfiguration";
+                lane = flake.ci.bySystem.${targetSystem} or {};
                 nixFastBuildStorePath =
                   toString flake.inputs.nixpkgs-unstable.legacyPackages.${targetSystem}.nix-fast-build;
               in
-                builtins.attrValues (builtins.mapAttrs (name: output: {
-                  inherit kind name nixFastBuildStorePath;
-                  system = targetSystem;
-                  storePath = toString output;
-                }) configurations)
+                builtins.concatLists
+                  (builtins.attrValues
+                    (builtins.mapAttrs
+                      (kind: outputs:
+                        builtins.attrValues
+                          (builtins.mapAttrs
+                            (name: output: {
+                              inherit kind name nixFastBuildStorePath;
+                              system = targetSystem;
+                              storePath = toString output;
+                            })
+                            outputs))
+                      lane))
             '
           )"
           fingerprint="$(

@@ -38,6 +38,19 @@ runs:
           perl -e 'alarm shift; exec @ARGV' "$@"
         }
 
+        staged_links=()
+        backup_links=()
+        cleanup_root_links() {
+          local link
+          for link in "${staged_links[@]}" "${backup_links[@]}"; do
+            if [ -n "$link" ]; then
+              rm -f "$link" || true
+            fi
+          done
+        }
+
+        status=0
+        trap cleanup_root_links EXIT
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
 
         : "${NIX_ROOT_BUILD_TIMEOUT_SECONDS:=1800}"
@@ -55,7 +68,7 @@ runs:
 
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
         cached_nix_fast_build="$root_dir/nix-fast-build"
-        nix_fast_build_fallback=(nix run --inputs-from . --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
+        nix_fast_build_fallback=(nix run --inputs-from . --option builders '' --option max-jobs 0 nixpkgs-unstable#nix-fast-build --)
         nix_fast_build=()
         nix_fast_build_source=""
         if [ -d "$cached_nix_fast_build" ]; then
@@ -73,15 +86,12 @@ runs:
         fi
 
         legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
-        rm -rf "$legacy_root_dir"
-        rm -rf "$root_dir"
-        mkdir -p "$root_dir"
 
         result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
         started="$SECONDS"
         run_lane() {
           run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
-            --flake ".#ci.configurations.$GHCI_LANE_SYSTEM" \
+            --flake ".#ci.bySystem.$GHCI_LANE_SYSTEM" \
             --systems "$GHCI_LANE_SYSTEM" \
             --option builders '' \
             --option max-jobs 0 \
@@ -108,7 +118,7 @@ runs:
         fi
 
         records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
-        expected="$(jq -ce '[.[] | {host: .name, storePath: .storePath}] | sort_by(.host)' <<< "$GHCI_BUILDS_JSON")"
+        expected="$(jq -ce '[.[] | {kind, host: .name, storePath}] | sort_by(.kind, .host)' <<< "$GHCI_BUILDS_JSON")"
         if [ "$records" != "$expected" ]; then
           echo "::error ::Successful nix-fast-build outputs do not match GHCI artifacts."
           echo "Expected: $expected"
@@ -116,11 +126,15 @@ runs:
           exit 1
         fi
 
-        jq -r '.[] | [.host, .storePath] | @tsv' <<< "$records" |
-          while IFS=$'\t' read -r name store_path; do
-            ln -sfn "$store_path" "$root_dir/$name"
-            echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM name=$name outPath=$store_path gcroot=$root_dir/$name"
-          done
+        while IFS=$'\t' read -r kind name store_path; do
+          nix build \
+            --accept-flake-config \
+            --option builders '' \
+            --option max-jobs 0 \
+            --no-link \
+            "$store_path"
+          echo "GHCI_WRITER_BUILD_READY system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path"
+        done < <(jq -r '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")
 
         expected_nix_fast_build="$(
           jq -er '
@@ -132,6 +146,7 @@ runs:
           nix build \
             --accept-flake-config \
             --inputs-from . \
+            --option builders '' \
             --option max-jobs 0 \
             --print-out-paths \
             --no-link \
@@ -144,7 +159,106 @@ runs:
           echo "Realised: $nix_fast_build_path"
           exit 1
         fi
-        "$nix_fast_build_path/bin/nix-fast-build" --help >/dev/null
-        ln -sfn "$nix_fast_build_path" "$root_dir/nix-fast-build"
+
+        mkdir -p "$root_dir"
+        staging_root_prefix="$root_dir/.nix-root-${GHCI_LANE_SYSTEM}-$$"
+        backup_root_prefix="$root_dir/.nix-root-backup-${GHCI_LANE_SYSTEM}-$$"
+        staged_names=()
+        staged_paths=()
+        root_targets=()
+        root_backups=()
+        root_states=()
+        new_host_names="$(jq -er '.[] | .host' <<< "$records")"
+
+        while IFS=$'\t' read -r kind name store_path; do
+          staged_path="$staging_root_prefix.$name"
+          ln -s "$store_path" "$staged_path"
+          staged_links+=("$staged_path")
+          staged_names+=("$name")
+          staged_paths+=("$staged_path")
+          echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path gcroot=$root_dir/$name"
+        done < <(jq -r '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")
+        staged_nix_fast_build="$staging_root_prefix.nix-fast-build"
+        ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
+        staged_links+=("$staged_nix_fast_build")
+        staged_names+=("nix-fast-build")
+        staged_paths+=("$staged_nix_fast_build")
+
+        rollback_root_links() {
+          local index target backup state
+          for ((index = ${#root_targets[@]} - 1; index >= 0; index--)); do
+            target="${root_targets[$index]}"
+            backup="${root_backups[$index]}"
+            state="${root_states[$index]}"
+            if [ "$state" = "new" ]; then
+              rm -f "$target" || true
+            fi
+            if [ -n "$backup" ] && { [ -e "$backup" ] || [ -L "$backup" ]; }; then
+              mv -f "$backup" "$target" || true
+            fi
+          done
+        }
+
+        commit_status=0
+        for index in "${!staged_names[@]}"; do
+          name="${staged_names[$index]}"
+          staged_path="${staged_paths[$index]}"
+          target="$root_dir/$name"
+          backup=""
+          if [ -e "$target" ] && [ ! -L "$target" ]; then
+            echo "::error ::Refusing to replace non-symlink Nix root entry $target"
+            commit_status=1
+            break
+          fi
+          if [ -e "$target" ] || [ -L "$target" ]; then
+            backup="$backup_root_prefix.$name"
+            if mv -f "$target" "$backup"; then
+              :
+            else
+              commit_status=$?
+              break
+            fi
+            backup_links+=("$backup")
+          fi
+          root_targets+=("$target")
+          root_backups+=("$backup")
+          if [ -n "$backup" ]; then
+            root_states+=("old-moved")
+          else
+            root_states+=("untouched")
+          fi
+          if mv -f "$staged_path" "$target"; then
+            root_states[index]="new"
+          else
+            commit_status=$?
+            break
+          fi
+        done
+        if [ "$commit_status" -ne 0 ]; then
+          rollback_root_links
+          exit "$commit_status"
+        fi
+
+        for backup in "${backup_links[@]}"; do
+          rm -f "$backup"
+        done
+        backup_links=()
+
+        for old_link in "$root_dir"/* "$root_dir"/.[!.]* "$root_dir"/..?*; do
+          [ -L "$old_link" ] || continue
+          old_name="${old_link##*/}"
+          if [ "$old_name" != "nix-fast-build" ] && ! grep -Fqx "$old_name" <<< "$new_host_names"; then
+            rm -f "$old_link"
+            echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$old_name"
+          fi
+        done
+
+        if [ -d "$legacy_root_dir" ]; then
+          for old_link in "$legacy_root_dir"/* "$legacy_root_dir"/.[!.]* "$legacy_root_dir"/..?*; do
+            [ -L "$old_link" ] || continue
+            rm -f "$old_link"
+          done
+          rmdir "$legacy_root_dir" 2>/dev/null || echo "::warning ::Leaving legacy Nix root at $legacy_root_dir"
+        fi
 
         echo "NIX_FAST_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM outPath=$nix_fast_build_path gcroot=$root_dir/nix-fast-build durationSeconds=$((SECONDS - started))"
