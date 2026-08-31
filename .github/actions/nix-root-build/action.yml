@@ -109,6 +109,35 @@ runs:
 
         legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
 
+        expected="$(jq -ce '[.[] | {kind, host: .name, storePath}] | sort_by(.kind, .host)' <<< "$GHCI_BUILDS_JSON")"
+        record_lines="$(jq -er '.[] | [.kind, .host, .storePath] | @tsv' <<< "$expected")"
+        while IFS=$'\t' read -r kind name store_path; do
+          case "$name" in
+            nix-fast-build)
+              echo "::error ::Nix root host name is reserved: $name"
+              exit 1
+              ;;
+            "" | [-.]* | *[!A-Za-z0-9_-]*)
+              echo "::error ::unsafe Nix root host name: $name"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$store_path" =~ ^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+            echo "::error ::unsafe Nix store path: $store_path"
+            exit 1
+          fi
+        done <<< "$record_lines"
+
+        while IFS=$'\t' read -r kind name store_path; do
+          nix build \
+            --accept-flake-config \
+            --option builders '' \
+            --option max-jobs 0 \
+            --no-link \
+            "$store_path"
+          echo "GHCI_WRITER_BUILD_READY system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path"
+        done <<< "$record_lines"
+
         result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
         started="$SECONDS"
         run_lane() {
@@ -140,37 +169,12 @@ runs:
         fi
 
         records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
-        expected="$(jq -ce '[.[] | {kind, host: .name, storePath}] | sort_by(.kind, .host)' <<< "$GHCI_BUILDS_JSON")"
         if [ "$records" != "$expected" ]; then
           echo "::error ::Successful nix-fast-build outputs do not match GHCI artifacts."
           echo "Expected: $expected"
           echo "Built:    $records"
           exit 1
         fi
-
-        record_lines="$(jq -er '.[] | [.kind, .host, .storePath] | @tsv' <<< "$records")"
-        while IFS=$'\t' read -r kind name store_path; do
-          case "$name" in
-            nix-fast-build)
-              echo "::error ::Nix root host name is reserved: $name"
-              exit 1
-              ;;
-            "" | [-.]* | *[!A-Za-z0-9_-]*)
-              echo "::error ::unsafe Nix root host name: $name"
-              exit 1
-              ;;
-          esac
-        done <<< "$record_lines"
-
-        while IFS=$'\t' read -r kind name store_path; do
-          nix build \
-            --accept-flake-config \
-            --option builders '' \
-            --option max-jobs 0 \
-            --no-link \
-            "$store_path"
-          echo "GHCI_WRITER_BUILD_READY system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path"
-        done <<< "$record_lines"
 
         expected_nix_fast_build="$(
           jq -er '
