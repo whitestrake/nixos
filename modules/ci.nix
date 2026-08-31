@@ -4,45 +4,58 @@
   self,
   ...
 }: let
-  toplevels =
-    lib.mapAttrs
-    (_: configuration: configuration.config.system.build.toplevel);
-  deploymentSystems =
-    lib.unique
-    (lib.mapAttrsToList
-      (_: target: target.system)
-      self.deploy.targets);
-  rollbackScripts =
-    builtins.listToAttrs
-    (map
-      (system:
-        lib.nameValuePair
-        "deploy-health-rollback-script-${system}"
-        self.packages.${system}.deploy-health-rollback-script)
-      deploymentSystems);
-  checks =
-    {
-      check-flake-file = self.checks.x86_64-linux.check-flake-file;
-      check-treefmt = self.checks.x86_64-linux.treefmt;
+  classify = host:
+    if host.class == "nixos"
+    then {
+      kind = "nixosConfiguration";
+      platform = "linux";
     }
-    // builtins.listToAttrs
-    (map
-      (system:
-        lib.nameValuePair
-        "check-deploy-health-rollback-script-${system}"
-        self.checks.${system}.validate-deploy-health-rollback-script)
-      deploymentSystems);
+    else if host.class == "darwin"
+    then {
+      kind = "darwinConfiguration";
+      platform = "darwin";
+    }
+    else throw "unsupported CI host class: ${host.class}";
+
+  configurations =
+    lib.concatLists
+    (lib.mapAttrsToList
+      (system: hosts:
+        lib.mapAttrsToList
+        (name: host: let
+          classification = classify host;
+        in {
+          inherit system name;
+          inherit (classification) kind platform;
+          output =
+            (lib.getAttrFromPath host.intoAttr self)
+              .config.system.build.toplevel;
+        })
+        hosts)
+      config.den.hosts);
+
+  project = pathFields:
+    lib.foldl'
+    (result: configuration:
+      lib.recursiveUpdate
+      result
+      (lib.setAttrByPath
+        (map (field: configuration.${field}) pathFields)
+        configuration.output))
+    {}
+    configurations;
+
+  bySystem = project ["system" "kind" "name"];
+  configurationsByPlatform = project ["platform" "kind" "name"];
+
+  byPlatform = lib.recursiveUpdate configurationsByPlatform {
+    linux.check = {
+      flake-file = self.checks.x86_64-linux.check-flake-file;
+      treefmt = self.checks.x86_64-linux.treefmt;
+    };
+  };
 in {
   flake.ci = {
-    linux = toplevels self.nixosConfigurations // rollbackScripts // checks;
-    darwin = toplevels self.darwinConfigurations;
-    configurations =
-      lib.mapAttrs
-      (_: hosts:
-        lib.mapAttrs
-        (_: host:
-          (lib.getAttrFromPath host.intoAttr self).config.system.build.toplevel)
-        hosts)
-      config.den.hosts;
+    inherit byPlatform bySystem;
   };
 }
