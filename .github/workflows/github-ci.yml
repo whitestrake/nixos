@@ -37,14 +37,11 @@ jobs:
       pull-requests: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      source_run_id: ${{ steps.source.outputs.source_run_id }}
+      write_matrix: ${{ steps.matrix.outputs.write_matrix }}
+      read_matrix: ${{ steps.matrix.outputs.read_matrix }}
       source_sha: ${{ steps.source.outputs.source_sha }}
-      source_branch: ${{ steps.source.outputs.source_branch }}
-      source_ref: ${{ steps.source.outputs.source_ref }}
-      cache_requested: ${{ steps.source.outputs.cache_requested }}
       report_requested: ${{ steps.source.outputs.report_requested }}
       base_sha: ${{ steps.source.outputs.base_sha }}
-      base_run_id: ${{ steps.source.outputs.base_run_id }}
       pr_number: ${{ steps.source.outputs.pr_number }}
       automated_report: ${{ steps.source.outputs.automated_report }}
     steps:
@@ -204,6 +201,17 @@ jobs:
 
           validate_ci_run "$source_run_id" "$source_sha" "$source_branch"
 
+          if [ "$cache_requested" = true ] && [ "$source_branch" = master ]; then
+            current_master="$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                --jq '.object.sha'
+            )"
+            if [ "$source_sha" != "$current_master" ]; then
+              echo "::error ::Rejecting stale master cache source: run=$source_sha current=$current_master"
+              exit 1
+            fi
+          fi
+
           base_sha=""
           base_run_id=""
           pr_number=""
@@ -247,7 +255,6 @@ jobs:
           {
             printf 'source_run_id=%s\n' "$source_run_id"
             printf 'source_sha=%s\n' "$source_sha"
-            printf 'source_branch=%s\n' "$source_branch"
             printf 'source_ref=refs/heads/%s\n' "$source_branch"
             printf 'cache_requested=%s\n' "$cache_requested"
             printf 'report_requested=%s\n' "$report_requested"
@@ -258,7 +265,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Download current CI build records
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           run-id: ${{ steps.source.outputs.source_run_id }}
           github-token: ${{ github.token }}
@@ -267,7 +274,7 @@ jobs:
 
       - name: Download baseline CI build records
         if: ${{ steps.source.outputs.report_requested == 'true' }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           run-id: ${{ steps.source.outputs.base_run_id }}
           github-token: ${{ github.token }}
@@ -282,7 +289,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CACHE_REQUESTED: ${{ steps.source.outputs.cache_requested }}
           REPORT_REQUESTED: ${{ steps.source.outputs.report_requested }}
+          AUTOMATED_REPORT: ${{ steps.source.outputs.automated_report }}
+          SOURCE_BRANCH: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
           SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           CURRENT_RECORDS_FILE: ${{ runner.temp }}/ci-current-records/records.json
           BASELINE_RECORDS_FILE: ${{ runner.temp }}/ci-baseline-records/records.json
         run: |
@@ -291,8 +301,10 @@ jobs:
           validate_records() {
             local path="$1"
             local label="$2"
+            local records
 
-            jq -ce --arg label "$label" '
+            records="$(jq -c '.' "$path")"
+            jq -nce --arg label "$label" --argjson records "$records" '
               def storePath:
                 type == "string"
                 and test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$");
@@ -301,7 +313,8 @@ jobs:
                 or . == "aarch64-linux"
                 or . == "x86_64-linux";
 
-              if type != "array" or length == 0 then
+              $records
+              | if type != "array" or length == 0 then
                 error("\($label) CI build records must be a non-empty array")
               elif all(.[]; (
                 type == "object"
@@ -343,7 +356,7 @@ jobs:
               else
                 sort_by(.system, .attr)
               end
-            ' --argjson records "$(jq -c '.' "$path")" "$path"
+            '
           }
 
           current_records="$(validate_records "$CURRENT_RECORDS_FILE" current)"
@@ -430,6 +443,10 @@ jobs:
                 write_cache=true
               fi
             fi
+            if [ "$AUTOMATED_REPORT" = true ] && [ "$write_cache" = true ]; then
+              echo "::error ::Automated package reports must not enter a write-capable lane."
+              exit 1
+            fi
 
             echo "NIX_ROOT_CACHE_REFRESH_DECISION system=$system cachePrefix=$cache_prefix writeCache=$write_cache reportPackages=$REPORT_REQUESTED fingerprint=$fingerprint"
 
@@ -444,6 +461,9 @@ jobs:
                   --argjson writeCache "$write_cache" \
                   --arg fingerprint "$fingerprint" \
                   --arg sourceRef "$SOURCE_REF" \
+                  --arg sourceBranch "$SOURCE_BRANCH" \
+                  --arg sourceSha "$SOURCE_SHA" \
+                  --argjson automatedReport "$AUTOMATED_REPORT" \
                   '
                     $matrix + [
                       $lane + {
@@ -452,7 +472,10 @@ jobs:
                         reportPackages: $reportPackages,
                         writeCache: $writeCache,
                         fingerprint: $fingerprint,
-                        sourceRef: $sourceRef
+                        sourceRef: $sourceRef,
+                        sourceBranch: $sourceBranch,
+                        sourceSha: $sourceSha,
+                        automatedReport: $automatedReport
                       }
                     ]
                   '
@@ -460,13 +483,22 @@ jobs:
             fi
           done < <(jq -c '.[]' <<< "$systems_json")
 
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          write_matrix="$(jq -c '[.[] | select(.writeCache)]' <<< "$matrix")"
+          read_matrix="$(
+            jq -c '[.[] | select((.writeCache | not) and .reportPackages)]' \
+              <<< "$matrix"
+          )"
+          {
+            printf 'matrix=%s\n' "$matrix"
+            printf 'write_matrix=%s\n' "$write_matrix"
+            printf 'read_matrix=%s\n' "$read_matrix"
+          } >> "$GITHUB_OUTPUT"
           echo "CI_SLOW_LANE_MATRIX matrix=$matrix"
 
-  lanes:
-    name: "${{ matrix.reportPackages && 'Report' || 'Cache' }} ${{ matrix.system }}"
+  write-lanes:
+    name: "${{ matrix.reportPackages && 'Cache + report' || 'Cache' }} ${{ matrix.system }}"
     needs: prepare
-    if: ${{ needs.prepare.outputs.matrix != '[]' }}
+    if: ${{ needs.prepare.outputs.write_matrix != '[]' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 355
     permissions:
@@ -478,13 +510,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+        include: ${{ fromJSON(needs.prepare.outputs.write_matrix) }}
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.cachePrefix }}
       NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.imageDir }}
       NIX_ROOT_IMAGE_SIZE: ${{ matrix.imageSize }}
       NIX_ROOT_SYSTEM: ${{ matrix.system }}
-    steps:
+    steps: &slow-lane-steps
       - name: Checkout source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -555,12 +587,30 @@ jobs:
 
       - name: Upload package reports
         if: ${{ success() && matrix.reportPackages }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-package-reports-${{ matrix.system }}
           path: ${{ runner.temp }}/ci-package-reports/${{ matrix.system }}
           compression-level: 0
           retention-days: 7
+
+      - name: Revalidate master cache source
+        if: ${{ success() && matrix.writeCache && matrix.sourceBranch == 'master' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ matrix.sourceSha }}
+        run: |
+          set -euo pipefail
+
+          current_master="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+              --jq '.object.sha'
+          )"
+          if [ "$SOURCE_SHA" != "$current_master" ]; then
+            echo "::error ::Rejecting stale master cache source before save: run=$SOURCE_SHA current=$current_master"
+            exit 1
+          fi
 
       - name: Pack ext4 Nix root
         if: ${{ success() && matrix.writeCache && matrix.cacheKind == 'ext4' }}
@@ -612,26 +662,62 @@ jobs:
           keep-cache-key: ${{ steps.cache.outputs.key }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
+  read-lanes:
+    name: "Report ${{ matrix.system }}"
+    needs: prepare
+    if: ${{ needs.prepare.outputs.read_matrix != '[]' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 355
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.read_matrix) }}
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.cachePrefix }}
+      NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.imageDir }}
+      NIX_ROOT_IMAGE_SIZE: ${{ matrix.imageSize }}
+      NIX_ROOT_SYSTEM: ${{ matrix.system }}
+    steps: *slow-lane-steps
+
   report:
     name: "Render package report"
     needs:
       - prepare
-      - lanes
-    if: ${{ always() && needs.prepare.outputs.report_requested == 'true' && needs.lanes.result == 'success' }}
+      - write-lanes
+      - read-lanes
+    if: >-
+      ${{
+        always()
+        && needs.prepare.outputs.report_requested == 'true'
+        && (needs.write-lanes.result == 'success' || needs.write-lanes.result == 'skipped')
+        && (needs.read-lanes.result == 'success' || needs.read-lanes.result == 'skipped')
+        && (needs.write-lanes.result == 'success' || needs.read-lanes.result == 'success')
+      }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
       pull-requests: read
+    concurrency:
+      group: >-
+        ci-slow-report-${{
+          needs.prepare.outputs.pr_number != ''
+          && format('pr-{0}', needs.prepare.outputs.pr_number)
+          || format('run-{0}-{1}', github.run_id, github.run_attempt)
+        }}
+      cancel-in-progress: false
     steps:
       - name: Checkout reporter script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Download package reports
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ci-package-reports-*
           path: ci-package-reports
@@ -649,38 +735,42 @@ jobs:
             --output package-report.md
 
       - name: Upload rendered package report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-package-report
           path: package-report.md
           compression-level: 0
           retention-days: 7
 
-      - name: Reject stale pull request head
+      - name: Revalidate pull request revisions
         if: ${{ needs.prepare.outputs.automated_report == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
           SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
         run: |
           set -euo pipefail
 
-          current_head="$(
+          pr_json="$(
             gh pr view "$PR_NUMBER" \
               --repo "$GITHUB_REPOSITORY" \
-              --json headRefOid \
-              --jq '.headRefOid'
+              --json baseRefOid,headRefOid,state
           )"
-          if [ "$current_head" != "$SOURCE_SHA" ]; then
-            echo "::error ::Rejecting stale update-flake-lock report: run=$SOURCE_SHA current=$current_head"
+          if ! jq -e \
+            --arg head "$SOURCE_SHA" \
+            --arg base "$BASE_SHA" \
+            '.headRefOid == $head and .baseRefOid == $base and .state == "OPEN"' \
+            <<< "$pr_json" >/dev/null; then
+            echo "::error ::Rejecting stale or closed update-flake-lock report."
             exit 1
           fi
 
       - name: Create GitHub App token
         if: ${{ needs.prepare.outputs.automated_report == 'true' }}
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
@@ -691,14 +781,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
         run: |
           set -euo pipefail
 
           marker="<!-- flake-lock-package-report:comment -->"
+          bot_login="${APP_SLUG}[bot]"
           comment_id="$(
             gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq ".[] | select(.body | contains(\"$marker\")) | .id" \
+              --jq ".[] | select(.user.login == \"$bot_login\" and (.body | contains(\"$marker\"))) | .id" \
               | head -n 1
           )"
 
