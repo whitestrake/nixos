@@ -2,7 +2,7 @@ name: "CI"
 run-name: >-
   ${{
     github.event_name == 'workflow_dispatch'
-    && format('CI benchmark {0} [{1}, {2}]', inputs.benchmark_id, inputs.restore_mode, inputs.archive_mode)
+    && format('CI benchmark {0} [{1}, {2}, {3}]', inputs.benchmark_id, inputs.restore_mode, inputs.archive_mode, inputs.lane_mode)
     || github.event.head_commit.message
   }}
 
@@ -30,6 +30,15 @@ on:
         options:
           - none
           - archive
+      lane_mode:
+        description: "Run Linux and Darwin concurrently or in sequence"
+        required: true
+        default: concurrent
+        type: choice
+        options:
+          - concurrent
+          - linux-darwin
+          - darwin-linux
 
 permissions:
   contents: read
@@ -55,6 +64,7 @@ jobs:
       CI_BENCHMARK_ID: ${{ inputs.benchmark_id || 'push' }}
       CI_RESTORE_MODE: ${{ inputs.restore_mode || 'cache' }}
       CI_ARCHIVE_MODE: ${{ inputs.archive_mode || 'none' }}
+      CI_LANE_MODE: ${{ inputs.lane_mode || 'concurrent' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -124,7 +134,7 @@ jobs:
 
           df -h
           started="$SECONDS"
-          echo "CI_BENCHMARK_CONFIG id=$CI_BENCHMARK_ID restore=$CI_RESTORE_MODE archive=$CI_ARCHIVE_MODE"
+          echo "CI_BENCHMARK_CONFIG id=$CI_BENCHMARK_ID restore=$CI_RESTORE_MODE archive=$CI_ARCHIVE_MODE lanes=$CI_LANE_MODE"
 
           nix_fast_build_prepare_started="$SECONDS"
           cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
@@ -207,46 +217,84 @@ jobs:
             "$@"
             lane_status="$?"
             set -e
-            echo "NIX_FAST_BUILD_LANE_COMPLETE lane=$lane status=$lane_status durationSeconds=$((SECONDS - lane_started))"
+            echo "NIX_FAST_BUILD_LANE_COMPLETE lane=$lane mode=$CI_LANE_MODE status=$lane_status durationSeconds=$((SECONDS - lane_started))"
             return "$lane_status"
           }
 
-          run_timed_lane linux \
-            python3 .github/scripts/nix_fast_build.py --publish-checks -- \
-            "${nix_fast_build[@]}" \
-            --flake .#ci.linux \
-            --systems 'x86_64-linux aarch64-linux' \
-            --eval-workers 3 \
-            --store ssh-ng://eu.nixbuild.net \
-            --option builders '' \
-            --option max-jobs 2 \
-            --retries 2 \
-            --result-file "$RUNNER_TEMP/ci-linux-results.json" \
-            -j 50 &
-          linux_pid="$!"
+          start_linux_lane() {
+            run_timed_lane linux \
+              python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+              "${nix_fast_build[@]}" \
+              --flake .#ci.linux \
+              --systems 'x86_64-linux aarch64-linux' \
+              --eval-workers 3 \
+              --store ssh-ng://eu.nixbuild.net \
+              --option builders '' \
+              --option max-jobs 2 \
+              --retries 2 \
+              --result-file "$RUNNER_TEMP/ci-linux-results.json" \
+              -j 50 &
+            linux_pid="$!"
+          }
 
-          run_timed_lane darwin \
-            python3 .github/scripts/nix_fast_build.py --publish-checks -- \
-            "${nix_fast_build[@]}" \
-            --flake .#ci.darwin \
-            --systems aarch64-darwin \
-            --eval-workers 1 \
-            --cachix-cache whitestrake \
-            --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
-            -j 50 &
-          darwin_pid="$!"
+          start_darwin_lane() {
+            run_timed_lane darwin \
+              python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+              "${nix_fast_build[@]}" \
+              --flake .#ci.darwin \
+              --systems aarch64-darwin \
+              --eval-workers 1 \
+              --cachix-cache whitestrake \
+              --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
+              -j 50 &
+            darwin_pid="$!"
+          }
 
-          set +e
-          wait "$linux_pid"
-          linux_status="$?"
-          linux_pid=""
-          wait "$darwin_pid"
-          darwin_status="$?"
-          darwin_pid=""
-          set -e
+          wait_linux_lane() {
+            set +e
+            wait "$linux_pid"
+            linux_status="$?"
+            set -e
+            linux_pid=""
+          }
+
+          wait_darwin_lane() {
+            set +e
+            wait "$darwin_pid"
+            darwin_status="$?"
+            set -e
+            darwin_pid=""
+          }
+
+          linux_status=0
+          darwin_status=0
+          case "$CI_LANE_MODE" in
+            concurrent)
+              start_linux_lane
+              start_darwin_lane
+              wait_linux_lane
+              wait_darwin_lane
+              ;;
+            linux-darwin)
+              start_linux_lane
+              wait_linux_lane
+              start_darwin_lane
+              wait_darwin_lane
+              ;;
+            darwin-linux)
+              start_darwin_lane
+              wait_darwin_lane
+              start_linux_lane
+              wait_linux_lane
+              ;;
+            *)
+              echo "::error ::Unknown lane mode: $CI_LANE_MODE"
+              exit 1
+              ;;
+          esac
           trap - INT TERM
 
-          echo "NIX_FAST_BUILD_COMPLETE linuxStatus=$linux_status darwinStatus=$darwin_status durationSeconds=$((SECONDS - started))"
+          echo "NIX_FAST_BUILD_COMPLETE mode=$CI_LANE_MODE linuxStatus=$linux_status darwinStatus=$darwin_status durationSeconds=$((SECONDS - started))"
           if [ "$linux_status" -ne 0 ] || [ "$darwin_status" -ne 0 ]; then
             echo "::error ::Nix Fast Build failed: linux=$linux_status darwin=$darwin_status"
             exit 1
