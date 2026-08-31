@@ -234,6 +234,18 @@ def run(command, publisher, build_hook):
     active_hook = None
     terminating = False
     previous_handlers = {}
+    process_groups = {process.pid}
+
+    def signal_process_group(pgid, signum):
+        try:
+            os.killpg(pgid, signum)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            if signum == 0:
+                return True
+            raise
+        return True
 
     def forward(signum, _frame):
         nonlocal interrupted, terminating
@@ -241,26 +253,17 @@ def run(command, publisher, build_hook):
         if terminating:
             return
         terminating = True
-        children = [
-            child
-            for child in (active_hook, process)
-            if child is not None and child.poll() is None
-        ]
-        for child in children:
-            try:
-                os.killpg(child.pid, signum)
-            except ProcessLookupError:
-                pass
+        groups = set(process_groups)
+        if active_hook is not None:
+            groups.add(active_hook.pid)
+        groups = [pgid for pgid in groups if signal_process_group(pgid, signum)]
         deadline = time.monotonic() + 1
-        while children and time.monotonic() < deadline:
-            children = [child for child in children if child.poll() is None]
-            if children:
+        while groups and time.monotonic() < deadline:
+            groups = [pgid for pgid in groups if signal_process_group(pgid, 0)]
+            if groups:
                 time.sleep(0.05)
-        for child in children:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        for pgid in groups:
+            signal_process_group(pgid, signal.SIGKILL)
 
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -296,12 +299,17 @@ def run(command, publisher, build_hook):
                             text=True,
                             start_new_session=True,
                         )
+                        process_groups.add(active_hook.pid)
                         active_hook.communicate(line)
                         if active_hook.returncode != 0:
                             hook_failed = True
                     except OSError:
                         hook_failed = True
                     finally:
+                        if active_hook is not None and not signal_process_group(
+                            active_hook.pid, 0
+                        ):
+                            process_groups.discard(active_hook.pid)
                         active_hook = None
         return_code = process.wait()
     finally:

@@ -45,7 +45,7 @@ runs:
         }
 
         run_with_timeout() {
-          perl -MPOSIX=:sys_wait_h,setpgid -e '
+          perl -MErrno=EPERM -MPOSIX=:sys_wait_h,setpgid -e '
             $timeout = shift;
             $pid = fork;
             die "fork failed: $!" unless defined $pid;
@@ -56,18 +56,27 @@ runs:
             }
             setpgid($pid, $pid);
             $terminating = 0;
+            $child_reaped = 0;
+            sub signal_child_group {
+              ($signal) = @_;
+              return 1 if kill $signal, -$pid;
+              return $! == EPERM;
+            }
+            sub reap_child {
+              return if $child_reaped;
+              $child_reaped = waitpid($pid, WNOHANG) == $pid;
+            }
             sub terminate_child {
               ($signal, $exit_status) = @_;
               return if $terminating++;
-              kill $signal, -$pid;
+              signal_child_group($signal);
               for (1 .. 20) {
-                if (waitpid($pid, WNOHANG) == $pid) {
-                  exit $exit_status;
-                }
+                reap_child();
+                last unless signal_child_group(0);
                 select undef, undef, undef, 0.1;
               }
-              kill "KILL", -$pid;
-              waitpid($pid, 0);
+              signal_child_group("KILL") if signal_child_group(0);
+              waitpid($pid, 0) unless $child_reaped;
               exit $exit_status;
             }
             $SIG{ALRM} = sub {
