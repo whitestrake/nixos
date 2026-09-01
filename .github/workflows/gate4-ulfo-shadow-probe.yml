@@ -18,6 +18,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prove ULFO shadow persistence capability
+        shell: bash
+        env:
+          GATE4_ULFO_PHASE: smoke
+        run: bash .github/scripts/gate4-ulfo-shadow-probe.sh
+
       - name: Download canonical Gate 4 fixture
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

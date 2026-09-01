@@ -153,6 +153,51 @@ cleanup_probe() {
 }
 trap cleanup_probe EXIT
 
+smoke_phase() {
+  smoke_seed="${work_dir}/smoke-seed.dmg"
+  smoke_base="${work_dir}/smoke-base.dmg"
+  smoke_shadow="${work_dir}/smoke-shadow"
+
+  guard_host_space
+  prepare_synthetic_nix
+  hdiutil create -size 1g -type UDIF \
+    -fs 'Case-sensitive APFS' -volname Gate4Smoke "$smoke_seed"
+  [ "$(hdiutil imageinfo -format "$smoke_seed")" = UDRW ] \
+    || die "smoke seed image does not report UDRW"
+  guard_host_space
+  hdiutil convert "$smoke_seed" -format ULFO -o "$smoke_base"
+  [ "$(hdiutil imageinfo -format "$smoke_base")" = ULFO ] \
+    || die "smoke base image does not report ULFO"
+  smoke_base_sha="$(shasum -a 256 "$smoke_base" | awk '{print $1}')"
+
+  guard_host_space
+  sudo hdiutil attach -shadow "$smoke_shadow" -mountpoint /nix -nobrowse "$smoke_base"
+  sudo chown "$USER" /nix
+  printf 'persisted\n' > /nix/gate4-ulfo-shadow-smoke
+  sync
+  detach_probe
+  [ "$(shasum -a 256 "$smoke_base" | awk '{print $1}')" = "$smoke_base_sha" ] \
+    || die "smoke ULFO base changed during shadow mutation"
+
+  guard_host_space
+  hdiutil compact "$smoke_base" -shadow "$smoke_shadow"
+  [ "$(shasum -a 256 "$smoke_base" | awk '{print $1}')" = "$smoke_base_sha" ] \
+    || die "smoke ULFO base changed during shadow compact"
+  guard_host_space
+  sudo hdiutil attach -shadow "$smoke_shadow" -mountpoint /nix -nobrowse "$smoke_base"
+  [ "$(< /nix/gate4-ulfo-shadow-smoke)" = persisted ] \
+    || die "smoke shadow mutation did not persist"
+  detach_probe
+  [ "$(shasum -a 256 "$smoke_base" | awk '{print $1}')" = "$smoke_base_sha" ] \
+    || die "smoke ULFO base changed during final reattach"
+
+  emit_event capability-smoke 0 "$(elapsed_ms "$phase_started_ns")" \
+    compact=true \
+    immutableBase=true \
+    mutationPersisted=true
+  rm -f "$smoke_seed" "$smoke_base" "$smoke_shadow"
+}
+
 create_seed() {
   [ ! -e "$seed" ] || die "seed already exists"
   hdiutil create -size 64g -type UDIF \
@@ -295,6 +340,7 @@ cleanup_phase() {
 }
 
 case "${GATE4_ULFO_PHASE:?GATE4_ULFO_PHASE must be set}" in
+  smoke) smoke_phase ;;
   seed) seed_phase ;;
   lifecycle) lifecycle_phase ;;
   cleanup) cleanup_phase ;;
