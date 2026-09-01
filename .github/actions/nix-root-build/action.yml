@@ -221,37 +221,28 @@ runs:
         fi
 
         started="$SECONDS"
-        run_lane() {
-          if [ "$GHCI_PACKAGE_REPORT" = true ]; then
-            run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
-              python3 .github/scripts/nix_fast_build.py \
-              --build-hook .github/scripts/nix_fast_build_package_report.py \
-              -- \
-              "${nix_fast_build[@]}" \
-              --flake ".#ci.$GHCI_LANE_SYSTEM" \
-              --systems "$GHCI_LANE_SYSTEM" \
-              --option builders '' \
-              --option max-jobs auto \
-              --retries 2 \
-              --no-nom \
-              --no-link \
-              --result-file "$result_file" \
-              -j 50
-          else
-            run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" "${nix_fast_build[@]}" \
-              --flake ".#ci.$GHCI_LANE_SYSTEM" \
-              --systems "$GHCI_LANE_SYSTEM" \
-              --option builders '' \
-              --option max-jobs auto \
-              --retries 2 \
-              --no-nom \
-              --no-link \
-              --result-file "$result_file" \
-              -j 50
-          fi
-        }
-
-        run_lane
+        nix_fast_build_command=("${nix_fast_build[@]}")
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          nix_fast_build_command=(
+            python3
+            .github/scripts/nix_fast_build.py
+            --build-hook
+            .github/scripts/nix_fast_build_package_report.py
+            --
+            "${nix_fast_build_command[@]}"
+          )
+        fi
+        run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
+          "${nix_fast_build_command[@]}" \
+          --flake ".#ci.$GHCI_LANE_SYSTEM" \
+          --systems "$GHCI_LANE_SYSTEM" \
+          --option builders '' \
+          --option max-jobs auto \
+          --retries 2 \
+          --no-nom \
+          --no-link \
+          --result-file "$result_file" \
+          -j 50
 
         records="$(
           jq -ce '

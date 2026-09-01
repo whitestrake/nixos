@@ -36,7 +36,6 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
       write_matrix: ${{ steps.matrix.outputs.write_matrix }}
       read_matrix: ${{ steps.matrix.outputs.read_matrix }}
       source_sha: ${{ steps.source.outputs.source_sha }}
@@ -308,20 +307,50 @@ jobs:
         run: |
           set -euo pipefail
 
+          systems_json='[
+            {
+              "system": "aarch64-linux",
+              "runner": "ubuntu-24.04-arm",
+              "cacheKind": "ext4",
+              "imageSize": "32G",
+              "imageDir": "nix-root-ci-aarch64-linux",
+              "cachePrefix": "nix-root-ci-aarch64-linux-ext4-v1"
+            },
+            {
+              "system": "x86_64-linux",
+              "runner": "ubuntu-24.04",
+              "cacheKind": "ext4",
+              "imageSize": "32G",
+              "imageDir": "nix-root-ci-x86_64-linux",
+              "cachePrefix": "nix-root-ci-x86_64-linux-ext4-v1"
+            },
+            {
+              "system": "aarch64-darwin",
+              "runner": "macos-26",
+              "cacheKind": "sparsebundle",
+              "imageSize": "64g",
+              "imageDir": "nix-root-ci-aarch64-darwin",
+              "cachePrefix": "nix-root-ci-aarch64-darwin-sparsebundle-v1"
+            }
+          ]'
+
           validate_records() {
             local path="$1"
             local label="$2"
             local records
 
             records="$(jq -c '.' "$path")"
-            jq -nce --arg label "$label" --argjson records "$records" '
+            jq -nce \
+              --arg label "$label" \
+              --argjson records "$records" \
+              --argjson systems "$systems_json" \
+              '
               def storePath:
                 type == "string"
                 and test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$");
               def supportedSystem:
-                . == "aarch64-darwin"
-                or . == "aarch64-linux"
-                or . == "x86_64-linux";
+                . as $system
+                | any($systems[]; .system == $system);
 
               $records
               | if type != "array" or length == 0 then
@@ -364,7 +393,7 @@ jobs:
               ) then
                 error("duplicate \($label) CI names")
               elif all(
-                ["aarch64-linux", "x86_64-linux", "aarch64-darwin"][];
+                [$systems[] | .system][];
                 . as $system
                 | any($records[]; .system == $system)
               ) as $all_systems
@@ -382,44 +411,21 @@ jobs:
             baseline_records="$(validate_records "$BASELINE_RECORDS_FILE" baseline)"
           fi
 
-          flake_lock="$(
-            gh api \
-              -H "Accept: application/vnd.github.raw+json" \
-              "repos/$GITHUB_REPOSITORY/contents/flake.lock?ref=$SOURCE_SHA" \
-          )"
-          flake_lock="$(jq -ceS '.' <<< "$flake_lock")"
-          nix_fast_build_package_sha="$(
-            gh api \
-              "repos/$GITHUB_REPOSITORY/contents/packages/nix-fast-build.nix?ref=$SOURCE_SHA" \
-              --jq '.sha'
-          )"
-
-          systems_json='[
-            {
-              "system": "aarch64-linux",
-              "runner": "ubuntu-24.04-arm",
-              "cacheKind": "ext4",
-              "imageSize": "32G",
-              "imageDir": "nix-root-ci-aarch64-linux",
-              "cachePrefix": "nix-root-ci-aarch64-linux-ext4-v1"
-            },
-            {
-              "system": "x86_64-linux",
-              "runner": "ubuntu-24.04",
-              "cacheKind": "ext4",
-              "imageSize": "32G",
-              "imageDir": "nix-root-ci-x86_64-linux",
-              "cachePrefix": "nix-root-ci-x86_64-linux-ext4-v1"
-            },
-            {
-              "system": "aarch64-darwin",
-              "runner": "macos-26",
-              "cacheKind": "sparsebundle",
-              "imageSize": "64g",
-              "imageDir": "nix-root-ci-aarch64-darwin",
-              "cachePrefix": "nix-root-ci-aarch64-darwin-sparsebundle-v1"
-            }
-          ]'
+          flake_lock=""
+          nix_fast_build_package_sha=""
+          if [ "$CACHE_REQUESTED" = true ]; then
+            flake_lock="$(
+              gh api \
+                -H "Accept: application/vnd.github.raw+json" \
+                "repos/$GITHUB_REPOSITORY/contents/flake.lock?ref=$SOURCE_SHA" \
+            )"
+            flake_lock="$(jq -ceS '.' <<< "$flake_lock")"
+            nix_fast_build_package_sha="$(
+              gh api \
+                "repos/$GITHUB_REPOSITORY/contents/packages/nix-fast-build.nix?ref=$SOURCE_SHA" \
+                --jq '.sha'
+            )"
+          fi
 
           cache_keys=""
           if [ "$CACHE_REQUESTED" = true ] && [ "$EVENT_NAME" = "workflow_run" ]; then
@@ -457,20 +463,23 @@ jobs:
               jq -c --arg system "$system" '[.[] | select(.system == $system)]' \
                 <<< "$baseline_records"
             )"
-            fingerprint="$(
-              jq -cS \
-                --argjson flakeLock "$flake_lock" \
-                --arg nixFastBuildPackage "$nix_fast_build_package_sha" \
-                '{
-                  flakeLock: $flakeLock,
-                  sourceRootsSchema: "flake-input-roots-v1",
-                  nixFastBuildPackage: $nixFastBuildPackage,
-                  records: map({attr, storePath})
-                }' \
-                <<< "$current_system_records" \
-                | sha256sum \
-                | cut -d " " -f1
-            )"
+            fingerprint=""
+            if [ "$CACHE_REQUESTED" = true ]; then
+              fingerprint="$(
+                jq -cS \
+                  --argjson flakeLock "$flake_lock" \
+                  --arg nixFastBuildPackage "$nix_fast_build_package_sha" \
+                  '{
+                    flakeLock: $flakeLock,
+                    sourceRootsSchema: "flake-input-roots-v1",
+                    nixFastBuildPackage: $nixFastBuildPackage,
+                    records: map({attr, storePath})
+                  }' \
+                  <<< "$current_system_records" \
+                  | sha256sum \
+                  | cut -d " " -f1
+              )"
+            fi
 
             write_cache=false
             if [ "$CACHE_REQUESTED" = true ]; then
@@ -525,7 +534,6 @@ jobs:
               <<< "$matrix"
           )"
           {
-            printf 'matrix=%s\n' "$matrix"
             printf 'write_matrix=%s\n' "$write_matrix"
             printf 'read_matrix=%s\n' "$read_matrix"
           } >> "$GITHUB_OUTPUT"
