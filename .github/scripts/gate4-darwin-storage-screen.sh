@@ -1,57 +1,62 @@
 #!/usr/bin/env bash
-set -euo pipefail
+gate4_init() {
+  variant="${GATE4_VARIANT:?GATE4_VARIANT must be set}"
+  phase="${GATE4_PHASE:?GATE4_PHASE must be set}"
+  image="${GATE4_IMAGE_PATH:?GATE4_IMAGE_PATH must be set}"
+  fixture_dir="${RUNNER_TEMP:?RUNNER_TEMP must be set}/gate4-fixture"
+  work_dir="$(dirname "$image")"
+  trial="${work_dir##*/}"
+  evidence="${work_dir}/evidence.jsonl"
+  phase_started_ns="$(python3 -c 'import time; print(time.time_ns())')"
 
-variant="${GATE4_VARIANT:?GATE4_VARIANT must be set}"
-phase="${GATE4_PHASE:?GATE4_PHASE must be set}"
-image="${GATE4_IMAGE_PATH:?GATE4_IMAGE_PATH must be set}"
-fixture_dir="${RUNNER_TEMP:?RUNNER_TEMP must be set}/gate4-fixture"
-work_dir="$(dirname "$image")"
-trial="${work_dir##*/}"
-evidence="${work_dir}/evidence.jsonl"
-phase_started_ns="$(python3 -c 'import time; print(time.time_ns())')"
+  mkdir -p "$work_dir"
+  touch "$evidence"
 
-mkdir -p "$work_dir"
-touch "$evidence"
+  case "$variant" in
+    0-udsb-jhfsx)
+      container=udsb
+      expected_filesystem='Case-sensitive Journaled HFS+'
+      expected_journal=true
+      ;;
+    1-udsb-hfsx)
+      container=udsb
+      expected_filesystem='Case-sensitive HFS+'
+      expected_journal=false
+      ;;
+    2-udsb-apfsx)
+      container=udsb
+      expected_filesystem=APFS
+      expected_journal=na
+      ;;
+    3-asif-apfsx)
+      container=asif
+      expected_filesystem=APFS
+      expected_journal=na
+      ;;
+    4-ulfo-shadow-apfsx)
+      container=ulfo
+      expected_filesystem=APFS
+      expected_journal=na
+      ;;
+    *)
+      echo "::error ::unsupported Gate 4 candidate: $variant"
+      exit 2
+      ;;
+  esac
 
-case "$variant" in
-  0-udsb-jhfsx)
-    container=udsb
-    expected_filesystem='Case-sensitive Journaled HFS+'
-    expected_journal=true
-    ;;
-  1-udsb-hfsx)
-    container=udsb
-    expected_filesystem='Case-sensitive HFS+'
-    expected_journal=false
-    ;;
-  2-udsb-apfsx)
-    container=udsb
-    expected_filesystem=APFS
-    expected_journal=na
-    ;;
-  3-asif-apfsx)
-    container=asif
-    expected_filesystem=APFS
-    expected_journal=na
-    ;;
-  *)
-    echo "::error ::unsupported Gate 4 candidate: $variant"
-    exit 2
-    ;;
-esac
+  case "$phase" in
+    prepare | verify | pack | cleanup | probe) ;;
+    *)
+      echo "::error ::unsupported Gate 4 phase: $phase"
+      exit 2
+      ;;
+  esac
 
-case "$phase" in
-  prepare | verify | pack | cleanup) ;;
-  *)
-    echo "::error ::unsupported Gate 4 phase: $phase"
-    exit 2
-    ;;
-esac
-
-fixture_sha=unknown
-if [ -f "${fixture_dir}/SHA256SUMS" ]; then
-  fixture_sha="$(awk '$2 == "fixture.nar" { print $1; exit }' "${fixture_dir}/SHA256SUMS")"
-fi
+  fixture_sha=unknown
+  if [ -f "${fixture_dir}/SHA256SUMS" ]; then
+    fixture_sha="$(awk '$2 == "fixture.nar" { print $1; exit }' "${fixture_dir}/SHA256SUMS")"
+  fi
+}
 
 emit_event() {
   operation="$1"
@@ -152,7 +157,6 @@ phase_exit() {
   fi
   exit "$status"
 }
-trap phase_exit EXIT
 
 host_free_bytes() {
   df -k "$RUNNER_TEMP" | awk 'NR == 2 { printf "%.0f\n", $4 * 1024 }'
@@ -313,7 +317,7 @@ verify_capacity_and_filesystem() {
       [ "$personality" = "$expected_filesystem" ] \
         || die "unexpected filesystem personality: $personality"
       ;;
-    2-udsb-apfsx | 3-asif-apfsx)
+    2-udsb-apfsx | 3-asif-apfsx | 4-ulfo-shadow-apfsx)
       printf '%s\n' "$personality" | grep -q APFS \
         || die "unexpected filesystem personality: $personality"
       ;;
@@ -614,9 +618,15 @@ cleanup_phase() {
   detach_nix
 }
 
-case "$phase" in
-  prepare) prepare_phase ;;
-  verify) verify_phase ;;
-  pack) pack_phase ;;
-  cleanup) cleanup_phase ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  set -euo pipefail
+  gate4_init
+  trap phase_exit EXIT
+  case "$phase" in
+    prepare) prepare_phase ;;
+    verify) verify_phase ;;
+    pack) pack_phase ;;
+    cleanup) cleanup_phase ;;
+    probe) die "probe phase is implemented by the ULFO shadow probe" ;;
+  esac
+fi
