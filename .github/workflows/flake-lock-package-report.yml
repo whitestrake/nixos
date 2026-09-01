@@ -108,7 +108,18 @@ jobs:
                 ][0].id // empty
               ' <<< "$runs"
           )"
-          if [ -z "$run_id" ]; then
+          if [ -n "$run_id" ]; then
+            artifact_count="$(
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+                --jq \
+                  '[.artifacts[] | select(.name == "ci-build-records" and (.expired | not))] | length'
+            )"
+            if [ "$artifact_count" -eq 0 ]; then
+              echo "::warning ::Master CI run $run_id has no usable ci-build-records artifact."
+              run_id=""
+            fi
+          else
             echo "::warning ::No successful master CI run found for baseline $BASE_SHA."
           fi
           printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
@@ -280,8 +291,9 @@ jobs:
           comment_id="$(
             gh api --paginate --slurp \
               "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq \
-                "[.[][] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\")))][0].id // empty"
+              | jq -r \
+                --arg marker "$marker" \
+                '[.[][] | select(.user.login == "github-actions[bot]" and (.body | contains($marker)))][0].id // empty'
           )"
 
           if [ -n "$comment_id" ]; then
