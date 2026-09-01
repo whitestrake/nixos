@@ -53,11 +53,13 @@ jobs:
           nix-store --realise --dry-run "$drv"
           nix-store --query --requisites "$drv" | LC_ALL=C sort -u > input-paths.txt
 
+          fixture_inputs=()
           while IFS= read -r path; do
             if [ "$path" != "$drv" ]; then
-              nix-store --realise "$path" >/dev/null
+              fixture_inputs+=("$path")
             fi
           done < input-paths.txt
+          nix-store --realise "${fixture_inputs[@]}" >/dev/null
 
           nix-store --query --requisites --include-outputs "$drv" \
             | grep -vFx "$out" \
