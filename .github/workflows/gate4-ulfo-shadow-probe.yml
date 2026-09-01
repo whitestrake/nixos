@@ -1,6 +1,11 @@
 name: "Gate 4 ULFO Shadow Capability Probe"
 
 on:
+  push:
+    branches:
+      - feat/nfb-cache-lane
+    paths:
+      - .github/workflows/gate4-ulfo-shadow-probe.yml
   workflow_dispatch:
 
 permissions:
