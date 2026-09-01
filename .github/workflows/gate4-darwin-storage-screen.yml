@@ -2,6 +2,9 @@ name: "Gate 4 Darwin Storage Screen"
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/nfb-cache-lane
 
 permissions:
   contents: read
