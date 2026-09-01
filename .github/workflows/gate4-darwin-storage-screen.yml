@@ -111,7 +111,7 @@ jobs:
         with:
           name: gate4-fixture-${{ steps.fixture.outputs.fixture-sha }}
           path: ${{ runner.temp }}/gate4-fixture
-          compression-level: 0
+          compression-level: 1
           retention-days: 7
 
   native-feasibility:
