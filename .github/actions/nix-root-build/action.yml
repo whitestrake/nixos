@@ -107,7 +107,7 @@ runs:
         root_rollback_succeeded=false
         root_commit_succeeded=false
         cleanup_root_links() {
-          local link rollback_status
+          local status=$? link rollback_status
           if [ "$root_mutation_started" = true ] && [ "$root_commit_succeeded" != true ] && [ "$root_rollback_attempted" != true ]; then
             rollback_status=0
             rollback_root_links || rollback_status=$?
@@ -127,6 +127,7 @@ runs:
               done
             fi
           fi
+          return "$status"
         }
 
         status=0
@@ -337,15 +338,17 @@ runs:
         ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
         staged_links+=("$staged_nix_fast_build")
         staged_names+=("nix-fast-build")
-        for store_path in "${flake_input_paths[@]}"; do
-          store_name="${store_path##*/}"
-          store_hash="${store_name%%-*}"
-          name="flake-input-$store_hash"
-          staged_path="$staging_root_prefix.$name"
-          ln -s "$store_path" "$staged_path"
-          staged_links+=("$staged_path")
-          staged_names+=("$name")
-        done
+        if [ "${#flake_input_paths[@]}" -gt 0 ]; then
+          for store_path in "${flake_input_paths[@]}"; do
+            store_name="${store_path##*/}"
+            store_hash="${store_name%%-*}"
+            name="flake-input-$store_hash"
+            staged_path="$staging_root_prefix.$name"
+            ln -s "$store_path" "$staged_path"
+            staged_links+=("$staged_path")
+            staged_names+=("$name")
+          done
+        fi
 
         stale_names=()
         for old_link in "$root_dir"/*; do
@@ -434,24 +437,26 @@ runs:
           fi
         done
         if [ "$commit_status" -eq 0 ]; then
-          for name in "${stale_names[@]}"; do
-            target="$root_dir/$name"
-            backup="$backup_root_prefix.$name"
-            if [ ! -L "$target" ]; then
-              echo "::error ::Nix root entry changed during transaction: $target"
-              commit_status=1
-              break
-            fi
-            root_backups+=("$backup")
-            root_targets+=("$target")
-            backup_links+=("$backup")
-            if mv -f "$target" "$backup"; then
-              :
-            else
-              commit_status=$?
-              break
-            fi
-          done
+          if [ "${#stale_names[@]}" -gt 0 ]; then
+            for name in "${stale_names[@]}"; do
+              target="$root_dir/$name"
+              backup="$backup_root_prefix.$name"
+              if [ ! -L "$target" ]; then
+                echo "::error ::Nix root entry changed during transaction: $target"
+                commit_status=1
+                break
+              fi
+              root_backups+=("$backup")
+              root_targets+=("$target")
+              backup_links+=("$backup")
+              if mv -f "$target" "$backup"; then
+                :
+              else
+                commit_status=$?
+                break
+              fi
+            done
+          fi
         fi
         if [ "$commit_status" -ne 0 ]; then
           rollback_status=0
@@ -464,9 +469,11 @@ runs:
 
         root_commit_succeeded=true
 
-        for name in "${stale_names[@]}"; do
-          echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$name"
-        done
+        if [ "${#stale_names[@]}" -gt 0 ]; then
+          for name in "${stale_names[@]}"; do
+            echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$name"
+          done
+        fi
         if [ "${#backup_links[@]}" -gt 0 ]; then
           for backup in "${backup_links[@]}"; do
             rm -f "$backup"
@@ -482,10 +489,12 @@ runs:
           rmdir "$legacy_root_dir" 2>/dev/null || echo "::warning ::Leaving legacy Nix root at $legacy_root_dir"
         fi
 
-        for store_path in "${flake_input_paths[@]}"; do
-          store_name="${store_path##*/}"
-          store_hash="${store_name%%-*}"
-          echo "NIX_FLAKE_INPUT_ROOT system=$GHCI_LANE_SYSTEM path=$store_path gcroot=$root_dir/flake-input-$store_hash"
-        done
+        if [ "${#flake_input_paths[@]}" -gt 0 ]; then
+          for store_path in "${flake_input_paths[@]}"; do
+            store_name="${store_path##*/}"
+            store_hash="${store_name%%-*}"
+            echo "NIX_FLAKE_INPUT_ROOT system=$GHCI_LANE_SYSTEM path=$store_path gcroot=$root_dir/flake-input-$store_hash"
+          done
+        fi
         echo "NIX_ROOT_TRANSACTION_COMPLETE system=$GHCI_LANE_SYSTEM desiredCount=${#staged_names[@]} staleCount=${#stale_names[@]} durationSeconds=$((SECONDS - root_transaction_started))"
         echo "NIX_FAST_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM outPath=$nix_fast_build_path gcroot=$root_dir/nix-fast-build durationSeconds=$((SECONDS - started))"
