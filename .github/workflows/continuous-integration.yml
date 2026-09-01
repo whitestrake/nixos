@@ -202,14 +202,8 @@ jobs:
     timeout-minutes: 355
     permissions:
       actions: write
-      checks: write
       contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
       - name: Require successful platform builds
         env:
           LINUX_RESULT: ${{ needs.linux-builds.result }}
@@ -219,6 +213,11 @@ jobs:
             echo "::error ::Linux and Darwin builds must both succeed: linux=$LINUX_RESULT darwin=$DARWIN_RESULT"
             exit 1
           fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -238,7 +237,7 @@ jobs:
           name: ci-darwin-results
           path: ${{ runner.temp }}
 
-      - name: Build all configurations
+      - name: Assemble build manifest
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
