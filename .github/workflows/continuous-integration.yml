@@ -176,7 +176,7 @@ jobs:
 
           python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             "${nix_fast_build[@]}" \
-            --flake .#ci.darwin \
+            --flake .#ci.missing \
             --systems aarch64-darwin \
             --eval-workers 1 \
             --cachix-cache whitestrake \
