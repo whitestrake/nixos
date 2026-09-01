@@ -222,7 +222,8 @@ class CheckPublisher:
                 self.outstanding.pop(attr, None)
 
 
-def run(command, publisher, build_hook):
+def run(command, publisher, build_hook, event_log):
+    started = time.monotonic()
     process = subprocess.Popen(
         [*command, "--stream-json-lines"],
         stdout=subprocess.PIPE,
@@ -285,6 +286,32 @@ def run(command, publisher, build_hook):
                         file=sys.stderr,
                     )
                     continue
+                if event_log is not None:
+                    elapsed_milliseconds = int((time.monotonic() - started) * 1000)
+                    record = {
+                        **event,
+                        "receivedAt": now(),
+                        "elapsedMilliseconds": elapsed_milliseconds,
+                    }
+                    event_log.write(json.dumps(record, separators=(",", ":")) + "\n")
+                    event_log.flush()
+                    if event.get("type") in {"EVAL", "BUILD"} and isinstance(
+                        event.get("attr"), str
+                    ):
+                        duration = event.get("duration")
+                        duration_milliseconds = (
+                            int(duration * 1000)
+                            if isinstance(duration, (int, float))
+                            else 0
+                        )
+                        print(
+                            "NFB_GATE3_EVENT"
+                            f" type={event['type']}"
+                            f" attr={json.dumps(event['attr'])}"
+                            f" success={json.dumps(event.get('success') is True)}"
+                            f" elapsedMilliseconds={elapsed_milliseconds}"
+                            f" durationMilliseconds={duration_milliseconds}"
+                        )
                 if publisher is not None:
                     publisher.handle(event)
                 if (
@@ -330,6 +357,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-checks", action="store_true")
     parser.add_argument("--build-hook")
+    parser.add_argument("--event-log")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] != ["--"] or len(args.command) == 1:
@@ -353,7 +381,13 @@ def main():
             run_id,
             attempt,
         )
-    return_code, hook_failed = run(args.command, publisher, args.build_hook)
+    if args.event_log is None:
+        return_code, hook_failed = run(args.command, publisher, args.build_hook, None)
+    else:
+        with open(args.event_log, "w", encoding="utf-8") as event_log:
+            return_code, hook_failed = run(
+                args.command, publisher, args.build_hook, event_log
+            )
     if return_code < 0:
         os.kill(os.getpid(), -return_code)
     return return_code or hook_failed

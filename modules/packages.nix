@@ -35,7 +35,9 @@
     pos = builtins.unsafeGetAttrPos "version" drv;
     repoPath = toString ../.;
   in
-    drv ? version
+    name
+    != "nix-fast-build-gate3"
+    && drv ? version
     && drv ? src
     && pos != null
     && lib.hasPrefix repoPath pos.file;

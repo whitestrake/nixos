@@ -3,6 +3,40 @@ name: "CI"
 on:
   push:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platforms to build"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+      nfb-version:
+        description: "Temporary nix-fast-build version"
+        required: false
+        default: 1.6.0
+        type: choice
+        options:
+          - 1.6.0
+          - 2.0.1
+      eval-workers:
+        description: "Linux nix-fast-build evaluation workers"
+        required: false
+        default: "3"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+      publish-checks:
+        description: "Publish Linux Checks API updates"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: read
@@ -43,38 +77,97 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          NFB_VERSION: ${{ inputs.nfb-version || '1.6.0' }}
+          NFB_EVAL_WORKERS: ${{ inputs.eval-workers || '3' }}
+          NFB_PUBLISH_CHECKS: ${{ inputs.publish-checks || 'true' }}
         run: |
           set -euo pipefail
 
-          nix_fast_build=(
-            nix run \
+          case "$NFB_VERSION" in
+            1.6.0) nix_fast_build_package_attr=nix-fast-build ;;
+            2.0.1) nix_fast_build_package_attr=nix-fast-build-gate3 ;;
+            *) echo "::error::Unsupported nix-fast-build version: $NFB_VERSION"; exit 1 ;;
+          esac
+          case "$NFB_EVAL_WORKERS" in
+            1 | 2 | 3) ;;
+            *) echo "::error::Unsupported evaluation worker count: $NFB_EVAL_WORKERS"; exit 1 ;;
+          esac
+          publish_checks=()
+          case "$NFB_PUBLISH_CHECKS" in
+            true) publish_checks=(--publish-checks) ;;
+            false) ;;
+            *) echo "::error::Unsupported Checks API setting: $NFB_PUBLISH_CHECKS"; exit 1 ;;
+          esac
+
+          monotonic_milliseconds() {
+            python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)'
+          }
+          nix_fast_build_bootstrap_started="$(monotonic_milliseconds)"
+          nix_fast_build_store_path="$(
+            nix build \
               --option builders '' \
               --option max-jobs auto \
-              ".#packages.x86_64-linux.nix-fast-build" \
-              --
-          )
-          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+              --no-link \
+              --print-out-paths \
+              ".#packages.x86_64-linux.$nix_fast_build_package_attr"
+          )"
+          nix_fast_build_bootstrap_finished="$(monotonic_milliseconds)"
+          nix_fast_build=("$nix_fast_build_store_path/bin/nix-fast-build")
+          echo "NFB_GATE3_BOOTSTRAP_COMPLETE version=$NFB_VERSION durationMilliseconds=$((nix_fast_build_bootstrap_finished - nix_fast_build_bootstrap_started))"
+          echo "NFB_GATE3_CELL version=$NFB_VERSION evalWorkers=$NFB_EVAL_WORKERS nixVersion=$(nix --version | awk '{print $3}') packageAttr=$nix_fast_build_package_attr packagePath=$nix_fast_build_store_path"
+
+          nix_fast_build_lane_started="$(monotonic_milliseconds)"
+          nix_fast_build_status=0
+          python3 .github/scripts/nix_fast_build.py "${publish_checks[@]}" \
+            --event-log "$RUNNER_TEMP/ci-linux-events.jsonl" \
+            -- \
             "${nix_fast_build[@]}" \
             --flake .#ci.linux \
             --systems 'x86_64-linux aarch64-linux' \
-            --eval-workers 3 \
+            --eval-workers "$NFB_EVAL_WORKERS" \
             --store ssh-ng://eu.nixbuild.net \
             --option builders '' \
             --option max-jobs 2 \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
-            -j 50
+            -j 50 || nix_fast_build_status=$?
+          nix_fast_build_lane_finished="$(monotonic_milliseconds)"
+          result_sha256=unavailable
+          eval_count=0
+          build_count=0
+          if [ -s "$RUNNER_TEMP/ci-linux-events.jsonl" ]; then
+            eval_count="$(jq -s '[.[] | select(.type == "EVAL")] | length' "$RUNNER_TEMP/ci-linux-events.jsonl")"
+            build_count="$(jq -s '[.[] | select(.type == "BUILD")] | length' "$RUNNER_TEMP/ci-linux-events.jsonl")"
+          fi
+          if [ -s "$RUNNER_TEMP/ci-linux-results.json" ]; then
+            if ! result_sha256="$(
+              jq -cS \
+                '[.results[] | select(.type == "EVAL" or .type == "BUILD") | {type, attr, success, outputs: (.outputs // {})}] | sort_by(.type, .attr, .success, (.outputs | tojson))' \
+                "$RUNNER_TEMP/ci-linux-results.json" \
+                | sha256sum \
+                | cut -d' ' -f1
+            )"; then
+              result_sha256=malformed
+            fi
+          fi
+          echo "NFB_GATE3_COMPLETE version=$NFB_VERSION evalWorkers=$NFB_EVAL_WORKERS status=$nix_fast_build_status durationMilliseconds=$((nix_fast_build_lane_finished - nix_fast_build_lane_started)) resultSha256=$result_sha256 evalCount=$eval_count buildCount=$build_count"
+          exit "$nix_fast_build_status"
 
       - name: Upload Linux NFB results
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-linux-results
-          path: ${{ runner.temp }}/ci-linux-results.json
+          path: |
+            ${{ runner.temp }}/ci-linux-results.json
+            ${{ runner.temp }}/ci-linux-events.jsonl
           compression-level: 0
+          if-no-files-found: ignore
           retention-days: 7
 
   darwin-builds:
     name: "Darwin"
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform != 'linux' }}
     runs-on: macos-26
     timeout-minutes: 355
     permissions:
@@ -197,7 +290,7 @@ jobs:
     needs:
       - linux-builds
       - darwin-builds
-    if: ${{ always() }}
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || inputs.platform != 'linux') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     permissions:
