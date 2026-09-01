@@ -483,7 +483,6 @@ verify_common() {
   out="$3"
 
   verify_capacity_and_filesystem
-  record_image_info
   verify_probes
   verify_fixture_closure "$drv" "$out"
   verify_roots
@@ -523,11 +522,11 @@ prepare_phase() {
     run_timed create create_image
   fi
 
+  record_image_info
   run_timed attach attach_image
   sudo chown "$USER" /nix
   chmod u+rwx /nix
   verify_capacity_and_filesystem
-  record_image_info
   guard_host_space
 }
 
