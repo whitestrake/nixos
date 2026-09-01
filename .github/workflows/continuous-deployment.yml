@@ -146,8 +146,29 @@ jobs:
           CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "1"
+          DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
+          DEPLOYMENT_SOURCE: ${{ inputs.deployment_source }}
           DEPLOY_HOST: ${{ matrix.host }}
           DEPLOY_SYSTEM: ${{ matrix.system }}
           DEPLOY_STORE_PATH: ${{ matrix.storePath }}
           DEPLOY_ROLLBACK_SCRIPT: ${{ matrix.rollbackScript }}
-        run: bash modules/deployment/scripts/cachix-github-deploy-host.sh
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "$DEPLOYMENT_SOURCE" = continuous-integration ]; then
+            current_rev="$(
+              curl -fsS \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                | jq -r '.object.sha // empty'
+            )"
+            if [ "$DEPLOYMENT_SHA" != "$current_rev" ]; then
+              echo "Skipping stale automated deployment before activation: requested=$DEPLOYMENT_SHA current=$current_rev"
+              exit 0
+            fi
+          fi
+
+          bash modules/deployment/scripts/cachix-github-deploy-host.sh

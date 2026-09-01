@@ -3,7 +3,13 @@
   lib,
   ...
 }: {
-  den.default.nixos = {...}: {
+  den.default.nixos = {
+    config,
+    pkgs,
+    ...
+  }: let
+    hostName = config.networking.hostName;
+  in {
     options.den.deploy.health = {
       requiredSystemdUnits = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -17,6 +23,11 @@
         description = "Named shell commands that must succeed after Cachix Deploy activation.";
       };
     };
+
+    config.system.extraDependencies =
+      lib.optional
+      (!(config.services.cachix-agent.enable or false))
+      (pkgs.writeText "cachix-nondeployable-${hostName}" "");
   };
 
   den.aspects.cachix-agent.nixos = {

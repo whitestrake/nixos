@@ -239,9 +239,6 @@ jobs:
 
       - name: Assemble build manifest
         shell: bash
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -293,9 +290,21 @@ jobs:
                       | select(endswith("-deploy-health-rollback-script-" + $name))
                     ]'
                 )"
+                nondeployable_matches="$(
+                  jq -cn \
+                    --arg dependencies "$dependencies" \
+                    --arg name "$name" \
+                    '[
+                      $dependencies
+                      | scan("/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+")
+                      | select(endswith("-cachix-nondeployable-" + $name))
+                    ]'
+                )"
                 rollback_count="$(jq -r 'length' <<< "$rollback_matches")"
-                if [ "$rollback_count" -gt 1 ]; then
-                  echo "::error ::Multiple host-specific rollback scripts found for $name."
+                nondeployable_count="$(jq -r 'length' <<< "$nondeployable_matches")"
+                marker_count=$((rollback_count + nondeployable_count))
+                if [ "$rollback_count" -gt 1 ] || [ "$nondeployable_count" -gt 1 ] || [ "$marker_count" -ne 1 ]; then
+                  echo "::error ::Expected exactly one deployability marker for $name (one rollback script or one nondeployable sentinel)."
                   exit 1
                 elif [ "$rollback_count" = 1 ]; then
                   rollback_script="$(jq -r '.[0]' <<< "$rollback_matches")"
@@ -416,6 +425,15 @@ jobs:
 
           source modules/deployment/scripts/cachix-pin-functions.sh
 
+          current_master_revision() {
+            curl -fsS \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_DEPLOYMENT_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+              | jq -r '.object.sha // empty'
+          }
+
           records="$(jq -ce '.' "$RUNNER_TEMP/ci-build-records/records.json")"
           pins="$(cachix_fetch_pins whitestrake)"
           built_pin_delta="$(
@@ -496,14 +514,7 @@ jobs:
             exit 0
           fi
 
-          current_rev="$(
-            curl -fsS \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GITHUB_DEPLOYMENT_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" \
-              | jq -r '.object.sha // empty'
-          )"
+          current_rev="$(current_master_revision)"
           if [ "$current_rev" != "$GITHUB_SHA" ]; then
             echo "Skipping stale CI promotion and deployment: run=$GITHUB_SHA current=$current_rev"
             exit 0
@@ -514,6 +525,11 @@ jobs:
             if [ "$(cachix_pin_path "$pins" "$pin_name")" = "$store_path" ]; then
               echo "Built state already pinned: $pin_name -> $store_path"
             else
+              current_rev="$(current_master_revision)"
+              if [ "$current_rev" != "$GITHUB_SHA" ]; then
+                echo "Skipping stale CI promotion before pin mutation: run=$GITHUB_SHA current=$current_rev"
+                exit 0
+              fi
               echo "Pinning built state: $pin_name -> $store_path"
               cachix_pin_store_path whitestrake "$pin_name" "$store_path" 3
             fi
@@ -521,6 +537,12 @@ jobs:
 
           if [ "$(jq -r '.include | length' <<< "$deployment_matrix")" = 0 ]; then
             echo "No deployable hosts changed; not dispatching continuous deployment."
+            exit 0
+          fi
+
+          current_rev="$(current_master_revision)"
+          if [ "$current_rev" != "$GITHUB_SHA" ]; then
+            echo "Skipping stale CI deployment dispatch: run=$GITHUB_SHA current=$current_rev"
             exit 0
           fi
 
