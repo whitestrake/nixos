@@ -1,0 +1,295 @@
+name: Package Report
+
+on:
+  pull_request:
+    branches: [master]
+    paths: [flake.lock]
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+concurrency:
+  group: package-report-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: "Build ${{ matrix.system }}"
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 355
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            cacheKind: ext4
+            imageSize: 32G
+            imageDir: nix-root-ci-aarch64-linux
+            cachePrefix: nix-root-ci-aarch64-linux-ext4-v1
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+            cacheKind: ext4
+            imageSize: 32G
+            imageDir: nix-root-ci-x86_64-linux
+            cachePrefix: nix-root-ci-x86_64-linux-ext4-v1
+          - system: aarch64-darwin
+            runner: macos-26
+            cacheKind: sparsebundle
+            imageSize: 64g
+            imageDir: nix-root-ci-aarch64-darwin
+            cachePrefix: nix-root-ci-aarch64-darwin-sparsebundle-v1
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.cachePrefix }}
+      NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.imageDir }}
+      NIX_ROOT_IMAGE_SIZE: ${{ matrix.imageSize }}
+      NIX_ROOT_SYSTEM: ${{ matrix.system }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+
+      - name: Resolve baseline CI records
+        id: baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          if ! jq -e \
+            --arg base "$BASE_SHA" \
+            --arg head "$HEAD_SHA" \
+            '
+              .state == "open"
+              and .base.ref == "master"
+              and .base.sha == $base
+              and .head.sha == $head
+            ' <<< "$pr_json" >/dev/null; then
+            echo "::error ::Rejecting stale, closed, or non-master package report."
+            exit 1
+          fi
+
+          runs="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/continuous-integration.yml/runs" \
+              --method GET \
+              --paginate \
+              --slurp \
+              -f branch=master \
+              -f status=success \
+              -F per_page=100
+          )"
+          run_id="$(
+            jq -r \
+              --arg sha "$BASE_SHA" \
+              '
+                [
+                  .[] | .workflow_runs[]
+                  | select(
+                      .path == ".github/workflows/continuous-integration.yml"
+                      and .status == "completed"
+                      and .conclusion == "success"
+                      and .head_branch == "master"
+                      and .head_sha == $sha
+                    )
+                ][0].id // empty
+              ' <<< "$runs"
+          )"
+          if [ -z "$run_id" ]; then
+            echo "::warning ::No successful master CI run found for baseline $BASE_SHA."
+          fi
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download baseline CI records
+        if: ${{ steps.baseline.outputs.run_id != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          run-id: ${{ steps.baseline.outputs.run_id }}
+          github-token: ${{ github.token }}
+          name: ci-build-records
+          path: ${{ runner.temp }}/ci-baseline-records
+
+      - name: Select baseline records
+        id: records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          records='[]'
+          path="$RUNNER_TEMP/ci-baseline-records/records.json"
+          if [ -f "$path" ]; then
+            records="$(
+              jq -ce \
+                --arg system "$NIX_ROOT_SYSTEM" \
+                '
+                  if type != "array"
+                  then error("baseline CI records must be an array")
+                  else [.[] | select(.system == $system)]
+                  end
+                ' "$path"
+            )"
+          else
+            echo "::warning ::No CI build records found for baseline $BASE_SHA."
+          fi
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ext4 Nix root cache
+        if: ${{ matrix.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: package-report
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Restore sparsebundle Nix root cache
+        if: ${{ matrix.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          cache-key-suffix: package-report
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount ext4 Nix root
+        if: ${{ matrix.cacheKind == 'ext4' }}
+        uses: ./.github/actions/nix-ext4-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        if: ${{ matrix.cacheKind == 'sparsebundle' }}
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+
+      - name: Build and report CI lane
+        uses: ./.github/actions/nix-root-build
+        with:
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+          package-report: true
+          baseline-records-json: ${{ steps.records.outputs.records }}
+
+      - name: Upload package reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: package-report-${{ matrix.system }}
+          path: ${{ runner.temp }}/ci-package-reports/${{ matrix.system }}
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: "Publish"
+    needs: compile
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout reporter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.BASE_SHA }}
+          persist-credentials: false
+
+      - name: Download package reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: package-report-*
+          path: package-reports
+          merge-multiple: true
+
+      - name: Render package report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 .github/scripts/flake_lock_package_report.py \
+            --diff-dir package-reports \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --output package-report.md
+
+      - name: Upload rendered package report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: package-report
+          path: package-report.md
+          compression-level: 0
+          retention-days: 7
+
+      - name: Revalidate pull request revisions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          if ! jq -e \
+            --arg base "$BASE_SHA" \
+            --arg head "$HEAD_SHA" \
+            '
+              .state == "open"
+              and .base.ref == "master"
+              and .base.sha == $base
+              and .head.sha == $head
+            ' <<< "$pr_json" >/dev/null; then
+            echo "::error ::Rejecting stale, closed, or non-master package report."
+            exit 1
+          fi
+
+      - name: Update package report comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          marker="<!-- flake-lock-package-report:comment -->"
+          comment_id="$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq \
+                "[.[][] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\")))][0].id // empty"
+          )"
+
+          if [ -n "$comment_id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              -F "body=@package-report.md" \
+              --silent
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              -F "body=@package-report.md" \
+              --silent
+          fi

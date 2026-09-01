@@ -3,8 +3,9 @@ description: "Realise a configuration lane with nix-fast-build and root its outp
 
 inputs:
   builds-json:
-    description: "Compact JSON array of build records."
-    required: true
+    description: "Optional compact JSON array of expected build records."
+    required: false
+    default: "[]"
   system:
     description: "Nix system label for telemetry and gcroot placement."
     required: true
@@ -181,24 +182,14 @@ runs:
 
         legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
 
-        expected="$(jq -ce '[.[] | {attr, kind, name, storePath}] | sort_by(.attr)' <<< "$GHCI_BUILDS_JSON")"
-        record_lines="$(jq -er '.[] | [.kind, .name, .storePath] | @tsv' <<< "$expected")"
-        while IFS=$'\t' read -r kind name store_path; do
-          case "$name" in
-            nix-fast-build | flake-input-*)
-              echo "::error ::Nix root host name is reserved: $name"
-              exit 1
-              ;;
-            "" | [-.]* | *[!A-Za-z0-9_-]*)
-              echo "::error ::unsafe Nix root host name: $name"
-              exit 1
-              ;;
-          esac
-          if ! [[ "$store_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
-            echo "::error ::unsafe Nix store path: $store_path"
-            exit 1
-          fi
-        done <<< "$record_lines"
+        expected="$(
+          jq -ce '
+            if type == "array"
+            then map({attr, kind, name, storePath}) | sort_by(.attr)
+            else error("builds-json must be an array")
+            end
+          ' <<< "$GHCI_BUILDS_JSON"
+        )"
 
         result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
         if [ "$GHCI_PACKAGE_REPORT" = true ]; then
@@ -214,7 +205,6 @@ runs:
           )"
           dix_path="${dix_paths##*$'\n'}"
           export CI_LANE_SYSTEM="$GHCI_LANE_SYSTEM"
-          export CI_CURRENT_RECORDS_JSON="$GHCI_BUILDS_JSON"
           export CI_BASELINE_RECORDS_JSON="$GHCI_BASELINE_RECORDS_JSON"
           export CI_PACKAGE_REPORT_DIR="$RUNNER_TEMP/ci-package-reports"
           export DIX_BIN="$dix_path/bin/dix"
@@ -249,12 +239,30 @@ runs:
             map({attr, kind, name, storePath}) | sort_by(.attr)
           ' < <(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")
         )"
-        if [ "$records" != "$expected" ]; then
-          echo "::error ::Successful nix-fast-build outputs do not match GHCI artifacts."
+        if [ "$expected" != '[]' ] && [ "$records" != "$expected" ]; then
+          echo "::error ::Successful nix-fast-build outputs do not match expected CI records."
           echo "Expected: $expected"
           echo "Built:    $records"
           exit 1
         fi
+
+        record_lines="$(jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$records")"
+        while IFS=$'\t' read -r kind name store_path; do
+          case "$name" in
+            nix-fast-build | flake-input-*)
+              echo "::error ::Nix root host name is reserved: $name"
+              exit 1
+              ;;
+            "" | [-.]* | *[!A-Za-z0-9_-]*)
+              echo "::error ::unsafe Nix root host name: $name"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$store_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+            echo "::error ::unsafe Nix store path: $store_path"
+            exit 1
+          fi
+        done <<< "$record_lines"
 
         nix_fast_build_paths="$(
           nix build \

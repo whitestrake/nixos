@@ -70,20 +70,15 @@ def main():
         return 0
 
     try:
-        current_records = json.loads(os.environ["CI_CURRENT_RECORDS_JSON"])
         baseline_records = json.loads(os.environ["CI_BASELINE_RECORDS_JSON"])
         system = os.environ["CI_LANE_SYSTEM"]
-        current = [
-            record
-            for record in current_records
-            if record.get("system") == system and record.get("attr") == event["attr"]
-        ]
-        if (
-            len(current) != 1
-            or not store_path(current[0].get("storePath"))
-            or current[0]["storePath"] != event["outputs"]["out"]
-        ):
-            raise ValueError("missing current record for BUILD event")
+        current = {
+            "attr": event["attr"],
+            "kind": namespace.removesuffix("s"),
+            "name": name,
+            "system": system,
+            "storePath": event["outputs"]["out"],
+        }
         baseline = [
             record
             for record in baseline_records
@@ -98,13 +93,11 @@ def main():
         ValueError,
         json.JSONDecodeError,
     ) as error:
-        print(f"invalid CI records: {error}", file=sys.stderr)
+        print(f"invalid baseline CI records: {error}", file=sys.stderr)
         return 1
 
     if len(baseline) != 1 or not store_path(baseline[0].get("storePath")):
-        write_report(
-            current[0], namespace, name, failed("baseline artifact unavailable")
-        )
+        write_report(current, namespace, name, failed("baseline artifact unavailable"))
         return 0
 
     try:
@@ -145,7 +138,7 @@ def main():
             message += f": {detail}"
     if realised is None or realised.returncode != 0:
         write_report(
-            current[0],
+            current,
             namespace,
             name,
             failed(message),
@@ -178,11 +171,11 @@ def main():
         json.JSONDecodeError,
         subprocess.TimeoutExpired,
     ):
-        write_report(current[0], namespace, name, failed("closure diff failed"))
+        write_report(current, namespace, name, failed("closure diff failed"))
         return 0
 
     write_report(
-        current[0],
+        current,
         namespace,
         name,
         {"status": "success", "message": "", "diff": package_diff},
