@@ -83,9 +83,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          # NFB 2.0.1 makes --store imply empty builders; 1.6.0 needs it explicitly.
           case "$NFB_VERSION" in
-            1.6.0) nix_fast_build_package_attr=nix-fast-build ;;
-            2.0.1) nix_fast_build_package_attr=nix-fast-build-gate3 ;;
+            1.6.0)
+              nix_fast_build_package_attr=nix-fast-build
+              nix_fast_build_store_options=(--option builders '' --option max-jobs 2)
+              ;;
+            2.0.1)
+              nix_fast_build_package_attr=nix-fast-build-gate3
+              nix_fast_build_store_options=(--option max-jobs 2)
+              ;;
             *) echo "::error::Unsupported nix-fast-build version: $NFB_VERSION"; exit 1 ;;
           esac
           case "$NFB_EVAL_WORKERS" in
@@ -126,8 +133,7 @@ jobs:
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers "$NFB_EVAL_WORKERS" \
             --store ssh-ng://eu.nixbuild.net \
-            --option builders '' \
-            --option max-jobs 2 \
+            "${nix_fast_build_store_options[@]}" \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50 || nix_fast_build_status=$?
