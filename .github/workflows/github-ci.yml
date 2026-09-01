@@ -317,7 +317,7 @@ jobs:
             jq -nce --arg label "$label" --argjson records "$records" '
               def storePath:
                 type == "string"
-                and test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$");
+                and test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$");
               def supportedSystem:
                 . == "aarch64-darwin"
                 or . == "aarch64-linux"
@@ -387,23 +387,7 @@ jobs:
               -H "Accept: application/vnd.github.raw+json" \
               "repos/$GITHUB_REPOSITORY/contents/flake.lock?ref=$SOURCE_SHA" \
           )"
-          nixpkgs_locked="$(
-            jq -ceS '
-              . as $lock
-              | ($lock.nodes.root.inputs["nixpkgs-unstable"] // error("root input nixpkgs-unstable is missing")) as $node
-              | if ($node | type) != "string" then
-                  error("root input nixpkgs-unstable must reference a node")
-                elif (($lock.nodes[$node] // null) | type) != "object" then
-                  error("nixpkgs-unstable node is missing")
-                elif (($lock.nodes[$node].locked // null) | type) != "object" then
-                  error("nixpkgs-unstable locked object is missing")
-                elif ($lock.nodes[$node].locked | length) == 0 then
-                  error("nixpkgs-unstable locked object is empty")
-                else
-                  $lock.nodes[$node].locked
-                end
-            ' <<< "$flake_lock"
-          )"
+          flake_lock="$(jq -ceS '.' <<< "$flake_lock")"
           nix_fast_build_package_sha="$(
             gh api \
               "repos/$GITHUB_REPOSITORY/contents/packages/nix-fast-build.nix?ref=$SOURCE_SHA" \
@@ -475,10 +459,11 @@ jobs:
             )"
             fingerprint="$(
               jq -cS \
-                --argjson nixpkgsLocked "$nixpkgs_locked" \
+                --argjson flakeLock "$flake_lock" \
                 --arg nixFastBuildPackage "$nix_fast_build_package_sha" \
                 '{
-                  nixpkgsUnstable: $nixpkgsLocked,
+                  flakeLock: $flakeLock,
+                  sourceRootsSchema: "flake-input-roots-v1",
                   nixFastBuildPackage: $nixFastBuildPackage,
                   records: map({attr, storePath})
                 }' \
@@ -635,6 +620,7 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
           package-report: ${{ matrix.reportPackages }}
           baseline-records-json: ${{ toJSON(matrix.baselineRecords) }}
+          retain-flake-inputs: ${{ matrix.writeCache }}
 
       - name: Upload package reports
         if: ${{ success() && matrix.reportPackages }}
