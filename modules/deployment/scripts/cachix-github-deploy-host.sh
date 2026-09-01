@@ -92,6 +92,21 @@ jq . "$deploy_spec"
 
 cachix_verify_store_paths "$cache_name" "$store_path" "$rollback_script"
 
+if [ "${DEPLOYMENT_SOURCE:-}" = continuous-integration ]; then
+  current_rev="$(
+    curl -fsS \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $GITHUB_TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+      | jq -r '.object.sha // empty'
+  )"
+  if [ "$DEPLOYMENT_SHA" != "$current_rev" ]; then
+    echo "Skipping stale automated deployment immediately before activation: requested=$DEPLOYMENT_SHA current=$current_rev"
+    exit 0
+  fi
+fi
+
 if ! cachix deploy activate "$deploy_spec"; then
   echo "Cachix deploy activate failed for $host. $deploy_pin was not updated." >&2
   exit 1

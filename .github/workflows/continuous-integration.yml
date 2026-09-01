@@ -203,6 +203,15 @@ jobs:
     permissions:
       actions: write
       contents: read
+    concurrency:
+      group: >-
+        ${{
+          github.ref == 'refs/heads/master'
+          && 'cachix-deploy-master'
+          || format('ci-all-builds-{0}', github.run_id)
+        }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: Require successful platform builds
         env:

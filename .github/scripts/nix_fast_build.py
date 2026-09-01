@@ -29,6 +29,7 @@ class GitHubChecks:
         self.repository = repository
         self.api_url = api_url.rstrip("/")
         self.disabled = not token or not repository
+        self.last_request_ambiguous = False
         self.warned = False
         if self.disabled:
             self._warn("GitHub check publication disabled: missing repository or token")
