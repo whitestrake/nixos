@@ -114,9 +114,11 @@ def main():
         return 1
 
     if len(baseline) != 1 or not store_path(baseline[0].get("storePath")):
-        raise ValueError(
-            f"expected exactly one baseline record for {system}:{event['attr']}"
+        print(
+            f"expected exactly one baseline record for {system}:{event['attr']}",
+            file=sys.stderr,
         )
+        return 1
 
     try:
         diff = subprocess.run(

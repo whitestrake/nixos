@@ -72,7 +72,7 @@ jobs:
         if: ${{ steps.context.outputs.actionable == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event_name == 'workflow_run' && steps.context.outputs.source_sha || github.ref }}
           persist-credentials: false
 
       - name: Install Nix
