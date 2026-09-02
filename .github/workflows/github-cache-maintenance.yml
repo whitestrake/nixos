@@ -1,51 +1,175 @@
-name: "GitHub Cache Maintenance"
-run-name: "GitHub Cache Maintenance"
+name: Cache Maintenance
 
 on:
   workflow_run:
-    workflows: ["GitHub CI"]
+    workflows: ["CI"]
     types: [completed]
     branches: [master]
   workflow_dispatch:
-
-permissions:
-  contents: read
+    inputs:
+      proof_store_path:
+        description: "Immutable CI build proof store path"
+        required: true
+        type: string
 
 jobs:
-  prepare:
-    name: "Prepare Cache Maintenance"
+  planning:
+    name: "Planning"
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
     outputs:
-      refresh_matrix: ${{ steps.matrix.outputs.refresh_matrix }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      source_branch: ${{ steps.context.outputs.source_branch }}
+      source_ref: ${{ steps.context.outputs.source_ref }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - name: Download GHCI top-level artifacts
-        id: download-artifacts
-        if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == github.event.repository.default_branch }}
-        continue-on-error: true
-        uses: actions/download-artifact@v8
-        with:
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-          pattern: ghci-toplevel-*
-          path: ${{ runner.temp }}/ghci-toplevel
-
-      - name: Emit refresh matrix
-        id: matrix
+      - name: Resolve source context
+        id: context
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          DOWNLOAD_OUTCOME: ${{ steps.download-artifacts.outcome }}
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SELECTED_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          systems_json='[
+          actionable=true
+          source_branch="$SELECTED_BRANCH"
+          source_ref="refs/heads/$source_branch"
+          source_sha=""
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            source_sha="$EVENT_HEAD_SHA"
+            source_branch="$EVENT_HEAD_BRANCH"
+            source_ref="refs/heads/$source_branch"
+            if [ "$EVENT_CONCLUSION" != "success" ]; then
+              actionable=false
+              echo "Skipping cache maintenance after CI conclusion $EVENT_CONCLUSION."
+            else
+              current_master="$(
+                gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                  --jq '.object.sha'
+              )"
+              if [ "$source_sha" != "$current_master" ]; then
+                actionable=false
+                echo "Skipping stale master cache source: run=$source_sha current=$current_master"
+              fi
+            fi
+          fi
+
+          {
+            printf 'actionable=%s\n' "$actionable"
+            printf 'source_branch=%s\n' "$source_branch"
+            printf 'source_ref=%s\n' "$source_ref"
+            printf 'source_sha=%s\n' "$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout workflow helpers
+        if: ${{ steps.context.outputs.actionable == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && steps.context.outputs.source_sha || github.ref }}
+          persist-credentials: false
+
+      - name: Install Nix
+        if: ${{ steps.context.outputs.actionable == 'true' }}
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+
+      - name: Resolve source proof
+        id: source
+        if: ${{ steps.context.outputs.actionable == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_PROOF_STORE_PATH: ${{ inputs.proof_store_path }}
+        run: |
+          set -euo pipefail
+
+          source modules/deployment/scripts/cachix-pin-functions.sh
+
+          proof_file="$RUNNER_TEMP/ci-build-proof.json"
+          proof_canonical_file="$RUNNER_TEMP/ci-build-proof.canonical.json"
+
+          read_and_validate_proof() {
+            local proof_path="$1"
+
+            if ! [[ "$proof_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+              echo "::error ::Invalid CI build proof store path: $proof_path"
+              return 1
+            fi
+            nix store cat --store https://whitestrake.cachix.org "$proof_path" > "$proof_file"
+            jq -ceS -f .github/scripts/ci-build-proof.jq "$proof_file" > "$proof_canonical_file"
+            mv "$proof_canonical_file" "$proof_file"
+          }
+
+          should_run=false
+          source_sha=""
+          proof_store_path=""
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            source_sha="$EVENT_HEAD_SHA"
+            pins="$(cachix_fetch_pins whitestrake)"
+            proof_store_path="$(cachix_pin_path_strict "$pins" successful-master-build)"
+            read_and_validate_proof "$proof_store_path"
+            proof_revision="$(jq -er '.revision' "$proof_file")"
+            current_master="$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                --jq '.object.sha'
+            )"
+            if [ "$source_sha" != "$current_master" ]; then
+              echo "Skipping stale master cache source after proof resolution: run=$source_sha current=$current_master"
+            elif [ "$proof_revision" != "$current_master" ]; then
+              echo "::error ::successful-master-build proof revision $proof_revision does not match current master $current_master."
+              exit 1
+            else
+              should_run=true
+            fi
+          else
+            proof_store_path="$DISPATCH_PROOF_STORE_PATH"
+            if [ -z "$proof_store_path" ]; then
+              echo "::error ::proof_store_path is required for manual cache maintenance."
+              exit 1
+            fi
+            read_and_validate_proof "$proof_store_path"
+            source_sha="$(jq -er '.revision' "$proof_file")"
+            should_run=true
+          fi
+
+          {
+            printf 'should_run=%s\n' "$should_run"
+            printf 'source_sha=%s\n' "$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Select cache lanes
+        id: matrix
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          SHOULD_RUN: ${{ steps.source.outputs.should_run }}
+          SOURCE_REF: ${{ steps.context.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          PROOF_FILE: ${{ runner.temp }}/ci-build-proof.json
+        run: |
+          set -euo pipefail
+
+          if [ "$SHOULD_RUN" != true ]; then
+            echo 'matrix=[]' >> "$GITHUB_OUTPUT"
+            echo 'CACHE_MAINTENANCE_MATRIX matrix=[]'
+            exit 0
+          fi
+
+          systems='[
             {
               "system": "aarch64-linux",
               "runner": "ubuntu-24.04-arm",
@@ -72,77 +196,34 @@ jobs:
             }
           ]'
 
-          force_all() {
-            local reason="$1"
-            jq -c --arg source "fallback" --arg reason "$reason" '
-              map(. + { source: $source, reason: $reason, buildsJson: "[]", fingerprint: "" })
-            ' <<< "$systems_json"
-          }
+          proof="$(jq -ceS -f .github/scripts/ci-build-proof.jq "$PROOF_FILE")"
+          records="$(jq -ce '.records' <<< "$proof")"
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            refresh_matrix="$(force_all "workflow_dispatch")"
-            printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=workflow_dispatch matrix=$refresh_matrix"
-            exit 0
-          fi
+          flake_lock="$(
+            gh api \
+              -H "Accept: application/vnd.github.raw+json" \
+              "repos/$GITHUB_REPOSITORY/contents/flake.lock?ref=$SOURCE_SHA"
+          )"
+          flake_lock="$(jq -ceS '.' <<< "$flake_lock")"
+          nix_fast_build_package_sha="$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/contents/packages/nix-fast-build.nix?ref=$SOURCE_SHA" \
+              --jq '.sha'
+          )"
 
-          if [ "$WORKFLOW_RUN_CONCLUSION" != "success" ] || [ "$WORKFLOW_RUN_HEAD_BRANCH" != "$DEFAULT_BRANCH" ]; then
-            printf 'refresh_matrix=[]\n' >> "$GITHUB_OUTPUT"
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=none reason=workflow_run_not_eligible matrix=[]"
-            exit 0
-          fi
-
-          if [ "$DOWNLOAD_OUTCOME" != "success" ]; then
-            refresh_matrix="$(force_all "artifact_download_failed")"
-            printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
-            echo "::warning title=GHCI artifact download failed::Refreshing all cache lanes with lane-local eval fallback."
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=artifact_download_failed matrix=$refresh_matrix"
-            exit 0
-          fi
-
-          artifact_dir="$RUNNER_TEMP/ghci-toplevel"
-          mapfile -d '' record_files < <(find "$artifact_dir" -name record.json -type f -print0 | sort -z)
-          if [ "${#record_files[@]}" -eq 0 ]; then
-            refresh_matrix="$(force_all "missing_artifacts")"
-            printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
-            echo "::warning title=GHCI artifacts missing::Refreshing all cache lanes with lane-local eval fallback."
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=missing_artifacts matrix=$refresh_matrix"
-            exit 0
-          fi
-
-          if ! records="$(jq -s -c '
-            if all(.[]; (
-              (.kind | type == "string")
-              and (.name | type == "string")
-              and (.system | type == "string")
-              and (.attr | type == "string")
-              and (.storePath | type == "string")
-            )) then
-              .
-            else
-              error("invalid GHCI top-level artifact schema")
-            end
-          ' "${record_files[@]}")"; then
-            refresh_matrix="$(force_all "artifact_parse_failed")"
-            printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
-            echo "::warning title=GHCI artifact parse failed::Refreshing all cache lanes with lane-local eval fallback."
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=artifact_parse_failed matrix=$refresh_matrix"
-            exit 0
-          fi
-
-          if ! cache_keys="$(
-            gh cache list \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$GITHUB_REF" \
-              --limit 100 \
-              --json key \
-              --jq '.[].key'
-          )"; then
-            refresh_matrix="$(force_all "cache_list_failed")"
-            printf 'refresh_matrix=%s\n' "$refresh_matrix" >> "$GITHUB_OUTPUT"
-            echo "::warning title=GitHub cache list failed::Refreshing all cache lanes with lane-local eval fallback."
-            echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=fallback reason=cache_list_failed matrix=$refresh_matrix"
-            exit 0
+          cache_keys=""
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            if ! cache_keys="$(
+              gh api "repos/$GITHUB_REPOSITORY/actions/caches" \
+                --method GET \
+                --paginate \
+                -f ref="$SOURCE_REF" \
+                -F per_page=100 \
+                --jq '.actions_caches[].key'
+            )"; then
+              echo "::warning ::GitHub cache listing failed; refreshing every cache lane."
+              cache_keys=""
+            fi
           fi
 
           has_cache_prefix() {
@@ -154,74 +235,78 @@ jobs:
             return 1
           }
 
-          refresh_entries="[]"
+          matrix='[]'
           while IFS= read -r lane; do
             system="$(jq -r '.system' <<< "$lane")"
             cache_prefix="$(jq -r '.cachePrefix' <<< "$lane")"
-            builds_json="$(jq -c --arg system "$system" '[.[] | select(.system == $system)]' <<< "$records")"
-            if [ "$builds_json" = "[]" ]; then
-              echo "NIX_ROOT_CACHE_REFRESH_DECISION system=$system cachePrefix=$cache_prefix cacheHit=false refresh=false fingerprint= source=artifact"
-              continue
-            fi
-
+            system_records="$(
+              jq -c --arg system "$system" '[.[] | select(.system == $system)]' \
+                <<< "$records"
+            )"
             fingerprint="$(
-              jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$builds_json" \
-                | sort \
+              jq -cS \
+                --argjson flakeLock "$flake_lock" \
+                --arg nixFastBuildPackage "$nix_fast_build_package_sha" \
+                '{
+                  flakeLock: $flakeLock,
+                  sourceRootsSchema: "flake-input-roots-v1",
+                  nixFastBuildPackage: $nixFastBuildPackage,
+                  records: map({attr, storePath})
+                }' \
+                <<< "$system_records" \
                 | sha256sum \
                 | cut -d " " -f1
             )"
-            fingerprint_prefix="$cache_prefix-fp-$fingerprint"
-            cache_hit=false
-            refresh=true
-            if has_cache_prefix "$fingerprint_prefix"; then
-              cache_hit=true
-              refresh=false
-            fi
 
-            echo "NIX_ROOT_CACHE_REFRESH_DECISION system=$system cachePrefix=$cache_prefix cacheHit=$cache_hit refresh=$refresh fingerprint=$fingerprint source=artifact"
-
-            if [ "$refresh" = "true" ]; then
-              refresh_entries="$(
-                jq -c \
-                  --argjson entries "$refresh_entries" \
+            if [ "$EVENT_NAME" = "workflow_dispatch" ] \
+              || ! has_cache_prefix "$cache_prefix-fp-$fingerprint"; then
+              matrix="$(
+                jq -cn \
+                  --argjson matrix "$matrix" \
                   --argjson lane "$lane" \
-                  --arg buildsJson "$builds_json" \
+                  --argjson records "$system_records" \
                   --arg fingerprint "$fingerprint" \
-                  '$entries + [($lane + { source: "artifact", buildsJson: $buildsJson, fingerprint: $fingerprint })]' \
-                  <<< '{}'
+                  '
+                    $matrix + [
+                      $lane + {
+                        records: $records,
+                        fingerprint: $fingerprint
+                      }
+                    ]
+                  '
               )"
             fi
-          done < <(jq -c '.[]' <<< "$systems_json")
+          done < <(jq -c '.[]' <<< "$systems")
 
-          printf 'refresh_matrix=%s\n' "$refresh_entries" >> "$GITHUB_OUTPUT"
-          echo "NIX_ROOT_CACHE_REFRESH_MATRIX source=artifact matrix=$refresh_entries"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          echo "CACHE_MAINTENANCE_MATRIX matrix=$matrix"
 
-  maintenance:
-    name: "Cache ${{ matrix.system }}"
-    needs: prepare
-    if: ${{ needs.prepare.outputs.refresh_matrix != '[]' }}
+  rotate:
+    name: "Rotate ${{ matrix.system }}"
+    needs: planning
+    if: ${{ needs.planning.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 355
     permissions:
       actions: write
       contents: read
     concurrency:
-      group: github-cache-lane-${{ matrix.system }}-${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.workflow_run.head_branch }}
+      group: github-cache-lane-${{ matrix.system }}-${{ needs.planning.outputs.source_ref }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.prepare.outputs.refresh_matrix) }}
+        include: ${{ fromJSON(needs.planning.outputs.matrix) }}
     env:
       NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.cachePrefix }}
       NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.imageDir }}
       NIX_ROOT_IMAGE_SIZE: ${{ matrix.imageSize }}
       NIX_ROOT_SYSTEM: ${{ matrix.system }}
     steps:
-      - name: Checkout repository
+      - name: Checkout source revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+          ref: ${{ needs.planning.outputs.source_sha }}
           persist-credentials: false
 
       - name: Restore ext4 Nix root cache
@@ -229,7 +314,6 @@ jobs:
         uses: ./.github/actions/nix-ext4-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          cache-key-suffix: writer
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -238,7 +322,6 @@ jobs:
         uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          cache-key-suffix: writer
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -262,137 +345,88 @@ jobs:
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
 
-      - name: Evaluate fallback cache lane
-        id: fallback
-        if: ${{ matrix.source != 'artifact' }}
+      - name: Select cache key
+        id: cache
         shell: bash
         run: |
           set -euo pipefail
 
-          # shellcheck disable=SC2016
-          builds_json="$(
-            nix eval --impure --json --expr '
-              let
-                targetSystem = builtins.getEnv "NIX_ROOT_SYSTEM";
-                flake = builtins.getFlake (toString ./.);
-                mkNixos = name: cfg: {
-                  inherit name cfg;
-                  kind = "nixosConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#nixosConfigurations.${name}.config.system.build.toplevel";
-                };
-                mkDarwin = name: cfg: {
-                  inherit name cfg;
-                  kind = "darwinConfiguration";
-                  system = cfg.pkgs.stdenv.hostPlatform.system;
-                  attr = ".#darwinConfigurations.${name}.config.system.build.toplevel";
-                };
-                records =
-                  builtins.attrValues (builtins.mapAttrs mkNixos (flake.nixosConfigurations or {}))
-                  ++ builtins.attrValues (builtins.mapAttrs mkDarwin (flake.darwinConfigurations or {}));
-                selected = builtins.filter (record: record.system == targetSystem) records;
-              in
-                map (record: {
-                  inherit (record) name kind system attr;
-                  storePath = toString record.cfg.config.system.build.toplevel;
-                }) selected
-            '
-          )"
-          fingerprint="$(
-            jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$builds_json" \
-              | sort \
-              | shasum -a 256 \
-              | cut -d " " -f1
-          )"
+          printf 'key=%s-fp-%s-%s-%s\n' \
+            "$NIX_ROOT_CACHE_KEY_PREFIX" \
+            "${{ matrix.fingerprint }}" \
+            "$GITHUB_RUN_ID" \
+            "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-          {
-            printf 'builds_json=%s\n' "$builds_json"
-            printf 'fingerprint=%s\n' "$fingerprint"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "NIX_ROOT_CACHE_REFRESH_DECISION system=$NIX_ROOT_SYSTEM cachePrefix=$NIX_ROOT_CACHE_KEY_PREFIX cacheHit=false refresh=true fingerprint=$fingerprint source=fallback"
-
-      - name: Select cache lane inputs
-        id: lane
-        shell: bash
-        env:
-          MATRIX_SOURCE: ${{ matrix.source }}
-          MATRIX_BUILDS_JSON: ${{ matrix.buildsJson }}
-          MATRIX_FINGERPRINT: ${{ matrix.fingerprint }}
-          FALLBACK_BUILDS_JSON: ${{ steps.fallback.outputs.builds_json }}
-          FALLBACK_FINGERPRINT: ${{ steps.fallback.outputs.fingerprint }}
-        run: |
-          set -euo pipefail
-
-          if [ "$MATRIX_SOURCE" = "artifact" ]; then
-            builds_json="$MATRIX_BUILDS_JSON"
-            fingerprint="$MATRIX_FINGERPRINT"
-          else
-            builds_json="$FALLBACK_BUILDS_JSON"
-            fingerprint="$FALLBACK_FINGERPRINT"
-          fi
-
-          {
-            printf 'builds_json=%s\n' "$builds_json"
-            printf 'fingerprint=%s\n' "$fingerprint"
-            printf 'cache_key=%s-fp-%s-%s-%s\n' "$NIX_ROOT_CACHE_KEY_PREFIX" "$fingerprint" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "GHCI_MATRIX $NIX_ROOT_SYSTEM=$builds_json"
-
-      - name: Build and root GHCI lane
+      - name: Build and root CI lane
         uses: ./.github/actions/nix-root-build
         with:
-          builds-json: ${{ steps.lane.outputs.builds_json }}
+          builds-json: ${{ toJSON(matrix.records) }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
+      - name: Revalidate master cache source
+        if: ${{ needs.planning.outputs.source_branch == 'master' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.planning.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          current_master="$(
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+              --jq '.object.sha'
+          )"
+          if [ "$SOURCE_SHA" != "$current_master" ]; then
+            echo "::error ::Rejecting stale master cache source before save: run=$SOURCE_SHA current=$current_master"
+            exit 1
+          fi
+
       - name: Pack ext4 Nix root
-        if: ${{ success() && matrix.cacheKind == 'ext4' }}
+        if: ${{ matrix.cacheKind == 'ext4' }}
         uses: ./.github/actions/nix-ext4-pack
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Pack sparsebundle Nix root
-        if: ${{ success() && matrix.cacheKind == 'sparsebundle' }}
+        if: ${{ matrix.cacheKind == 'sparsebundle' }}
         uses: ./.github/actions/nix-sparsebundle-pack
         with:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Start cache save timer
-        if: success()
         shell: bash
         run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Save ext4 Nix root cache
-        if: ${{ success() && matrix.cacheKind == 'ext4' }}
+        if: ${{ matrix.cacheKind == 'ext4' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/${{ matrix.imageDir }}/nix-root.ext4.zst
-          key: ${{ steps.lane.outputs.cache_key }}
+          key: ${{ steps.cache.outputs.key }}
 
       - name: Save sparsebundle Nix root cache
-        if: ${{ success() && matrix.cacheKind == 'sparsebundle' }}
+        if: ${{ matrix.cacheKind == 'sparsebundle' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/${{ matrix.imageDir }}/nix-root.sparsebundle
-          key: ${{ steps.lane.outputs.cache_key }}
+          key: ${{ steps.cache.outputs.key }}
 
       - name: Report cache save
-        if: success()
         uses: ./.github/actions/github-cache-save-report
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          cache-key: ${{ steps.lane.outputs.cache_key }}
+          cache-key: ${{ steps.cache.outputs.key }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Prune cache lane
-        if: success()
         uses: ./.github/actions/github-cache-prune
         env:
           GH_TOKEN: ${{ github.token }}
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          keep-cache-key: ${{ steps.lane.outputs.cache_key }}
+          keep-cache-key: ${{ steps.cache.outputs.key }}
           system: ${{ env.NIX_ROOT_SYSTEM }}

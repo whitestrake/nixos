@@ -14,8 +14,14 @@ cachix_with_retry() {
 }
 
 cachix_fetch_pins() {
+  local auth_header=()
+
+  if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then
+    auth_header=(-H "Authorization: Bearer $CACHIX_AUTH_TOKEN")
+  fi
+
   cachix_with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
+    "${auth_header[@]}" \
     "https://app.cachix.org/api/v1/cache/$1/pin" \
     | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
 }
@@ -24,6 +30,32 @@ cachix_pin_path() {
   jq -r --arg name "$2" \
     'map(select(.name == $name))[0].lastRevision.storePath // ""' \
     <<< "$1"
+}
+
+cachix_pin_path_strict() {
+  local pins="$1"
+  local name="$2"
+  local store_path
+
+  store_path="$(
+    jq -er --arg name "$name" '
+      [ .[] | select(.name == $name) ] as $matches
+      | if ($matches | length) != 1 then
+          error("expected exactly one \($name) pin")
+        elif (($matches[0].lastRevision.storePath // null) | type) != "string" then
+          error("\($name) pin has no last revision store path")
+        else
+          $matches[0].lastRevision.storePath
+        end
+    ' <<< "$pins"
+  )"
+
+  if ! [[ "$store_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+    echo "ERROR: $name pin has an invalid last revision store path: $store_path" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$store_path"
 }
 
 cachix_pin_payload() {
@@ -35,12 +67,26 @@ cachix_pin_payload() {
 }
 
 cachix_pin_store_path() {
-  cachix_with_retry curl -fsS \
+  local pins
+
+  if curl -fsS \
     -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
     -H "Content-Type: application/json" \
     --data "$(cachix_pin_payload "$2" "$3" "$4")" \
     "https://app.cachix.org/api/v1/cache/$1/pin" \
-    >/dev/null
+    >/dev/null; then
+    return 0
+  fi
+
+  echo "Cachix pin POST failed; reconciling the requested pin once." >&2
+  pins="$(cachix_fetch_pins "$1")" || return 1
+  if [ "$(cachix_pin_path "$pins" "$2")" = "$3" ]; then
+    echo "Cachix pin reconciled after an ambiguous POST failure: $2 -> $3" >&2
+    return 0
+  fi
+
+  echo "Cachix pin POST failed and the requested pin was not observed: $2 -> $3" >&2
+  return 1
 }
 
 cachix_verify_store_paths() {
@@ -52,25 +98,4 @@ cachix_verify_store_paths() {
   fi
 
   cachix_with_retry nix path-info --store "https://$cache_name.cachix.org" "$@" >/dev/null
-}
-
-cachix_verify_store_paths_http() {
-  local cache_name="$1"
-  local narinfo narinfo_store_path store_hash store_path
-  shift
-
-  for store_path; do
-    if [[ ! "$store_path" =~ ^/nix/store/([0-9abcdfghijklmnpqrsvwxyz]{32})-.+$ ]]; then
-      echo "Invalid Nix store path: $store_path" >&2
-      return 1
-    fi
-    store_hash="${BASH_REMATCH[1]}"
-    narinfo="$(cachix_with_retry curl -fsS "https://$cache_name.cachix.org/$store_hash.narinfo")" ||
-      return 1
-    narinfo_store_path="$(sed -n 's/^StorePath: //p' <<< "$narinfo")"
-    if [ "$narinfo_store_path" != "$store_path" ]; then
-      echo "Cachix narinfo StorePath mismatch for $store_path: ${narinfo_store_path:-[missing]}" >&2
-      return 1
-    fi
-  done
 }

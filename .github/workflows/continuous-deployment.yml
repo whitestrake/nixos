@@ -1,4 +1,4 @@
-name: "Continuous Deployment"
+name: "CD"
 run-name: >-
   ${{
     inputs.deployment_source == 'continuous-integration'
@@ -7,6 +7,25 @@ run-name: >-
   }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      deployment_sha:
+        description: "Commit SHA to deploy."
+        required: true
+        type: string
+      deployment_source:
+        description: "Deployment source label."
+        required: true
+        type: string
+      matrix:
+        description: "Deployment matrix JSON."
+        required: true
+        type: string
+      force:
+        description: "Redeploy even when deployed-host-* already matches the target."
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       deployment_sha:
@@ -42,7 +61,7 @@ permissions:
 
 jobs:
   preflight:
-    name: "Check deployment revision"
+    name: "Preflight"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -54,7 +73,7 @@ jobs:
         env:
           DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
           DEPLOYMENT_SOURCE: ${{ inputs.deployment_source }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -78,12 +97,8 @@ jobs:
           fi
 
           current_rev="$(
-            curl -fsS \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
-              | jq -er '.object.sha // empty'
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+              --jq '.object.sha'
           )"
 
           if [ "$DEPLOYMENT_SHA" != "$current_rev" ]; then
@@ -127,8 +142,11 @@ jobs:
           CACHIX_DEPLOY_FORCE: ${{ inputs.force }}
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-host
           CACHIX_DEPLOYED_PIN_KEEP_REVISIONS: "1"
+          DEPLOYMENT_SHA: ${{ inputs.deployment_sha }}
+          DEPLOYMENT_SOURCE: ${{ inputs.deployment_source }}
           DEPLOY_HOST: ${{ matrix.host }}
           DEPLOY_SYSTEM: ${{ matrix.system }}
           DEPLOY_STORE_PATH: ${{ matrix.storePath }}
           DEPLOY_ROLLBACK_SCRIPT: ${{ matrix.rollbackScript }}
+          GH_TOKEN: ${{ github.token }}
         run: bash modules/deployment/scripts/cachix-github-deploy-host.sh

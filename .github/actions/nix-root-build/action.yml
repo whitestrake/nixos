@@ -1,14 +1,30 @@
 name: "Build Nix root"
-description: "Build configurations and root the outputs in a Nix root."
+description: "Realise a configuration lane with nix-fast-build and root its outputs."
 
 inputs:
   builds-json:
-    description: "Compact JSON array of build records with name and attr fields."
-    required: true
+    description: "Optional compact JSON array of expected build records."
+    required: false
+    default: "[]"
   system:
     description: "Nix system label for telemetry and gcroot placement."
     required: true
-
+  package-report:
+    description: "Generate package reports from successful nix-fast-build events."
+    required: false
+    default: "false"
+  baseline-records-json:
+    description: "Compact JSON array of baseline build records."
+    required: false
+    default: "[]"
+  proof-store-path:
+    description: "Immutable accepted CI build proof store path."
+    required: false
+    default: ""
+  proof-revision:
+    description: "Revision recorded by the accepted CI build proof."
+    required: false
+    default: ""
 runs:
   using: "composite"
   steps:
@@ -17,6 +33,10 @@ runs:
       env:
         GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
+        GHCI_PACKAGE_REPORT: ${{ inputs.package-report }}
+        GHCI_BASELINE_RECORDS_JSON: ${{ inputs.baseline-records-json }}
+        GHCI_PROOF_STORE_PATH: ${{ inputs.proof-store-path }}
+        GHCI_PROOF_REVISION: ${{ inputs.proof-revision }}
       run: |
         set -Eeuo pipefail
 
@@ -35,10 +55,57 @@ runs:
         }
 
         run_with_timeout() {
-          perl -e 'alarm shift; exec @ARGV' "$@"
+          perl -MErrno=EPERM -MPOSIX=:sys_wait_h,setpgid -e '
+            $timeout = shift;
+            $pid = fork;
+            die "fork failed: $!" unless defined $pid;
+            if ($pid == 0) {
+              setpgid(0, 0);
+              exec @ARGV;
+              die "exec failed: $!";
+            }
+            setpgid($pid, $pid);
+            $terminating = 0;
+            $child_reaped = 0;
+            sub signal_child_group {
+              ($signal) = @_;
+              return 1 if kill $signal, -$pid;
+              return $! == EPERM;
+            }
+            sub reap_child {
+              return if $child_reaped;
+              $child_reaped = waitpid($pid, WNOHANG) == $pid;
+            }
+            sub terminate_child {
+              ($signal, $exit_status) = @_;
+              return if $terminating++;
+              signal_child_group($signal);
+              for (1 .. 20) {
+                reap_child();
+                last unless signal_child_group(0);
+                select undef, undef, undef, 0.1;
+              }
+              signal_child_group("KILL") if signal_child_group(0);
+              waitpid($pid, 0) unless $child_reaped;
+              exit $exit_status;
+            }
+            $SIG{ALRM} = sub {
+              terminate_child("TERM", 124);
+            };
+            $SIG{INT} = sub { terminate_child("INT", 130); };
+            $SIG{TERM} = sub { terminate_child("TERM", 143); };
+            alarm $timeout;
+            waitpid($pid, 0);
+            $status = $?;
+            alarm 0;
+            exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+          ' "$@"
         }
 
+        staged_links=()
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
 
         : "${NIX_ROOT_BUILD_TIMEOUT_SECONDS:=1800}"
         if ! [[ "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
@@ -52,27 +119,267 @@ runs:
             exit 1
             ;;
         esac
+        case "$GHCI_PACKAGE_REPORT" in
+          true | false) ;;
+          *)
+            echo "::error ::package-report must be true or false, got: $GHCI_PACKAGE_REPORT"
+            exit 1
+            ;;
+        esac
+        root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
+        cached_nix_fast_build="$root_dir/nix-fast-build"
+        nix_fast_build_fallback=(nix run --option builders '' --option max-jobs auto ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build" --)
+        nix_fast_build=()
+        if [ -d "$cached_nix_fast_build" ]; then
+          cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
+          if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
+            nix_fast_build=("$cached_nix_fast_build")
+            echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
+          fi
+        fi
+        if [ "${#nix_fast_build[@]}" -eq 0 ]; then
+          nix_fast_build=("${nix_fast_build_fallback[@]}")
+          echo "NIX_FAST_BUILD_SOURCE source=nix-run"
+        fi
 
         legacy_root_dir="/nix/var/nix/gcroots/ghci-cache-lanes/$GHCI_LANE_SYSTEM"
-        root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
-        rm -rf "$legacy_root_dir"
-        rm -rf "$root_dir"
-        mkdir -p "$root_dir"
 
-        jq -r '.[] | [.name, .attr] | @tsv' <<< "$GHCI_BUILDS_JSON" |
-          while IFS=$'\t' read -r name attr; do
-            started="$SECONDS"
-            out_paths="$(run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" nix build \
+        expected="$(
+          jq -ce '
+            if type == "array"
+            then map({attr, storePath}) | sort_by(.attr)
+            else error("builds-json must be an array")
+            end
+          ' <<< "$GHCI_BUILDS_JSON"
+        )"
+
+        result_file="$RUNNER_TEMP/cache-$GHCI_LANE_SYSTEM-results.json"
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          dix_paths="$(
+            nix build \
               --accept-flake-config \
-              --print-build-logs \
+              --inputs-from . \
+              --option builders '' \
+              --option max-jobs 0 \
               --print-out-paths \
               --no-link \
-              "$attr")"
-            duration="$((SECONDS - started))"
+              nixpkgs-unstable#dix
+          )"
+          dix_path="${dix_paths##*$'\n'}"
+          export CI_LANE_SYSTEM="$GHCI_LANE_SYSTEM"
+          export CI_BASELINE_RECORDS_JSON="$GHCI_BASELINE_RECORDS_JSON"
+          export CI_PROOF_STORE_PATH="$GHCI_PROOF_STORE_PATH"
+          export CI_PROOF_REVISION="$GHCI_PROOF_REVISION"
+          export CI_PACKAGE_REPORT_DIR="$RUNNER_TEMP/ci-package-reports"
+          export DIX_BIN="$dix_path/bin/dix"
 
-            printf '%s\n' "$out_paths"
-            out_path="${out_paths##*$'\n'}"
-            ln -sfn "$out_path" "$root_dir/$name"
+          baseline_paths_json="$(
+            jq -ce '
+              if type != "array" or length == 0 then
+                error("baseline records must be a non-empty array")
+              elif any(.[]; type != "object" or (.storePath | type) != "string" or
+                (.storePath | test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not)) then
+                error("baseline records contain an unsafe store path")
+              else
+                map(.storePath)
+              end
+            ' <<< "$GHCI_BASELINE_RECORDS_JSON"
+          )"
+          baseline_paths=()
+          baseline_path_lines="$(jq -er '.[]' <<< "$baseline_paths_json")"
+          while IFS= read -r store_path; do
+            baseline_paths+=("$store_path")
+          done <<< "$baseline_path_lines"
+          if ! run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
+            nix-store --realise \
+              --option builders '' \
+              --option max-jobs 0 \
+              "${baseline_paths[@]}"; then
+            echo "::error ::Accepted baseline closures could not be realised."
+            exit 1
+          fi
+        fi
 
-            echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM name=$name attr=$attr outPath=$out_path gcroot=$root_dir/$name durationSeconds=$duration"
+        started="$SECONDS"
+        nix_fast_build_command=("${nix_fast_build[@]}")
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          nix_fast_build_command=(
+            python3
+            .github/scripts/nix_fast_build.py
+            --build-hook
+            .github/scripts/nix_fast_build_package_report.py
+            --
+            "${nix_fast_build_command[@]}"
+          )
+        fi
+        run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
+          "${nix_fast_build_command[@]}" \
+          --flake ".#ci.$GHCI_LANE_SYSTEM" \
+          --systems "$GHCI_LANE_SYSTEM" \
+          --option builders '' \
+          --option max-jobs auto \
+          --retries 2 \
+          --no-nom \
+          --no-link \
+          --result-file "$result_file" \
+          -j 50
+
+        records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
+        comparable_records="$(jq -ce 'map({attr, storePath}) | sort_by(.attr)' <<< "$records")"
+        if [ "$expected" != '[]' ] && [ "$comparable_records" != "$expected" ]; then
+          echo "::error ::Successful nix-fast-build outputs do not match expected CI records."
+          echo "Expected: $expected"
+          echo "Built:    $comparable_records"
+          exit 1
+        fi
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          exit 0
+        fi
+
+        record_lines="$(jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$records")"
+        while IFS=$'\t' read -r kind name store_path; do
+          case "$name" in
+            nix-fast-build | flake-input-*)
+              echo "::error ::Nix root host name is reserved: $name"
+              exit 1
+              ;;
+            "" | [-.]* | *[!A-Za-z0-9_-]*)
+              echo "::error ::unsafe Nix root host name: $name"
+              exit 1
+              ;;
+          esac
+          if ! [[ "$store_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+            echo "::error ::unsafe Nix store path: $store_path"
+            exit 1
+          fi
+        done <<< "$record_lines"
+
+        nix_fast_build_paths="$(
+          nix build \
+            --accept-flake-config \
+            --option builders '' \
+            --option max-jobs auto \
+            --print-out-paths \
+            --no-link \
+            ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build"
+        )"
+        nix_fast_build_path="${nix_fast_build_paths##*$'\n'}"
+        nix_fast_build_bin="$nix_fast_build_path/bin/nix-fast-build"
+        if [ ! -x "$nix_fast_build_bin" ]; then
+          echo "::error ::Realised nix-fast-build is not executable: $nix_fast_build_bin"
+          exit 1
+        fi
+        if ! "$nix_fast_build_bin" --help >/dev/null; then
+          echo "::error ::Realised nix-fast-build failed its --help preflight: $nix_fast_build_bin"
+          exit 1
+        fi
+
+        flake_input_paths=()
+        archive_started="$SECONDS"
+        archive_json="$(nix flake archive --json path:.)"
+        flake_input_paths_json="$(
+          jq -ce '
+            [.. | objects | select(has("path")) | .path]
+            | if length == 0 then
+                error("flake archive contains no paths")
+              elif any(.[]; type != "string") then
+                error("flake archive contains a non-string path")
+              elif any(.[]; test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not) then
+                error("flake archive contains an unsafe store path")
+              else
+                sort | unique
+              end
+          ' <<< "$archive_json"
+        )"
+        flake_input_path_lines="$(jq -er '.[]' <<< "$flake_input_paths_json")"
+        while IFS= read -r store_path; do
+          flake_input_paths+=("$store_path")
+        done <<< "$flake_input_path_lines"
+        flake_input_path_info="$(nix path-info --json --json-format 1 "${flake_input_paths[@]}")"
+        flake_input_nar_bytes="$(
+          jq -er --argjson expectedPaths "$flake_input_paths_json" '
+            if type != "object" or (keys | sort) != $expectedPaths then
+              error("flake input path info does not match archived paths")
+            elif any(.[]; (.narSize | type) != "number") then
+              error("flake input path info is missing NAR sizes")
+            else
+              [.[] | .narSize] | add
+            end
+          ' <<< "$flake_input_path_info"
+        )"
+        echo "NIX_FLAKE_ARCHIVE_COMPLETE system=$GHCI_LANE_SYSTEM durationSeconds=$((SECONDS - archive_started)) pathCount=${#flake_input_paths[@]} narBytes=$flake_input_nar_bytes"
+
+        mkdir -p "$root_dir"
+        staging_root_prefix="$root_dir/.nix-root-${GHCI_LANE_SYSTEM}-$$"
+        staged_names=()
+
+        while IFS=$'\t' read -r kind name store_path; do
+          staged_path="$staging_root_prefix.$name"
+          ln -s "$store_path" "$staged_path"
+          staged_links+=("$staged_path")
+          staged_names+=("$name")
+          echo "GHCI_WRITER_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM kind=$kind name=$name outPath=$store_path gcroot=$root_dir/$name"
+        done <<< "$record_lines"
+        staged_nix_fast_build="$staging_root_prefix.nix-fast-build"
+        ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
+        staged_links+=("$staged_nix_fast_build")
+        staged_names+=("nix-fast-build")
+        for store_path in "${flake_input_paths[@]}"; do
+          store_name="${store_path##*/}"
+          store_hash="${store_name%%-*}"
+          name="flake-input-$store_hash"
+          staged_path="$staging_root_prefix.$name"
+          ln -s "$store_path" "$staged_path"
+          staged_links+=("$staged_path")
+          staged_names+=("$name")
+        done
+
+        stale_names=()
+        for old_link in "$root_dir"/*; do
+          [ -L "$old_link" ] || continue
+          old_name="${old_link##*/}"
+          if ! grep -Fqx -- "$old_name" <(printf '%s\n' "${staged_names[@]}"); then
+            stale_names+=("$old_name")
+          fi
+        done
+
+        root_transaction_started="$SECONDS"
+        for index in "${!staged_names[@]}"; do
+          name="${staged_names[$index]}"
+          staged_path="${staged_links[$index]}"
+          target="$root_dir/$name"
+          if [ -e "$target" ] && [ ! -L "$target" ]; then
+            echo "::error ::Refusing to replace non-symlink Nix root entry $target"
+            exit 1
+          fi
+          rm -f "$target"
+          mv -f "$staged_path" "$target"
+        done
+
+        if [ "${#stale_names[@]}" -gt 0 ]; then
+          for name in "${stale_names[@]}"; do
+            target="$root_dir/$name"
+            if [ ! -L "$target" ]; then
+              echo "::error ::Nix root entry changed during transaction: $target"
+              exit 1
+            fi
+            rm -f "$target"
+            echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$name"
           done
+        fi
+
+        if [ -d "$legacy_root_dir" ]; then
+          for old_link in "$legacy_root_dir"/* "$legacy_root_dir"/.[!.]* "$legacy_root_dir"/..?*; do
+            [ -L "$old_link" ] || continue
+            rm -f "$old_link"
+          done
+          rmdir "$legacy_root_dir" 2>/dev/null || echo "::warning ::Leaving legacy Nix root at $legacy_root_dir"
+        fi
+
+        for store_path in "${flake_input_paths[@]}"; do
+          store_name="${store_path##*/}"
+          store_hash="${store_name%%-*}"
+          echo "NIX_FLAKE_INPUT_ROOT system=$GHCI_LANE_SYSTEM path=$store_path gcroot=$root_dir/flake-input-$store_hash"
+        done
+        echo "NIX_ROOT_TRANSACTION_COMPLETE system=$GHCI_LANE_SYSTEM desiredCount=${#staged_names[@]} staleCount=${#stale_names[@]} durationSeconds=$((SECONDS - root_transaction_started))"
+        echo "NIX_FAST_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM outPath=$nix_fast_build_path gcroot=$root_dir/nix-fast-build durationSeconds=$((SECONDS - started))"

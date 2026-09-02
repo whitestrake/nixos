@@ -3,7 +3,10 @@
   inputs,
   ...
 }: {
-  flake-file.inputs.nix-mcp.url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
+  flake-file.inputs.nix-mcp = {
+    url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
+    inputs.nixpkgs.follows = "nixpkgs-unstable";
+  };
 
   den.aspects.dev-tools = {
     os = {pkgs, ...}: {

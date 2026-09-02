@@ -41,7 +41,10 @@
       url = "github:whitestrake/nix-amp";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nix-mcp.url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
+    nix-mcp = {
+      url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
     nixos-wsl = {
       url = "github:nix-community/NixOS-WSL/main";
       inputs.nixpkgs.follows = "nixpkgs";
