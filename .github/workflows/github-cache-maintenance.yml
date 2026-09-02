@@ -21,17 +21,62 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      source_branch: ${{ steps.source.outputs.source_branch }}
-      source_ref: ${{ steps.source.outputs.source_ref }}
-      source_sha: ${{ steps.source.outputs.source_sha }}
+      source_branch: ${{ steps.context.outputs.source_branch }}
+      source_ref: ${{ steps.context.outputs.source_ref }}
+      source_sha: ${{ steps.source.outputs.source_sha || steps.context.outputs.source_sha }}
     steps:
+      - name: Resolve source context
+        id: context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SELECTED_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          actionable=true
+          source_branch="$SELECTED_BRANCH"
+          source_ref="refs/heads/$source_branch"
+          source_sha=""
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            source_sha="$EVENT_HEAD_SHA"
+            source_branch="$EVENT_HEAD_BRANCH"
+            source_ref="refs/heads/$source_branch"
+            if [ "$EVENT_CONCLUSION" != "success" ]; then
+              actionable=false
+              echo "Skipping cache maintenance after CI conclusion $EVENT_CONCLUSION."
+            else
+              current_master="$(
+                gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                  --jq '.object.sha'
+              )"
+              if [ "$source_sha" != "$current_master" ]; then
+                actionable=false
+                echo "Skipping stale master cache source: run=$source_sha current=$current_master"
+              fi
+            fi
+          fi
+
+          {
+            printf 'actionable=%s\n' "$actionable"
+            printf 'source_branch=%s\n' "$source_branch"
+            printf 'source_ref=%s\n' "$source_ref"
+            printf 'source_sha=%s\n' "$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout workflow helpers
+        if: ${{ steps.context.outputs.actionable == 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.ref }}
           persist-credentials: false
 
       - name: Install Nix
+        if: ${{ steps.context.outputs.actionable == 'true' }}
         uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
@@ -41,6 +86,7 @@ jobs:
 
       - name: Resolve source proof
         id: source
+        if: ${{ steps.context.outputs.actionable == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
