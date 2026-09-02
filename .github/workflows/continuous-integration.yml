@@ -240,6 +240,13 @@ jobs:
           extra-nix-conf: |
             max-jobs = auto
 
+      - name: Configure Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
       - name: Assemble build manifest
         shell: bash
         env:
