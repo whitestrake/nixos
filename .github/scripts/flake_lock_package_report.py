@@ -1,16 +1,36 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
 COMMENT_MARKER = "<!-- flake-lock-package-report:comment -->"
+STORE_PATH = re.compile(
+    r"^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$"
+)
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 
 def load_reports(diff_dir):
     reports = []
+    proof_identity = None
     for path in sorted(Path(diff_dir).rglob("record.json")):
         data = json.loads(path.read_text())
+        proof_path = data.get("proofStorePath")
+        proof_revision = data.get("proofRevision")
+        if not isinstance(proof_path, str) or STORE_PATH.fullmatch(proof_path) is None:
+            raise SystemExit(f"invalid proof store path in {path}")
+        if (
+            not isinstance(proof_revision, str)
+            or REVISION.fullmatch(proof_revision) is None
+        ):
+            raise SystemExit(f"invalid proof revision in {path}")
+        current_identity = (proof_path, proof_revision)
+        if proof_identity is None:
+            proof_identity = current_identity
+        elif current_identity != proof_identity:
+            raise SystemExit("package report fragments use mixed build proofs")
         report = data["packageReport"]
         reports.append(
             {
@@ -24,7 +44,7 @@ def load_reports(diff_dir):
 
     if not reports:
         raise SystemExit("no GHCI record.json artifacts found")
-    return reports
+    return reports, proof_identity[1]
 
 
 def version_text(diff):
@@ -131,8 +151,8 @@ def package_updates(reports):
     ]
 
 
-def render(diff_dir, head_sha, base_sha):
-    reports = load_reports(diff_dir)
+def render(diff_dir, head_sha):
+    reports, proof_revision = load_reports(diff_dir)
     successful = [report for report in reports if report["status"] == "success"]
     failed = [report for report in reports if report["status"] != "success"]
     updates = package_updates(successful)
@@ -140,7 +160,7 @@ def render(diff_dir, head_sha, base_sha):
     lines = [
         COMMENT_MARKER,
         f"Report generated for `{head_sha}`",
-        f"Compared against `{base_sha}`",
+        f"Compared against latest successful master build `{proof_revision}`",
         "",
         "## Package updates",
     ]
@@ -162,11 +182,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--diff-dir", required=True)
     parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--base-sha", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    Path(args.output).write_text(render(args.diff_dir, args.head_sha, args.base_sha))
+    Path(args.output).write_text(render(args.diff_dir, args.head_sha))
 
 
 if __name__ == "__main__":

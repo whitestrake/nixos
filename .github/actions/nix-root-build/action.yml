@@ -17,6 +17,14 @@ inputs:
     description: "Compact JSON array of baseline build records."
     required: false
     default: "[]"
+  proof-store-path:
+    description: "Immutable accepted CI build proof store path."
+    required: false
+    default: ""
+  proof-revision:
+    description: "Revision recorded by the accepted CI build proof."
+    required: false
+    default: ""
   retain-flake-inputs:
     description: "Root archived flake inputs with the realised lane outputs."
     required: false
@@ -32,6 +40,8 @@ runs:
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
         GHCI_PACKAGE_REPORT: ${{ inputs.package-report }}
         GHCI_BASELINE_RECORDS_JSON: ${{ inputs.baseline-records-json }}
+        GHCI_PROOF_STORE_PATH: ${{ inputs.proof-store-path }}
+        GHCI_PROOF_REVISION: ${{ inputs.proof-revision }}
         GHCI_RETAIN_FLAKE_INPUTS: ${{ inputs.retain-flake-inputs }}
       run: |
         set -Eeuo pipefail
@@ -206,8 +216,36 @@ runs:
           dix_path="${dix_paths##*$'\n'}"
           export CI_LANE_SYSTEM="$GHCI_LANE_SYSTEM"
           export CI_BASELINE_RECORDS_JSON="$GHCI_BASELINE_RECORDS_JSON"
+          export CI_PROOF_STORE_PATH="$GHCI_PROOF_STORE_PATH"
+          export CI_PROOF_REVISION="$GHCI_PROOF_REVISION"
           export CI_PACKAGE_REPORT_DIR="$RUNNER_TEMP/ci-package-reports"
           export DIX_BIN="$dix_path/bin/dix"
+
+          baseline_paths_json="$(
+            jq -ce '
+              if type != "array" or length == 0 then
+                error("baseline records must be a non-empty array")
+              elif any(.[]; type != "object" or (.storePath | type) != "string" or
+                (.storePath | test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not)) then
+                error("baseline records contain an unsafe store path")
+              else
+                map(.storePath)
+              end
+            ' <<< "$GHCI_BASELINE_RECORDS_JSON"
+          )"
+          baseline_paths=()
+          baseline_path_lines="$(jq -er '.[]' <<< "$baseline_paths_json")"
+          while IFS= read -r store_path; do
+            baseline_paths+=("$store_path")
+          done <<< "$baseline_path_lines"
+          if ! run_with_timeout "$NIX_ROOT_BUILD_TIMEOUT_SECONDS" \
+            nix-store --realise \
+              --option builders '' \
+              --option max-jobs 0 \
+              "${baseline_paths[@]}"; then
+            echo "::error ::Accepted baseline closures could not be realised."
+            exit 1
+          fi
         fi
 
         started="$SECONDS"

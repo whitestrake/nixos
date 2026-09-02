@@ -9,10 +9,13 @@ import tempfile
 from pathlib import Path
 
 REPORT_TIMEOUT_SECONDS = 240
-STORE_PATH = re.compile(r"^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$")
+STORE_PATH = re.compile(
+    r"^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$"
+)
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 
-def write_report(record, namespace, name, report):
+def write_report(record, namespace, name, report, proof):
     path = (
         Path(os.environ["CI_PACKAGE_REPORT_DIR"])
         / os.environ["CI_LANE_SYSTEM"]
@@ -27,7 +30,10 @@ def write_report(record, namespace, name, report):
             "w", dir=path.parent, prefix=f".{path.name}.", delete=False
         ) as output:
             temporary = Path(output.name)
-            json.dump(record | {"packageReport": report}, output)
+            json.dump(
+                record | proof | {"packageReport": report},
+                output,
+            )
             output.write("\n")
         os.replace(temporary, path)
     finally:
@@ -41,6 +47,14 @@ def failed(message):
 
 def store_path(value):
     return isinstance(value, str) and STORE_PATH.fullmatch(value) is not None
+
+
+def proof_identity():
+    path = os.environ["CI_PROOF_STORE_PATH"]
+    revision = os.environ["CI_PROOF_REVISION"]
+    if not store_path(path) or REVISION.fullmatch(revision) is None:
+        raise ValueError("invalid accepted build proof identity")
+    return {"proofStorePath": path, "proofRevision": revision}
 
 
 def main():
@@ -70,8 +84,11 @@ def main():
         return 0
 
     try:
+        proof = proof_identity()
         baseline_records = json.loads(os.environ["CI_BASELINE_RECORDS_JSON"])
         system = os.environ["CI_LANE_SYSTEM"]
+        if not isinstance(baseline_records, list):
+            raise ValueError("baseline CI records must be an array")
         current = {
             "attr": event["attr"],
             "kind": namespace.removesuffix("s"),
@@ -97,53 +114,9 @@ def main():
         return 1
 
     if len(baseline) != 1 or not store_path(baseline[0].get("storePath")):
-        write_report(current, namespace, name, failed("baseline artifact unavailable"))
-        return 0
-
-    try:
-        realised = subprocess.run(
-            [
-                "nix-store",
-                "--realise",
-                "--option",
-                "builders",
-                "",
-                "--option",
-                "max-jobs",
-                "0",
-                baseline[0]["storePath"],
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=REPORT_TIMEOUT_SECONDS,
-            check=False,
+        raise ValueError(
+            f"expected exactly one baseline record for {system}:{event['attr']}"
         )
-    except subprocess.TimeoutExpired as error:
-        realised = None
-        detail = error.stderr or ""
-        if isinstance(detail, bytes):
-            detail = detail.decode(errors="replace")
-        detail = " ".join(detail.split())[:1000]
-        message = "baseline closure realisation timed out after 4m"
-        if detail:
-            message += f": {detail}"
-    except (KeyError, OSError) as error:
-        realised = None
-        message = f"baseline closure realisation failed: {str(error)[:1000]}"
-    if realised is not None and realised.returncode != 0:
-        detail = " ".join((realised.stderr or "").split())[:1000]
-        message = "baseline closure realisation failed"
-        if detail:
-            message += f": {detail}"
-    if realised is None or realised.returncode != 0:
-        write_report(
-            current,
-            namespace,
-            name,
-            failed(message),
-        )
-        return 0
 
     try:
         diff = subprocess.run(
@@ -171,7 +144,7 @@ def main():
         json.JSONDecodeError,
         subprocess.TimeoutExpired,
     ):
-        write_report(current, namespace, name, failed("closure diff failed"))
+        write_report(current, namespace, name, failed("closure diff failed"), proof)
         return 0
 
     write_report(
@@ -179,6 +152,7 @@ def main():
         namespace,
         name,
         {"status": "success", "message": "", "diff": package_diff},
+        proof,
     )
     return 0
 
