@@ -460,7 +460,7 @@ jobs:
           proof_path="$(nix store add --mode flat --name ci-build-proof.json "$proof_file")"
           cachix push whitestrake "$proof_path"
           mapfile -t recorded_paths < <(jq -r '.[].storePath' <<< "$records")
-          nix path-info --recursive --store https://whitestrake.cachix.org "${recorded_paths[@]}" >/dev/null
+          nix path-info --store https://whitestrake.cachix.org "${recorded_paths[@]}" >/dev/null
           echo "Published durable CI build proof: $proof_path"
           {
             echo "### Durable CI build proof"
