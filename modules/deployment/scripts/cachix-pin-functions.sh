@@ -14,8 +14,14 @@ cachix_with_retry() {
 }
 
 cachix_fetch_pins() {
+  local auth_header=()
+
+  if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then
+    auth_header=(-H "Authorization: Bearer $CACHIX_AUTH_TOKEN")
+  fi
+
   cachix_with_retry curl -fsS \
-    -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
+    "${auth_header[@]}" \
     "https://app.cachix.org/api/v1/cache/$1/pin" \
     | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
 }

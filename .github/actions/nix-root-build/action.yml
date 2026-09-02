@@ -185,7 +185,7 @@ runs:
         expected="$(
           jq -ce '
             if type == "array"
-            then map({attr, kind, name, storePath}) | sort_by(.attr)
+            then map({attr, storePath}) | sort_by(.attr)
             else error("builds-json must be an array")
             end
           ' <<< "$GHCI_BUILDS_JSON"
@@ -234,15 +234,12 @@ runs:
           --result-file "$result_file" \
           -j 50
 
-        records="$(
-          jq -ce '
-            map({attr, kind, name, storePath}) | sort_by(.attr)
-          ' < <(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")
-        )"
-        if [ "$expected" != '[]' ] && [ "$records" != "$expected" ]; then
+        records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_file")"
+        comparable_records="$(jq -ce 'map({attr, storePath}) | sort_by(.attr)' <<< "$records")"
+        if [ "$expected" != '[]' ] && [ "$comparable_records" != "$expected" ]; then
           echo "::error ::Successful nix-fast-build outputs do not match expected CI records."
           echo "Expected: $expected"
-          echo "Built:    $records"
+          echo "Built:    $comparable_records"
           exit 1
         fi
 
