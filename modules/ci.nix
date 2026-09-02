@@ -4,21 +4,13 @@
   self,
   ...
 }: let
-  classify = host:
-    if host.class == "nixos"
-    then "nixosConfigurations"
-    else if host.class == "darwin"
-    then "darwinConfigurations"
-    else throw "unsupported CI host class: ${host.class}";
-
   targets =
     lib.concatLists
     (lib.mapAttrsToList
       (system: hosts:
         lib.mapAttrsToList
-        (name: host: {
-          inherit system name;
-          namespace = classify host;
+        (_: host: {
+          path = [system] ++ host.intoAttr;
           output =
             (lib.getAttrFromPath host.intoAttr self)
               .config.system.build.toplevel;
@@ -27,34 +19,26 @@
       config.den.hosts)
     ++ [
       {
-        system = "x86_64-linux";
-        namespace = "checks";
-        name = "flake-file";
+        path = ["x86_64-linux" "checks" "flake-file"];
         output = self.checks.x86_64-linux.check-flake-file;
       }
       {
-        system = "x86_64-linux";
-        namespace = "checks";
-        name = "treefmt";
+        path = ["x86_64-linux" "checks" "treefmt"];
         output = self.checks.x86_64-linux.treefmt;
       }
     ];
 
-  project = pathFields:
+  systemRoots =
     lib.foldl'
-    (result: target: let
-      path = map (field: target.${field}) pathFields;
-    in
-      if lib.hasAttrByPath path result
-      then throw "duplicate CI projection path: ${lib.concatStringsSep "." path}"
+    (result: target:
+      if lib.hasAttrByPath target.path result
+      then throw "duplicate CI projection path: ${lib.concatStringsSep "." target.path}"
       else
         lib.recursiveUpdate
         result
-        (lib.setAttrByPath path target.output))
+        (lib.setAttrByPath target.path target.output))
     {}
     targets;
-
-  systemRoots = project ["system" "namespace" "name"];
 
   mergeCiRoots = roots:
     lib.foldl'

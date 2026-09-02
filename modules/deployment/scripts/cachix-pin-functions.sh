@@ -32,6 +32,32 @@ cachix_pin_path() {
     <<< "$1"
 }
 
+cachix_pin_path_strict() {
+  local pins="$1"
+  local name="$2"
+  local store_path
+
+  store_path="$(
+    jq -er --arg name "$name" '
+      [ .[] | select(.name == $name) ] as $matches
+      | if ($matches | length) != 1 then
+          error("expected exactly one \($name) pin")
+        elif (($matches[0].lastRevision.storePath // null) | type) != "string" then
+          error("\($name) pin has no last revision store path")
+        else
+          $matches[0].lastRevision.storePath
+        end
+    ' <<< "$pins"
+  )"
+
+  if ! [[ "$store_path" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]; then
+    echo "ERROR: $name pin has an invalid last revision store path: $store_path" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$store_path"
+}
+
 cachix_pin_payload() {
   jq -n \
     --arg name "$1" \

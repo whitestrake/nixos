@@ -5,7 +5,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 REPORT_TIMEOUT_SECONDS = 240
@@ -15,34 +14,26 @@ STORE_PATH = re.compile(
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 
-def write_report(record, namespace, name, report, proof):
+def write_report(namespace, name, system, report, proof):
     path = (
         Path(os.environ["CI_PACKAGE_REPORT_DIR"])
-        / os.environ["CI_LANE_SYSTEM"]
+        / system
         / namespace
         / name
         / "record.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as output:
-            temporary = Path(output.name)
-            json.dump(
-                record | proof | {"packageReport": report},
-                output,
-            )
-            output.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
-def failed(message):
-    return {"status": "failed", "message": message, "diff": None}
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "system": system,
+                **proof,
+                "packageReport": report,
+            }
+        )
+        + "\n"
+    )
 
 
 def store_path(value):
@@ -89,13 +80,6 @@ def main():
         system = os.environ["CI_LANE_SYSTEM"]
         if not isinstance(baseline_records, list):
             raise ValueError("baseline CI records must be an array")
-        current = {
-            "attr": event["attr"],
-            "kind": namespace.removesuffix("s"),
-            "name": name,
-            "system": system,
-            "storePath": event["outputs"]["out"],
-        }
         baseline = [
             record
             for record in baseline_records
@@ -104,7 +88,6 @@ def main():
             and record.get("attr") == event["attr"]
         ]
     except (
-        AttributeError,
         KeyError,
         TypeError,
         ValueError,
@@ -146,13 +129,19 @@ def main():
         json.JSONDecodeError,
         subprocess.TimeoutExpired,
     ):
-        write_report(current, namespace, name, failed("closure diff failed"), proof)
+        write_report(
+            namespace,
+            name,
+            system,
+            {"status": "failed", "message": "closure diff failed", "diff": None},
+            proof,
+        )
         return 0
 
     write_report(
-        current,
         namespace,
         name,
+        system,
         {"status": "success", "message": "", "diff": package_diff},
         proof,
     )

@@ -5,9 +5,6 @@ inputs:
   cache-key-prefix:
     description: "GitHub Actions cache key prefix for this Nix root lane."
     required: true
-  cache-key-suffix:
-    description: "Unique cache key suffix for this restore attempt."
-    required: true
   image-dir-name:
     description: "Directory name under runner.temp for the image."
     required: true
@@ -36,7 +33,7 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/${{ inputs.image-dir-name }}/nix-root.sparsebundle
-        key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache-key-suffix }}
+        key: ${{ inputs.cache-key-prefix }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           ${{ inputs.cache-key-prefix }}-
 

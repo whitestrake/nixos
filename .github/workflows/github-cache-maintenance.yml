@@ -23,7 +23,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       source_branch: ${{ steps.context.outputs.source_branch }}
       source_ref: ${{ steps.context.outputs.source_ref }}
-      source_sha: ${{ steps.source.outputs.source_sha || steps.context.outputs.source_sha }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
       - name: Resolve source context
         id: context
@@ -91,11 +91,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          EVENT_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           EVENT_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           DISPATCH_PROOF_STORE_PATH: ${{ inputs.proof_store_path }}
-          SELECTED_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -103,21 +100,6 @@ jobs:
 
           proof_file="$RUNNER_TEMP/ci-build-proof.json"
           proof_canonical_file="$RUNNER_TEMP/ci-build-proof.canonical.json"
-
-          resolve_stable_proof_path() {
-            local pins="$1"
-
-            jq -er '
-              [ .[] | select(.name == "successful-master-build") ] as $matches
-              | if ($matches | length) != 1 then
-                  error("expected exactly one successful-master-build pin")
-                elif (($matches[0].lastRevision.storePath // null) | type) != "string" then
-                  error("successful-master-build pin has no last revision store path")
-                else
-                  $matches[0].lastRevision.storePath
-                end
-            ' <<< "$pins"
-          }
 
           read_and_validate_proof() {
             local proof_path="$1"
@@ -133,45 +115,26 @@ jobs:
 
           should_run=false
           source_sha=""
-          source_branch=""
-          source_ref=""
           proof_store_path=""
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             source_sha="$EVENT_HEAD_SHA"
-            source_branch="$EVENT_HEAD_BRANCH"
-            source_ref="refs/heads/$source_branch"
-
-            if [ "$EVENT_CONCLUSION" != "success" ]; then
-              echo "Skipping cache maintenance after CI conclusion $EVENT_CONCLUSION."
+            pins="$(cachix_fetch_pins whitestrake)"
+            proof_store_path="$(cachix_pin_path_strict "$pins" successful-master-build)"
+            read_and_validate_proof "$proof_store_path"
+            proof_revision="$(jq -er '.revision' "$proof_file")"
+            current_master="$(
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
+                --jq '.object.sha'
+            )"
+            if [ "$source_sha" != "$current_master" ]; then
+              echo "Skipping stale master cache source after proof resolution: run=$source_sha current=$current_master"
+            elif [ "$proof_revision" != "$current_master" ]; then
+              echo "::error ::successful-master-build proof revision $proof_revision does not match current master $current_master."
+              exit 1
             else
-              current_master="$(
-                gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
-                  --jq '.object.sha'
-              )"
-              if [ "$source_sha" != "$current_master" ]; then
-                echo "Skipping stale master cache source: run=$source_sha current=$current_master"
-              else
-                pins="$(cachix_fetch_pins whitestrake)"
-                proof_store_path="$(resolve_stable_proof_path "$pins")"
-                read_and_validate_proof "$proof_store_path"
-                proof_revision="$(jq -er '.revision' "$proof_file")"
-                current_master="$(
-                  gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" \
-                    --jq '.object.sha'
-                )"
-                if [ "$source_sha" != "$current_master" ]; then
-                  echo "Skipping stale master cache source after proof resolution: run=$source_sha current=$current_master"
-                elif [ "$proof_revision" != "$current_master" ]; then
-                  echo "::error ::successful-master-build proof revision $proof_revision does not match current master $current_master."
-                  exit 1
-                else
-                  should_run=true
-                fi
-              fi
+              should_run=true
             fi
           else
-            source_branch="$SELECTED_BRANCH"
-            source_ref="refs/heads/$source_branch"
             proof_store_path="$DISPATCH_PROOF_STORE_PATH"
             if [ -z "$proof_store_path" ]; then
               echo "::error ::proof_store_path is required for manual cache maintenance."
@@ -185,8 +148,6 @@ jobs:
           {
             printf 'should_run=%s\n' "$should_run"
             printf 'source_sha=%s\n' "$source_sha"
-            printf 'source_branch=%s\n' "$source_branch"
-            printf 'source_ref=%s\n' "$source_ref"
           } >> "$GITHUB_OUTPUT"
 
       - name: Select cache lanes
@@ -196,7 +157,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           SHOULD_RUN: ${{ steps.source.outputs.should_run }}
-          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          SOURCE_REF: ${{ steps.context.outputs.source_ref }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           PROOF_FILE: ${{ runner.temp }}/ci-build-proof.json
         run: |
@@ -353,7 +314,6 @@ jobs:
         uses: ./.github/actions/nix-ext4-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          cache-key-suffix: writer
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -362,7 +322,6 @@ jobs:
         uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          cache-key-suffix: writer
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
@@ -406,7 +365,6 @@ jobs:
         with:
           builds-json: ${{ toJSON(matrix.records) }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
-          retain-flake-inputs: true
 
       - name: Revalidate master cache source
         if: ${{ needs.planning.outputs.source_branch == 'master' }}

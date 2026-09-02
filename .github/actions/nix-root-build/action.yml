@@ -25,11 +25,6 @@ inputs:
     description: "Revision recorded by the accepted CI build proof."
     required: false
     default: ""
-  retain-flake-inputs:
-    description: "Root archived flake inputs with the realised lane outputs."
-    required: false
-    default: "false"
-
 runs:
   using: "composite"
   steps:
@@ -42,7 +37,6 @@ runs:
         GHCI_BASELINE_RECORDS_JSON: ${{ inputs.baseline-records-json }}
         GHCI_PROOF_STORE_PATH: ${{ inputs.proof-store-path }}
         GHCI_PROOF_REVISION: ${{ inputs.proof-revision }}
-        GHCI_RETAIN_FLAKE_INPUTS: ${{ inputs.retain-flake-inputs }}
       run: |
         set -Eeuo pipefail
 
@@ -109,40 +103,6 @@ runs:
         }
 
         staged_links=()
-        backup_links=()
-        root_targets=()
-        root_backups=()
-        root_mutation_started=false
-        root_rollback_attempted=false
-        root_rollback_status=0
-        root_rollback_succeeded=false
-        root_commit_succeeded=false
-        cleanup_root_links() {
-          local status=$? link rollback_status
-          if [ "$root_mutation_started" = true ] && [ "$root_commit_succeeded" != true ] && [ "$root_rollback_attempted" != true ]; then
-            rollback_status=0
-            rollback_root_links || rollback_status=$?
-            if [ "$rollback_status" -ne 0 ]; then
-              echo "::error ::Nix root rollback failed; retaining backup links" >&2
-            fi
-          fi
-          if [ "${#staged_links[@]}" -gt 0 ]; then
-            for link in "${staged_links[@]}"; do
-              rm -f "$link" || true
-            done
-          fi
-          if [ "$root_commit_succeeded" = true ] || [ "$root_rollback_succeeded" = true ]; then
-            if [ "${#backup_links[@]}" -gt 0 ]; then
-              for link in "${backup_links[@]}"; do
-                rm -f "$link" || true
-              done
-            fi
-          fi
-          return "$status"
-        }
-
-        status=0
-        trap cleanup_root_links EXIT
         trap 'status=$?; echo "::error ::Build and root Nix configurations failed with status $status"; report_usage; exit "$status"' ERR
         trap 'exit 130' INT
         trap 'exit 143' TERM
@@ -166,14 +126,6 @@ runs:
             exit 1
             ;;
         esac
-        case "$GHCI_RETAIN_FLAKE_INPUTS" in
-          true | false) ;;
-          *)
-            echo "::error ::retain-flake-inputs must be true or false, got: $GHCI_RETAIN_FLAKE_INPUTS"
-            exit 1
-            ;;
-        esac
-
         root_dir="/nix/var/nix/gcroots/github-ci/$GHCI_LANE_SYSTEM"
         cached_nix_fast_build="$root_dir/nix-fast-build"
         nix_fast_build_fallback=(nix run --option builders '' --option max-jobs auto ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build" --)
@@ -280,6 +232,9 @@ runs:
           echo "Built:    $comparable_records"
           exit 1
         fi
+        if [ "$GHCI_PACKAGE_REPORT" = true ]; then
+          exit 0
+        fi
 
         record_lines="$(jq -r '.[] | [.kind, .name, .storePath] | @tsv' <<< "$records")"
         while IFS=$'\t' read -r kind name store_path; do
@@ -320,45 +275,42 @@ runs:
         fi
 
         flake_input_paths=()
-        if [ "$GHCI_RETAIN_FLAKE_INPUTS" = true ]; then
-          archive_started="$SECONDS"
-          archive_json="$(nix flake archive --json path:.)"
-          flake_input_paths_json="$(
-            jq -ce '
-              [.. | objects | select(has("path")) | .path]
-              | if length == 0 then
-                  error("flake archive contains no paths")
-                elif any(.[]; type != "string") then
-                  error("flake archive contains a non-string path")
-                elif any(.[]; test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not) then
-                  error("flake archive contains an unsafe store path")
-                else
-                  sort | unique
-                end
-            ' <<< "$archive_json"
-          )"
-          flake_input_path_lines="$(jq -er '.[]' <<< "$flake_input_paths_json")"
-          while IFS= read -r store_path; do
-            flake_input_paths+=("$store_path")
-          done <<< "$flake_input_path_lines"
-          flake_input_path_info="$(nix path-info --json --json-format 1 "${flake_input_paths[@]}")"
-          flake_input_nar_bytes="$(
-            jq -er --argjson expectedPaths "$flake_input_paths_json" '
-              if type != "object" or (keys | sort) != $expectedPaths then
-                error("flake input path info does not match archived paths")
-              elif any(.[]; (.narSize | type) != "number") then
-                error("flake input path info is missing NAR sizes")
+        archive_started="$SECONDS"
+        archive_json="$(nix flake archive --json path:.)"
+        flake_input_paths_json="$(
+          jq -ce '
+            [.. | objects | select(has("path")) | .path]
+            | if length == 0 then
+                error("flake archive contains no paths")
+              elif any(.[]; type != "string") then
+                error("flake archive contains a non-string path")
+              elif any(.[]; test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not) then
+                error("flake archive contains an unsafe store path")
               else
-                [.[] | .narSize] | add
+                sort | unique
               end
-            ' <<< "$flake_input_path_info"
-          )"
-          echo "NIX_FLAKE_ARCHIVE_COMPLETE system=$GHCI_LANE_SYSTEM durationSeconds=$((SECONDS - archive_started)) pathCount=${#flake_input_paths[@]} narBytes=$flake_input_nar_bytes"
-        fi
+          ' <<< "$archive_json"
+        )"
+        flake_input_path_lines="$(jq -er '.[]' <<< "$flake_input_paths_json")"
+        while IFS= read -r store_path; do
+          flake_input_paths+=("$store_path")
+        done <<< "$flake_input_path_lines"
+        flake_input_path_info="$(nix path-info --json --json-format 1 "${flake_input_paths[@]}")"
+        flake_input_nar_bytes="$(
+          jq -er --argjson expectedPaths "$flake_input_paths_json" '
+            if type != "object" or (keys | sort) != $expectedPaths then
+              error("flake input path info does not match archived paths")
+            elif any(.[]; (.narSize | type) != "number") then
+              error("flake input path info is missing NAR sizes")
+            else
+              [.[] | .narSize] | add
+            end
+          ' <<< "$flake_input_path_info"
+        )"
+        echo "NIX_FLAKE_ARCHIVE_COMPLETE system=$GHCI_LANE_SYSTEM durationSeconds=$((SECONDS - archive_started)) pathCount=${#flake_input_paths[@]} narBytes=$flake_input_nar_bytes"
 
         mkdir -p "$root_dir"
         staging_root_prefix="$root_dir/.nix-root-${GHCI_LANE_SYSTEM}-$$"
-        backup_root_prefix="$root_dir/.nix-root-backup-${GHCI_LANE_SYSTEM}-$$"
         staged_names=()
 
         while IFS=$'\t' read -r kind name store_path; do
@@ -372,17 +324,15 @@ runs:
         ln -s "$nix_fast_build_path" "$staged_nix_fast_build"
         staged_links+=("$staged_nix_fast_build")
         staged_names+=("nix-fast-build")
-        if [ "${#flake_input_paths[@]}" -gt 0 ]; then
-          for store_path in "${flake_input_paths[@]}"; do
-            store_name="${store_path##*/}"
-            store_hash="${store_name%%-*}"
-            name="flake-input-$store_hash"
-            staged_path="$staging_root_prefix.$name"
-            ln -s "$store_path" "$staged_path"
-            staged_links+=("$staged_path")
-            staged_names+=("$name")
-          done
-        fi
+        for store_path in "${flake_input_paths[@]}"; do
+          store_name="${store_path##*/}"
+          store_hash="${store_name%%-*}"
+          name="flake-input-$store_hash"
+          staged_path="$staging_root_prefix.$name"
+          ln -s "$store_path" "$staged_path"
+          staged_links+=("$staged_path")
+          staged_names+=("$name")
+        done
 
         stale_names=()
         for old_link in "$root_dir"/*; do
@@ -393,127 +343,30 @@ runs:
           fi
         done
 
-        rollback_root_links() {
-          local index target backup
-          if [ "$root_rollback_attempted" = true ]; then
-            return "$root_rollback_status"
-          fi
-          root_rollback_attempted=true
-          root_rollback_status=0
-          for ((index = ${#root_targets[@]} - 1; index >= 0; index--)); do
-            target="${root_targets[$index]-}"
-            backup="${root_backups[$index]-}"
-            [ -n "$target" ] || continue
-            if [ -n "$backup" ] && [ ! -e "$backup" ] && [ ! -L "$backup" ]; then
-              continue
-            fi
-            if [ -L "$target" ]; then
-              if rm -f "$target"; then
-                :
-              else
-                root_rollback_status=1
-              fi
-            elif [ -e "$target" ]; then
-              root_rollback_status=1
-              continue
-            fi
-            if [ -n "$backup" ]; then
-              if [ ! -e "$target" ] && [ ! -L "$target" ]; then
-                if mv -f "$backup" "$target"; then
-                  :
-                else
-                  root_rollback_status=1
-                fi
-              else
-                root_rollback_status=1
-              fi
-            fi
-          done
-          if [ "$root_rollback_status" -eq 0 ]; then
-            root_rollback_succeeded=true
-          fi
-          return "$root_rollback_status"
-        }
-
         root_transaction_started="$SECONDS"
-        root_mutation_started=true
-        commit_status=0
         for index in "${!staged_names[@]}"; do
           name="${staged_names[$index]}"
           staged_path="${staged_links[$index]}"
           target="$root_dir/$name"
-          backup=""
           if [ -e "$target" ] && [ ! -L "$target" ]; then
             echo "::error ::Refusing to replace non-symlink Nix root entry $target"
-            commit_status=1
-            break
+            exit 1
           fi
-          if [ -e "$target" ] || [ -L "$target" ]; then
-            backup="$backup_root_prefix.$name"
-            root_backups+=("$backup")
-            root_targets+=("$target")
-            backup_links+=("$backup")
-            if mv -f "$target" "$backup"; then
-              :
-            else
-              commit_status=$?
-              break
-            fi
-          else
-            root_backups+=("")
-            root_targets+=("$target")
-          fi
-          if mv -f "$staged_path" "$target"; then
-            :
-          else
-            commit_status=$?
-            break
-          fi
+          rm -f "$target"
+          mv -f "$staged_path" "$target"
         done
-        if [ "$commit_status" -eq 0 ]; then
-          if [ "${#stale_names[@]}" -gt 0 ]; then
-            for name in "${stale_names[@]}"; do
-              target="$root_dir/$name"
-              backup="$backup_root_prefix.$name"
-              if [ ! -L "$target" ]; then
-                echo "::error ::Nix root entry changed during transaction: $target"
-                commit_status=1
-                break
-              fi
-              root_backups+=("$backup")
-              root_targets+=("$target")
-              backup_links+=("$backup")
-              if mv -f "$target" "$backup"; then
-                :
-              else
-                commit_status=$?
-                break
-              fi
-            done
-          fi
-        fi
-        if [ "$commit_status" -ne 0 ]; then
-          rollback_status=0
-          rollback_root_links || rollback_status=$?
-          if [ "$rollback_status" -ne 0 ]; then
-            echo "::error ::Nix root rollback failed; retaining backup links" >&2
-          fi
-          exit "$commit_status"
-        fi
-
-        root_commit_succeeded=true
 
         if [ "${#stale_names[@]}" -gt 0 ]; then
           for name in "${stale_names[@]}"; do
+            target="$root_dir/$name"
+            if [ ! -L "$target" ]; then
+              echo "::error ::Nix root entry changed during transaction: $target"
+              exit 1
+            fi
+            rm -f "$target"
             echo "GHCI_WRITER_STALE_ROOT_REMOVED system=$GHCI_LANE_SYSTEM name=$name"
           done
         fi
-        if [ "${#backup_links[@]}" -gt 0 ]; then
-          for backup in "${backup_links[@]}"; do
-            rm -f "$backup"
-          done
-        fi
-        backup_links=()
 
         if [ -d "$legacy_root_dir" ]; then
           for old_link in "$legacy_root_dir"/* "$legacy_root_dir"/.[!.]* "$legacy_root_dir"/..?*; do
@@ -523,12 +376,10 @@ runs:
           rmdir "$legacy_root_dir" 2>/dev/null || echo "::warning ::Leaving legacy Nix root at $legacy_root_dir"
         fi
 
-        if [ "${#flake_input_paths[@]}" -gt 0 ]; then
-          for store_path in "${flake_input_paths[@]}"; do
-            store_name="${store_path##*/}"
-            store_hash="${store_name%%-*}"
-            echo "NIX_FLAKE_INPUT_ROOT system=$GHCI_LANE_SYSTEM path=$store_path gcroot=$root_dir/flake-input-$store_hash"
-          done
-        fi
+        for store_path in "${flake_input_paths[@]}"; do
+          store_name="${store_path##*/}"
+          store_hash="${store_name%%-*}"
+          echo "NIX_FLAKE_INPUT_ROOT system=$GHCI_LANE_SYSTEM path=$store_path gcroot=$root_dir/flake-input-$store_hash"
+        done
         echo "NIX_ROOT_TRANSACTION_COMPLETE system=$GHCI_LANE_SYSTEM desiredCount=${#staged_names[@]} staleCount=${#stale_names[@]} durationSeconds=$((SECONDS - root_transaction_started))"
         echo "NIX_FAST_BUILD_COMPLETE system=$GHCI_LANE_SYSTEM outPath=$nix_fast_build_path gcroot=$root_dir/nix-fast-build durationSeconds=$((SECONDS - started))"
