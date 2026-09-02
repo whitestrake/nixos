@@ -16,6 +16,8 @@ jobs:
     name: "Linux"
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    outputs:
+      records: ${{ steps.records.outputs.records }}
     permissions:
       checks: write
       contents: read
@@ -65,18 +67,21 @@ jobs:
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50
 
-      - name: Upload Linux NFB results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ci-linux-results
-          path: ${{ runner.temp }}/ci-linux-results.json
-          compression-level: 0
-          retention-days: 7
+      - name: Publish Linux records
+        id: records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-linux-results.json")"
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
 
   darwin-builds:
     name: "Darwin"
     runs-on: macos-26
     timeout-minutes: 355
+    outputs:
+      records: ${{ steps.records.outputs.records }}
     permissions:
       checks: write
       contents: read
@@ -184,13 +189,14 @@ jobs:
             --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
             -j 50
 
-      - name: Upload Darwin NFB results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ci-darwin-results
-          path: ${{ runner.temp }}/ci-darwin-results.json
-          compression-level: 0
-          retention-days: 7
+      - name: Publish Darwin records
+        id: records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-darwin-results.json")"
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
 
   all-builds:
     name: "All Builds"
@@ -234,32 +240,30 @@ jobs:
           extra-nix-conf: |
             max-jobs = auto
 
-      - name: Download Linux NFB results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ci-linux-results
-          path: ${{ runner.temp }}
-
-      - name: Download Darwin NFB results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ci-darwin-results
-          path: ${{ runner.temp }}
-
       - name: Assemble build manifest
         shell: bash
+        env:
+          LINUX_RECORDS: ${{ needs.linux-builds.outputs.records }}
+          DARWIN_RECORDS: ${{ needs.darwin-builds.outputs.records }}
         run: |
           set -euo pipefail
 
-          jq -ce -f .github/scripts/nix-fast-build-records.jq \
-            "$RUNNER_TEMP/ci-linux-results.json" > "$RUNNER_TEMP/ci-linux-records.json"
-          jq -ce -f .github/scripts/nix-fast-build-records.jq \
-            "$RUNNER_TEMP/ci-darwin-results.json" > "$RUNNER_TEMP/ci-darwin-records.json"
+          if [ -z "$LINUX_RECORDS" ] || [ -z "$DARWIN_RECORDS" ]; then
+            echo "::error ::Linux and Darwin build records must both be present."
+            exit 1
+          fi
 
           records="$(
-            jq -sce 'add' \
-              "$RUNNER_TEMP/ci-linux-records.json" \
-              "$RUNNER_TEMP/ci-darwin-records.json"
+            jq -cne \
+              --argjson linux "$LINUX_RECORDS" \
+              --argjson darwin "$DARWIN_RECORDS" \
+              'if ($linux | type) != "array" or ($darwin | type) != "array" then
+                 error("Linux and Darwin build records must be arrays")
+               elif ($linux | length) == 0 or ($darwin | length) == 0 then
+                 error("Linux and Darwin build records must be non-empty")
+               else
+                 $linux + $darwin
+               end'
           )"
 
           if ! jq -e '
@@ -347,7 +351,6 @@ jobs:
           fi
 
           artifact_metadata="$(jq -sc '.' "$artifact_metadata_dir"/*.json)"
-          mkdir -p "$RUNNER_TEMP/ci-build-records"
           jq -cne \
             --argjson records "$records" \
             --argjson metadata "$artifact_metadata" '
@@ -413,15 +416,7 @@ jobs:
                 else
                   $records
                 end
-            ' > "$RUNNER_TEMP/ci-build-records/records.json"
-
-      - name: Upload build manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ci-build-records
-          path: ${{ runner.temp }}/ci-build-records/records.json
-          compression-level: 0
-          retention-days: 7
+            ' > "$RUNNER_TEMP/ci-enriched-records.json"
 
       - name: Validate, promote, and dispatch successfully built configurations
         shell: bash
@@ -443,7 +438,30 @@ jobs:
               | jq -r '.object.sha // empty'
           }
 
-          records="$(jq -ce '.' "$RUNNER_TEMP/ci-build-records/records.json")"
+          records="$(jq -ce '.' "$RUNNER_TEMP/ci-enriched-records.json")"
+          proof_file="$RUNNER_TEMP/ci-build-proof.json"
+          proof_canonical_file="$RUNNER_TEMP/ci-build-proof.canonical.json"
+          jq -cn \
+            --arg revision "$GITHUB_SHA" \
+            --argjson records "$records" \
+            '{
+              revision: $revision,
+              records: ($records | map({attr, system, storePath}))
+            }' > "$proof_file"
+          jq -ceS -f .github/scripts/ci-build-proof.jq "$proof_file" > "$proof_canonical_file"
+          mv "$proof_canonical_file" "$proof_file"
+          proof_path="$(nix store add --mode flat --name ci-build-proof.json "$proof_file")"
+          cachix push whitestrake "$proof_path"
+          mapfile -t recorded_paths < <(jq -r '.[].storePath' <<< "$records")
+          nix path-info --recursive --store https://whitestrake.cachix.org "${recorded_paths[@]}" >/dev/null
+          echo "Published durable CI build proof: $proof_path"
+          {
+            echo "### Durable CI build proof"
+            echo
+            echo "Revision: \`$GITHUB_SHA\`"
+            echo
+            echo "Store path: \`$proof_path\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           pins="$(cachix_fetch_pins whitestrake)"
           built_pin_delta="$(
             jq -cn \
@@ -543,6 +561,13 @@ jobs:
               cachix_pin_store_path whitestrake "$pin_name" "$store_path" 3
             fi
           done < <(jq -r '.[] | [.name, .storePath] | @tsv' <<< "$records")
+
+          current_rev="$(current_master_revision)"
+          if [ "$current_rev" != "$GITHUB_SHA" ]; then
+            echo "Skipping stale successful-master-build promotion: run=$GITHUB_SHA current=$current_rev"
+            exit 0
+          fi
+          cachix_pin_store_path whitestrake successful-master-build "$proof_path" 3
 
           if [ "$(jq -r '.include | length' <<< "$deployment_matrix")" = 0 ]; then
             echo "No deployable hosts changed; not dispatching continuous deployment."
