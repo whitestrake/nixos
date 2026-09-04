@@ -3,19 +3,19 @@
   pkgs,
   ...
 }: let
-  version = "0.18.8";
+  version = "0.19.0";
   assets = {
     "aarch64-darwin" = {
       name = "beszel-agent_darwin_arm64.tar.gz";
-      hash = "sha256-bDQXuz5wCR3aBxekwPcLtKXIbmdfhAAZDMesaKc2eIw=";
+      hash = "sha256-pai6RqiGEPXaTqqjLxhGQuBvIIhffm4eo2B1lq75yxs=";
     };
     "x86_64-linux" = {
       name = "beszel-agent_linux_amd64.tar.gz";
-      hash = "sha256-6pZBQapBgnQkdcCnWykAH8WR6znOD2OjO9PP8EU5vPk=";
+      hash = "sha256-D4WJGykBRrM29cgT0eU16ZLaNe553odukg4ux0ircyw=";
     };
     "aarch64-linux" = {
       name = "beszel-agent_linux_arm64.tar.gz";
-      hash = "sha256-N5C+r6Ezq5uw8bQitZrLf9GKwljOTxaNKZ7jkMpQvlw=";
+      hash = "sha256-OgsMRxUGoC2N550D96RRMrVAEK3BBcYgj/6Liu3B2jg=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
