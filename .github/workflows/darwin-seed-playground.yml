@@ -1,8 +1,6 @@
 name: Darwin Warm Bootstrap Playground
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
   workflow_dispatch:
 
 permissions:

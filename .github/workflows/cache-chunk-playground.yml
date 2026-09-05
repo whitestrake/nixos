@@ -1,0 +1,103 @@
+name: Cache Chunk Reuse Probe
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/cache-chunk-playground.yml, .github/scripts/cache-chunk-probe.py]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cache-chunk-probe-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lane:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+            kind: ext4
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            kind: ext4
+          - system: aarch64-darwin
+            runner: macos-26
+            kind: sparsebundle
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: mkdir -p "$RUNNER_TEMP/chunk-evidence"
+      - uses: ./.github/actions/nix-ext4-cache-restore
+        if: matrix.kind == 'ext4'
+        with:
+          cache-key-prefix: nix-root-ci-${{ matrix.system }}-ext4-v1
+          image-dir-name: nix-root-ci-${{ matrix.system }}
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/nix-sparsebundle-cache-restore
+        if: matrix.kind == 'sparsebundle'
+        with:
+          cache-key-prefix: nix-root-ci-${{ matrix.system }}-sparsebundle-v1
+          image-dir-name: nix-root-ci-${{ matrix.system }}
+          system: ${{ matrix.system }}
+      - name: Inventory frozen baseline
+        env:
+          KIND: ${{ matrix.kind }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = ext4 ]; then
+            test -f "$NIX_ROOT_IMAGE_ARCHIVE"
+            zstd -d --sparse -T0 "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+            image="$NIX_ROOT_IMAGE"
+          else
+            image="$NIX_ROOT_IMAGE_BUNDLE"
+            test -d "$image/bands"
+          fi
+          python3 .github/scripts/cache-chunk-probe.py "$image" > "$RUNNER_TEMP/chunk-evidence/before.json"
+      - uses: ./.github/actions/nix-ext4-mount
+        if: matrix.kind == 'ext4'
+        with:
+          image-size: 32G
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        if: matrix.kind == 'sparsebundle'
+        with:
+          image-size: 64g
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Refresh current lane roots
+        uses: ./.github/actions/nix-root-build
+        with:
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/nix-ext4-pack
+        if: matrix.kind == 'ext4'
+        with:
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/nix-sparsebundle-pack
+        if: matrix.kind == 'sparsebundle'
+        with:
+          system: ${{ matrix.system }}
+      - name: Inventory refreshed snapshot
+        env:
+          KIND: ${{ matrix.kind }}
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = ext4 ]; then image="$NIX_ROOT_IMAGE"; else image="$NIX_ROOT_IMAGE_BUNDLE"; fi
+          python3 .github/scripts/cache-chunk-probe.py "$image" > "$RUNNER_TEMP/chunk-evidence/after.json"
+          python3 .github/scripts/cache-chunk-probe.py compare "$RUNNER_TEMP/chunk-evidence/before.json" "$RUNNER_TEMP/chunk-evidence/after.json" > "$RUNNER_TEMP/chunk-evidence/comparison.json"
+          cp "$RUNNER_TEMP/cache-$SYSTEM-results.json" "$RUNNER_TEMP/chunk-evidence/results.json"
+          cat "$RUNNER_TEMP/chunk-evidence/comparison.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: chunks-${{ matrix.system }}
+          path: ${{ runner.temp }}/chunk-evidence
