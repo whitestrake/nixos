@@ -17,13 +17,9 @@ env:
 
 jobs:
   seed:
-    name: Seed ${{ matrix.pack }}
+    name: Seed both formats
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        pack: [tools, inputs]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -37,18 +33,16 @@ jobs:
         run: |
           set -euo pipefail
           sudo modprobe squashfs
+          sudo modprobe erofs
           sudo modprobe overlay
-          if ! command -v mksquashfs >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y squashfs-tools
-          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools erofs-utils
           uname -a
           mksquashfs -version | head -1
+          mkfs.erofs -V
       - uses: ./.github/actions/install-nix
       - name: Prepare complete seed
         working-directory: fixture
-        env:
-          PACK: ${{ matrix.pack }}
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/fast-ci-seed"
@@ -59,11 +53,9 @@ jobs:
           ln -s "$nfb" /nix/var/nix/gcroots/fast-ci-seed/nfb
           nix flake archive --json path:. > "$RUNNER_TEMP/archive.json"
           jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$RUNNER_TEMP/archive.json" > "$output/external-inputs.txt"
-          if [ "$PACK" = inputs ]; then
-            while IFS= read -r input; do
-              ln -s "$input" "/nix/var/nix/gcroots/fast-ci-seed/$(basename "$input")"
-            done < "$output/external-inputs.txt"
-          fi
+          while IFS= read -r input; do
+            ln -s "$input" "/nix/var/nix/gcroots/fast-ci-seed/$(basename "$input")"
+          done < "$output/external-inputs.txt"
           nix store gc
           nix path-info --all | sort > "$output/baseline-paths.txt"
           nix path-info --recursive "$nfb" | sort > "$output/tool-closure.txt"
@@ -76,26 +68,38 @@ jobs:
               assert result[0] == 0, result
           PY
           # No Nix writers run after the checkpoint until packing completes.
-          started="$SECONDS"
-          mksquashfs /nix "$output/image.squashfs" -noappend -comp zstd -Xcompression-level 3 -no-progress
-          echo "PACK_SECONDS=$((SECONDS - started))"
-          cd "$output"
-          sha256sum image.squashfs > image.sha256
-          du -h image.squashfs
-          jq -n --arg pack "$PACK" --arg fixture "$FIXTURE_SHA" \
-            --arg producer "$GITHUB_SHA" --argjson bytes "$(stat -c %s image.squashfs)" \
-            '{pack:$pack, fixture:$fixture, producer:$producer, imageBytes:$bytes}' > metadata.json
+          for format in squashfs erofs; do
+            target="$RUNNER_TEMP/fast-ci-$format"
+            mkdir -p "$target"
+            cp "$output"/*.txt "$target/"
+            started="$SECONDS"
+            if [ "$format" = squashfs ]; then
+              mksquashfs /nix "$target/image" -noappend -comp zstd -Xcompression-level 3 -no-progress
+            else
+              mkfs.erofs -zlz4hc,12 -C65536 "$target/image" /nix
+            fi
+            elapsed="$((SECONDS - started))"
+            (cd "$target" && sha256sum image > image.sha256)
+            jq -n --arg pack "$format" --arg fixture "$FIXTURE_SHA" \
+              --arg producer "$GITHUB_SHA" --argjson bytes "$(stat -c %s "$target/image")" \
+              --argjson seconds "$elapsed" \
+              '{pack:$pack, fixture:$fixture, producer:$producer, imageBytes:$bytes,packSeconds:$seconds}' > "$target/metadata.json"
+          done
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ${{ runner.temp }}/fast-ci-seed
-          key: fast-ci-playground-v1-${{ github.sha }}-${{ matrix.pack }}
+          path: ${{ runner.temp }}/fast-ci-squashfs
+          key: fast-ci-playground-v2-${{ github.sha }}-squashfs
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-playground-v2-${{ github.sha }}-erofs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: seed-metadata-${{ matrix.pack }}
+          name: seed-metadata
           path: |
-            ${{ runner.temp }}/fast-ci-seed/*.txt
-            ${{ runner.temp }}/fast-ci-seed/*.json
-            ${{ runner.temp }}/fast-ci-seed/*.sha256
+            ${{ runner.temp }}/fast-ci-*/*.txt
+            ${{ runner.temp }}/fast-ci-*/*.json
+            ${{ runner.temp }}/fast-ci-*/*.sha256
 
   trial:
     name: Trial ${{ matrix.round }} ${{ matrix.pack }}
@@ -107,7 +111,7 @@ jobs:
       max-parallel: 1
       matrix:
         round: [1, 2, 3]
-        pack: [cold, tools, inputs]
+        pack: [squashfs, erofs]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -124,21 +128,24 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: matrix.pack != 'cold'
         with:
-          path: ${{ runner.temp }}/fast-ci-seed
-          key: fast-ci-playground-v1-${{ github.sha }}-${{ matrix.pack }}
+          path: ${{ runner.temp }}/fast-ci-${{ matrix.pack }}
+          key: fast-ci-playground-v2-${{ github.sha }}-${{ matrix.pack }}
           fail-on-cache-miss: true
       - name: Mount seed and writable overlay
         if: matrix.pack != 'cold'
+        env:
+          PACK: ${{ matrix.pack }}
         run: |
           set -euo pipefail
+          ln -s "$RUNNER_TEMP/fast-ci-$PACK" "$RUNNER_TEMP/fast-ci-seed"
           cd "$RUNNER_TEMP/fast-ci-seed"
           sha256sum --check image.sha256
-          sudo modprobe squashfs
+          sudo modprobe "$PACK"
           sudo modprobe overlay
           test ! -e /nix
           mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
           sudo mkdir /nix
-          sudo mount -t squashfs -o loop,ro image.squashfs "$RUNNER_TEMP/lower"
+          sudo mount -t "$PACK" -o loop,ro image "$RUNNER_TEMP/lower"
           sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
           findmnt /nix
       - uses: ./.github/actions/install-nix
