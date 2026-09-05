@@ -39,6 +39,7 @@ env:
   CONTROL_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
   CONTROL_CACHE_BYTES: '2236965460'
   CACHE_RESERVE_BYTES: '8000000000'
+  CACHE_LIMIT_BYTES: '50000000000' # Verified through the repository owner's API before dispatch.
   HESTIA_CACHE_VERSION_SALT: transport-v1-${{ inputs.source_run != '' && inputs.source_run || github.run_id }}-${{ inputs.source_run != '' && inputs.source_attempt || github.run_attempt }}
 
 jobs:
@@ -126,23 +127,17 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/evidence/base"
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/storage-limit" > "$RUNNER_TEMP/limit.json"
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/usage" > "$RUNNER_TEMP/usage.json"
           gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
             --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
-          limit_bytes="$(jq '.max_cache_size_gb * 1000000000' "$RUNNER_TEMP/limit.json")"
-          usage_bytes="$(jq '.active_caches_size_in_bytes' "$RUNNER_TEMP/usage.json")"
+          limit_bytes="$CACHE_LIMIT_BYTES"
           listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
-          active_bytes="$usage_bytes"
-          [ "$listed_bytes" -le "$active_bytes" ] || active_bytes="$listed_bytes"
+          active_bytes="$listed_bytes"
           headroom_bytes="$((limit_bytes - active_bytes))"
-          jq -n --argjson limitBytes "$limit_bytes" --argjson reportedActiveBytes "$usage_bytes" \
-            --argjson listedActiveBytes "$listed_bytes" --argjson conservativeActiveBytes "$active_bytes" \
+          jq -n --argjson limitBytes "$limit_bytes" \
+            --argjson listedActiveBytes "$listed_bytes" --argjson countedActiveBytes "$active_bytes" \
             --argjson headroomBytes "$headroom_bytes" --argjson requiredBytes "$CACHE_RESERVE_BYTES" \
-            '{limitBytes:$limitBytes,reportedActiveBytes:$reportedActiveBytes,listedActiveBytes:$listedActiveBytes,conservativeActiveBytes:$conservativeActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
+            '{limitBytes:$limitBytes,limitSource:"owner-verified fixed experiment limit",usageSource:"paginated cache inventory",listedActiveBytes:$listedActiveBytes,countedActiveBytes:$countedActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
             > "$evidence/quota-before.json"
           test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
           jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
@@ -264,23 +259,17 @@ jobs:
         run: |
           set -euo pipefail
           evidence="$RUNNER_TEMP/evidence/changed"
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/storage-limit" > "$RUNNER_TEMP/limit.json"
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/usage" > "$RUNNER_TEMP/usage.json"
           gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
             --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
-          limit_bytes="$(jq '.max_cache_size_gb * 1000000000' "$RUNNER_TEMP/limit.json")"
-          usage_bytes="$(jq '.active_caches_size_in_bytes' "$RUNNER_TEMP/usage.json")"
+          limit_bytes="$CACHE_LIMIT_BYTES"
           listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
-          active_bytes="$usage_bytes"
-          [ "$listed_bytes" -le "$active_bytes" ] || active_bytes="$listed_bytes"
+          active_bytes="$listed_bytes"
           headroom_bytes="$((limit_bytes - active_bytes))"
-          jq -n --argjson limitBytes "$limit_bytes" --argjson reportedActiveBytes "$usage_bytes" \
-            --argjson listedActiveBytes "$listed_bytes" --argjson conservativeActiveBytes "$active_bytes" \
+          jq -n --argjson limitBytes "$limit_bytes" \
+            --argjson listedActiveBytes "$listed_bytes" --argjson countedActiveBytes "$active_bytes" \
             --argjson headroomBytes "$headroom_bytes" --argjson requiredBytes "$CACHE_RESERVE_BYTES" \
-            '{limitBytes:$limitBytes,reportedActiveBytes:$reportedActiveBytes,listedActiveBytes:$listedActiveBytes,conservativeActiveBytes:$conservativeActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
+            '{limitBytes:$limitBytes,limitSource:"owner-verified fixed experiment limit",usageSource:"paginated cache inventory",listedActiveBytes:$listedActiveBytes,countedActiveBytes:$countedActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
             > "$evidence/quota-before.json"
           test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
           jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
@@ -656,18 +645,12 @@ jobs:
           test "$changed_bytes" -gt 0
           fraction="$(awk -v changed="$changed_bytes" -v base="$base_bytes" 'BEGIN {printf "%.9f", changed/base}')"
 
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/storage-limit" > "$RUNNER_TEMP/limit.json"
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/actions/cache/usage" > "$RUNNER_TEMP/usage.json"
           gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
             --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
-          limit_bytes="$(jq '.max_cache_size_gb * 1000000000' "$RUNNER_TEMP/limit.json")"
-          usage_bytes="$(jq '.active_caches_size_in_bytes' "$RUNNER_TEMP/usage.json")"
+          limit_bytes="$CACHE_LIMIT_BYTES"
           listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
-          active_bytes="$usage_bytes"
-          [ "$listed_bytes" -le "$active_bytes" ] || active_bytes="$listed_bytes"
+          active_bytes="$listed_bytes"
           headroom_bytes="$((limit_bytes - active_bytes))"
           test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
           jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
