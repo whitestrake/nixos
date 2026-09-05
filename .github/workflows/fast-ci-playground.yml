@@ -109,7 +109,7 @@ jobs:
           python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             python3 .github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
             "${nix_fast_build[@]}" \
-            --flake .#ci.linux \
+            --flake .#ci.linux-hosts \
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers 3 \
             --store ssh-ng://eu.nixbuild.net \
@@ -147,6 +147,119 @@ jobs:
         if: always()
         with:
           name: linux-evidence
+          path: ${{ runner.temp }}/measurements
+      - name: Unmount evaluator seed
+        if: always() && steps.mount.outcome == 'success'
+        run: |
+          sudo umount /nix
+          sudo umount "$RUNNER_TEMP/lower"
+
+  source-checks:
+    name: "Source checks"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Start source-check timing
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurements"
+          date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: restore
+        if: github.event_name == 'push' || inputs.seed
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-erofs
+      - name: Try evaluator seed
+        id: mount
+        if: steps.restore.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test ! -e /nix
+          cd "$RUNNER_TEMP/fast-ci-erofs"
+          sha256sum --check image.sha256
+          sudo modprobe erofs
+          sudo modprobe overlay
+          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
+          sudo mkdir /nix
+          touch "$RUNNER_TEMP/created-nix"
+          sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+          nfb="$(cat nfb-path.txt)"
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+      - name: Recover rejected evaluator seed
+        if: steps.mount.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          if [ -e "$RUNNER_TEMP/created-nix" ]; then
+            if mountpoint -q /nix; then sudo umount /nix; fi
+            if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
+            sudo rmdir /nix
+          fi
+          test ! -e /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+
+      - name: Build source checks locally
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FAST_CI_FORWARD_EVENTS: "1"
+        run: |
+          set -euo pipefail
+
+          nix_fast_build=(
+            nix run \
+              --option builders '' \
+              --option max-jobs auto \
+              ".#packages.x86_64-linux.nix-fast-build" \
+              --
+          )
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+            python3 .github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            "${nix_fast_build[@]}" \
+            --flake .#ci.linux-checks \
+            --systems x86_64-linux \
+            --eval-workers 2 \
+            --option builders '' \
+            --option max-jobs 2 \
+            --retries 2 \
+            --result-file "$RUNNER_TEMP/ci-checks-results.json" \
+            -j 2
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+
+      - name: Record source-check evidence
+        if: always()
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          MOUNT_OUTCOME: ${{ steps.mount.outcome }}
+        run: |
+          if [ -f "$RUNNER_TEMP/ci-checks-results.json" ]; then
+            cp "$RUNNER_TEMP/ci-checks-results.json" "$RUNNER_TEMP/measurements/results.json"
+          fi
+          jq -n --arg hit "$CACHE_HIT" --arg mount "$MOUNT_OUTCOME" --arg harness "$GITHUB_SHA" \
+            --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg run "$GITHUB_RUN_ID" \
+            '{cacheHit:$hit,mountOutcome:$mount,harness:$harness,cpu:$cpu,runnerImage:$runnerImage,run:$run}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: source-check-evidence
           path: ${{ runner.temp }}/measurements
       - name: Unmount evaluator seed
         if: always() && steps.mount.outcome == 'success'
@@ -280,6 +393,7 @@ jobs:
     needs:
       - linux-builds
       - darwin-builds
+      - source-checks
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
@@ -290,9 +404,10 @@ jobs:
         env:
           LINUX_RESULT: ${{ needs.linux-builds.result }}
           DARWIN_RESULT: ${{ needs.darwin-builds.result }}
+          CHECKS_RESULT: ${{ needs.source-checks.result }}
         run: |
-          if [ "$LINUX_RESULT" != success ] || [ "$DARWIN_RESULT" != success ]; then
-            echo "::error ::Linux and Darwin builds must both succeed: linux=$LINUX_RESULT darwin=$DARWIN_RESULT"
+          if [ "$LINUX_RESULT" != success ] || [ "$DARWIN_RESULT" != success ] || [ "$CHECKS_RESULT" != success ]; then
+            echo "::error ::All builds and source checks must succeed: linux=$LINUX_RESULT darwin=$DARWIN_RESULT checks=$CHECKS_RESULT"
             exit 1
           fi
 
