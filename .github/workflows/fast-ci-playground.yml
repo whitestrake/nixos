@@ -98,7 +98,7 @@ jobs:
             ${{ runner.temp }}/fast-ci-seed/*.sha256
 
   trial:
-    name: Trial ${{ matrix.pack }}
+    name: Trial ${{ matrix.round }} ${{ matrix.pack }}
     needs: seed
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -106,6 +106,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
+        round: [1, 2, 3]
         pack: [cold, tools, inputs]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -183,16 +184,18 @@ jobs:
         if: always()
         env:
           PACK: ${{ matrix.pack }}
+          ROUND: ${{ matrix.round }}
         run: |
           jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
             --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg round "$ROUND" \
             --arg runnerImage "${ImageVersion:-unknown}" \
-            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,runnerImage:$runnerImage}' \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,round:$round,runnerImage:$runnerImage}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: trial-${{ matrix.pack }}
+          name: trial-${{ matrix.round }}-${{ matrix.pack }}
           path: ${{ runner.temp }}/measurements
       - name: Unmount disposable seed
         if: always() && matrix.pack != 'cold'
