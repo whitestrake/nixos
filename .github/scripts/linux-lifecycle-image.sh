@@ -72,12 +72,18 @@ freeze() {
 }
 
 pack_immutable() {
-  local format="$1" source="$2" image="$3" workers="$4" squashfs_noi="${5:-false}"
+  local format="$1" source="$2" image="$3" workers="$4"
+  local squashfs_noi="${5:-false}" squashfs_nolinks="${6:-false}"
   local -a squashfs_options=()
   valid_format "$format" && [ "$format" != ext4 ] || die "immutable format must be erofs or squashfs"
   valid_workers "$workers" || die "workers must be a positive integer"
   valid_boolean "$squashfs_noi" || die "squashfs_noi must be true or false"
-  [ "$format" = squashfs ] || [ "$squashfs_noi" = false ] || die "squashfs_noi only applies to SquashFS"
+  valid_boolean "$squashfs_nolinks" || die "squashfs_nolinks must be true or false"
+  if [ "$format" != squashfs ] && { [ "$squashfs_noi" = true ] || [ "$squashfs_nolinks" = true ]; }; then
+    die "SquashFS options only apply to SquashFS"
+  fi
+  [ "$squashfs_noi" = false ] || [ "$squashfs_nolinks" = false ] ||
+    die "squashfs_noi and squashfs_nolinks cannot be combined"
   [ -d "$source" ] || die "pack source is missing: $source"
   mkdir -p "$(dirname "$image")"
   rm -f "$image" "$(dirname "$image")/image.sha256"
@@ -90,7 +96,11 @@ pack_immutable() {
       ;;
     squashfs)
       command -v mksquashfs >/dev/null || die "mksquashfs is required"
-      [ "$squashfs_noi" = false ] || squashfs_options=(-noI)
+      [ "$squashfs_noi" = false ] || squashfs_options+=(-noI)
+      if [ "$squashfs_nolinks" = true ]; then
+        [ -d "$source/store/.links" ] || die "Nix store optimisation index is missing"
+        squashfs_options+=(-wildcards -e 'store/.links/*')
+      fi
       sudo mksquashfs "$source" "$image" -noappend -comp zstd -Xcompression-level 3 \
         -processors "$workers" -no-progress "${squashfs_options[@]}"
       ;;

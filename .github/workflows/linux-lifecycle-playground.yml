@@ -25,6 +25,10 @@ on:
         description: Store SquashFS inode and directory metadata uncompressed (requires SquashFS treatment)
         type: boolean
         default: false
+      squashfs_nolinks:
+        description: Omit the Nix store optimisation index from SquashFS (requires SquashFS treatment)
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -39,7 +43,8 @@ env:
   TARGET_SHA: 83c56e158b04dea4da66d123fc206af2630b0501
   PACK_WORKERS: 4
   SQUASHFS_NOI: ${{ inputs.squashfs_noi && 'true' || 'false' }}
-  SQUASHFS_KEY_SUFFIX: ${{ inputs.squashfs_noi && '-noi' || '' }}
+  SQUASHFS_NOLINKS: ${{ inputs.squashfs_nolinks && 'true' || 'false' }}
+  SQUASHFS_KEY_SUFFIX: ${{ inputs.squashfs_noi && '-noi' || inputs.squashfs_nolinks && '-nolinks' || '' }}
   CACHE_QUOTA_BYTES: 50000000000
   CACHE_RESERVE_BYTES: 1000000000
 
@@ -69,8 +74,12 @@ jobs:
           TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
-          if [ "$SQUASHFS_NOI" = true ] && [ "$TREATMENT" != squashfs ]; then
-            echo "::error ::squashfs_noi requires treatment=squashfs"
+          if [ "$SQUASHFS_NOI" = true ] && [ "$SQUASHFS_NOLINKS" = true ]; then
+            echo "::error ::squashfs_noi and squashfs_nolinks cannot be combined"
+            exit 1
+          fi
+          if { [ "$SQUASHFS_NOI" = true ] || [ "$SQUASHFS_NOLINKS" = true ]; } && [ "$TREATMENT" != squashfs ]; then
+            echo "::error ::SquashFS options require treatment=squashfs"
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/nix-root-ci-$SYSTEM"
@@ -133,10 +142,14 @@ jobs:
         with:
           extra-nix-conf: |
             max-jobs = auto
+            ${{ inputs.squashfs_nolinks && 'auto-optimise-store = false' || '' }}
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
       - name: Finish Nix installer timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/install-end.txt"
+      - name: Verify no-links Nix policy
+        if: inputs.squashfs_nolinks
+        run: test "$(nix config show auto-optimise-store)" = false
       - name: Start old-generation refresh timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/update-start.txt"
       - uses: ./.github/actions/nix-root-build
@@ -171,6 +184,12 @@ jobs:
           date +%s.%N > "$RUNNER_TEMP/measurements/optimise-start.txt"
           nix store optimise
           date +%s.%N > "$RUNNER_TEMP/measurements/optimise-end.txt"
+          if [ "$SQUASHFS_NOLINKS" = true ]; then
+            test -d /nix/store/.links
+            count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+            printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/squashfs-links-source-count.txt"
+            test "$count" -gt 0
+          fi
           date +%s.%N > "$RUNNER_TEMP/measurements/checkpoint-start.txt"
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" checkpoint
           sudo fstrim -v /nix || true
@@ -189,7 +208,8 @@ jobs:
           for format in "${formats[@]}"; do
             date +%s.%N > "$RUNNER_TEMP/measurements/$format-pack-start.txt"
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" pack-immutable \
-              "$format" /nix "$RUNNER_TEMP/linux-lifecycle-$format/image" "$PACK_WORKERS" "$SQUASHFS_NOI"
+              "$format" /nix "$RUNNER_TEMP/linux-lifecycle-$format/image" "$PACK_WORKERS" \
+              "$SQUASHFS_NOI" "$SQUASHFS_NOLINKS"
             date +%s.%N > "$RUNNER_TEMP/measurements/$format-pack-end.txt"
           done
       - name: Pack ext4 baseline
@@ -222,8 +242,8 @@ jobs:
             image="$RUNNER_TEMP/linux-lifecycle-$format/image"
             jq -n --arg format "$format" --arg system "$SYSTEM" \
               --arg generation "$OLD_SHA" --argjson bytes "$(stat -c %s "$image")" \
-              --argjson squashfsNoI "$SQUASHFS_NOI" \
-              '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
+              --argjson squashfsNoI "$SQUASHFS_NOI" --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
+              '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsLinksPolicy:(if $format != "squashfs" then "not-applicable" elif $squashfsNoLinks then "empty-index" else "preserved" end),cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
               > "$RUNNER_TEMP/measurements/$format-image.json"
           done
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" budget \
@@ -308,9 +328,10 @@ jobs:
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
             --arg treatment "$TREATMENT" --argjson squashfsNoI "$SQUASHFS_NOI" \
+            --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
             --arg kernel "$(uname -sr)" \
-            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,treatment:$treatment,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsDefaults:($squashfsNoI | not),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
+            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,treatment:$treatment,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsDefaults:(($squashfsNoI or $squashfsNoLinks) | not),squashfsLinksPolicy:(if $squashfsNoLinks then "empty-index" else "preserved" end),nixOptimisePolicy:"explicit-before-baseline-pack",packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -354,8 +375,12 @@ jobs:
           set -euo pipefail
           [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          if [ "$SQUASHFS_NOI" = true ] && [ "$TREATMENT" != squashfs ]; then
-            echo "::error ::squashfs_noi requires treatment=squashfs"
+          if [ "$SQUASHFS_NOI" = true ] && [ "$SQUASHFS_NOLINKS" = true ]; then
+            echo "::error ::squashfs_noi and squashfs_nolinks cannot be combined"
+            exit 1
+          fi
+          if { [ "$SQUASHFS_NOI" = true ] || [ "$SQUASHFS_NOLINKS" = true ]; } && [ "$TREATMENT" != squashfs ]; then
+            echo "::error ::SquashFS options require treatment=squashfs"
             exit 1
           fi
           if [ -n "$SOURCE_RUN" ]; then
@@ -404,16 +429,28 @@ jobs:
         run: bash "$RUNNER_TEMP/linux-lifecycle-image.sh" mount-overlay "$FORMAT" "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image"
       - name: Finish baseline mount timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/mount-end.txt"
+      - name: Verify empty SquashFS baseline index
+        if: inputs.squashfs_nolinks
+        run: |
+          set -euo pipefail
+          test -d /nix/store/.links
+          count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+          printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-before-update.txt"
+          test "$count" -eq 0
       - name: Start Nix installer timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/install-start.txt"
       - uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
             max-jobs = auto
+            ${{ inputs.squashfs_nolinks && 'auto-optimise-store = false' || '' }}
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
       - name: Finish Nix installer timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/install-end.txt"
+      - name: Verify no-links Nix policy
+        if: inputs.squashfs_nolinks
+        run: test "$(nix config show auto-optimise-store)" = false
       - name: Start target update timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/update-start.txt"
       - uses: ./.github/actions/nix-root-build
@@ -430,17 +467,37 @@ jobs:
           old="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json")"
           target="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$RUNNER_TEMP/measurements/target-records.json")"
           test "$old" != "$target"
+          if [ "$SQUASHFS_NOLINKS" = true ]; then
+            count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+            printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-after-update.txt"
+            test "$count" -eq 0
+          fi
       - name: Garbage collect target generation
         run: |
           set -euo pipefail
+          if [ "$SQUASHFS_NOLINKS" = true ]; then
+            count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+            printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-before-gc.txt"
+            test "$count" -eq 0
+          fi
           date +%s.%N > "$RUNNER_TEMP/measurements/gc-start.txt"
           nix store gc
           date +%s.%N > "$RUNNER_TEMP/measurements/gc-end.txt"
-      - name: Optimise and checkpoint target generation
+          if [ "$SQUASHFS_NOLINKS" = true ]; then
+            count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+            printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-after-gc.txt"
+            test "$count" -eq 0
+          fi
+      - name: Apply optimisation policy and checkpoint target generation
         run: |
           set -euo pipefail
           date +%s.%N > "$RUNNER_TEMP/measurements/optimise-start.txt"
-          nix store optimise
+          if [ "$SQUASHFS_NOLINKS" = true ]; then
+            echo skipped-squashfs-nolinks > "$RUNNER_TEMP/measurements/optimise-policy.txt"
+          else
+            nix store optimise
+            echo explicit > "$RUNNER_TEMP/measurements/optimise-policy.txt"
+          fi
           date +%s.%N > "$RUNNER_TEMP/measurements/optimise-end.txt"
           date +%s.%N > "$RUNNER_TEMP/measurements/checkpoint-start.txt"
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" checkpoint
@@ -456,9 +513,14 @@ jobs:
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" pack-ext4 \
               "$NIX_ROOT_IMAGE" "$RUNNER_TEMP/linux-lifecycle-ext4/image" "$PACK_WORKERS"
           else
+            if [ "$SQUASHFS_NOLINKS" = true ]; then
+              sudo du -sb "$RUNNER_TEMP/linux-lifecycle-mount-$FORMAT/upper" | awk '{print $1}' \
+                > "$RUNNER_TEMP/measurements/upper-bytes-before-pack.txt"
+            fi
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" freeze
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" pack-immutable \
-              "$FORMAT" /nix "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image" "$PACK_WORKERS" "$SQUASHFS_NOI"
+              "$FORMAT" /nix "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image" "$PACK_WORKERS" \
+              "$SQUASHFS_NOI" "$SQUASHFS_NOLINKS"
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" unmount-overlay "$FORMAT"
           fi
           date +%s.%N > "$RUNNER_TEMP/measurements/pack-end.txt"
@@ -472,7 +534,8 @@ jobs:
           image="$RUNNER_TEMP/linux-lifecycle-$FORMAT/image"
           jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg generation "$TARGET_SHA" \
             --argjson bytes "$(stat -c %s "$image")" --argjson squashfsNoI "$SQUASHFS_NOI" \
-            '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
+            --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
+            '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsLinksPolicy:(if $format != "squashfs" then "not-applicable" elif $squashfsNoLinks then "empty-index" else "preserved" end),nixOptimisePolicy:(if $squashfsNoLinks then "skipped-squashfs-nolinks" else "explicit" end),cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
             > "$RUNNER_TEMP/measurements/image.json"
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" budget \
             "$CACHE_QUOTA_BYTES" "$CACHE_RESERVE_BYTES" "$RUNNER_TEMP/linux-lifecycle-$FORMAT"
@@ -506,10 +569,10 @@ jobs:
             --arg target "$TARGET_SHA" --arg sourceRun "${{ steps.prepare.outputs.baseline-source }}" \
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
-            --argjson squashfsNoI "$SQUASHFS_NOI" \
+            --argjson squashfsNoI "$SQUASHFS_NOI" --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
             --arg kernel "$(uname -sr)" \
-            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsDefaults:($squashfsNoI | not),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
+            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsDefaults:(($squashfsNoI or $squashfsNoLinks) | not),squashfsLinksPolicy:(if $format != "squashfs" then "not-applicable" elif $squashfsNoLinks then "empty-index" else "preserved" end),nixOptimisePolicy:(if $squashfsNoLinks then "skipped-squashfs-nolinks" else "explicit" end),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -585,16 +648,28 @@ jobs:
         run: bash "$RUNNER_TEMP/linux-lifecycle-image.sh" mount-overlay "$FORMAT" "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image"
       - name: Finish refreshed mount timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/mount-end.txt"
+      - name: Verify empty refreshed SquashFS index
+        if: inputs.squashfs_nolinks
+        run: |
+          set -euo pipefail
+          test -d /nix/store/.links
+          count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
+          printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-reader.txt"
+          test "$count" -eq 0
       - name: Start next-reader installer timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/install-start.txt"
       - uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
             max-jobs = auto
+            ${{ inputs.squashfs_nolinks && 'auto-optimise-store = false' || '' }}
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
       - name: Finish next-reader installer timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/install-end.txt"
+      - name: Verify no-links Nix policy
+        if: inputs.squashfs_nolinks
+        run: test "$(nix config show auto-optimise-store)" = false
       - name: Measure next-reader build and verify outputs
         env:
           SYSTEM: ${{ inputs.system }}
@@ -613,6 +688,21 @@ jobs:
           actual="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$RUNNER_TEMP/measurements/records.json")"
           test "$actual" = "$expected"
           date +%s.%N > "$RUNNER_TEMP/measurements/reader-end.txt"
+      - name: Verify selected closure contents
+        if: inputs.squashfs_nolinks
+        run: |
+          set -euo pipefail
+          mapfile -t selected_roots < <(
+            jq -r '.[].storePath' "$RUNNER_TEMP/maintenance/target-records.json" | sort -u
+          )
+          test "${#selected_roots[@]}" -gt 0
+          printf '%s\n' "${selected_roots[@]}" > "$RUNNER_TEMP/measurements/selected-roots.txt"
+          date +%s.%N > "$RUNNER_TEMP/measurements/verify-start.txt"
+          status=0
+          nix store verify --recursive --no-trust "${selected_roots[@]}" || status=$?
+          date +%s.%N > "$RUNNER_TEMP/measurements/verify-end.txt"
+          printf '%s\n' "$status" > "$RUNNER_TEMP/measurements/verify-status.txt"
+          exit "$status"
       - name: Record next-reader environment
         if: always()
         env:
@@ -622,10 +712,10 @@ jobs:
           jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg target "$TARGET_SHA" \
             --arg sourceRun "$GITHUB_RUN_ID" --arg harness "$GITHUB_SHA" \
             --arg fixtureCwd "$GITHUB_WORKSPACE" --arg harnessScriptsDir "$RUNNER_TEMP" \
-            --argjson squashfsNoI "$SQUASHFS_NOI" \
+            --argjson squashfsNoI "$SQUASHFS_NOI" --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
             --arg kernel "$(uname -sr)" \
-            '{format:$format,system:$system,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,squashfsNoI:$squashfsNoI,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
+            '{format:$format,system:$system,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsLinksPolicy:(if $format != "squashfs" then "not-applicable" elif $squashfsNoLinks then "empty-index" else "preserved" end),nixOptimisePolicy:"none-reader",runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -665,6 +755,6 @@ jobs:
             test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$record")" = "$canonical"
           done
           jq -n --argjson outputs "$canonical" --argjson formats "$EXPECTED_FORMATS" \
-            --argjson squashfsNoI "$SQUASHFS_NOI" \
-            '{matching:true,readers:($formats | length),formats:$formats,squashfsNoI:$squashfsNoI,outputs:$outputs}' \
+            --argjson squashfsNoI "$SQUASHFS_NOI" --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \
+            '{matching:true,readers:($formats | length),formats:$formats,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,outputs:$outputs}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
