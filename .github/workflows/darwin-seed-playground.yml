@@ -1,0 +1,150 @@
+name: Darwin Evaluator Seed Playground
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-seed-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  CONTROL_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-33ae17904b7a7bedebd628346a9f600e8ddf3b990dd6a60fbe8d5f2b11f5caa6-33891132223-1
+
+jobs:
+  seed:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - name: Prepare empty image location
+        run: |
+          mkdir -p "$RUNNER_TEMP/darwin-evaluator" "$RUNNER_TEMP/seed-metadata"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-evaluator/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - uses: ./.github/actions/install-nix
+      - name: Root evaluator tools and external inputs
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          roots=/nix/var/nix/gcroots/fast-ci-seed
+          output="$RUNNER_TEMP/seed-metadata"
+          mkdir -p "$roots"
+          nfb="$(nix build --no-link --print-out-paths .#packages.aarch64-darwin.nix-fast-build)"
+          cachix="$(nix build --inputs-from . --no-link --print-out-paths nixpkgs-unstable#cachix)"
+          ln -s "$nfb" "$roots/nix-fast-build"
+          ln -s "$cachix" "$roots/cachix"
+          printf '%s\n' "$nfb" > "$output/nfb-path.txt"
+          printf '%s\n' "$cachix" > "$output/cachix-path.txt"
+          nix path-info --recursive "$nfb" "$cachix" | sort -u > "$output/tool-closure.txt"
+          nix flake archive --json path:. > "$output/archive.json"
+          jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$output/archive.json" > "$output/external-inputs.txt"
+          while IFS= read -r input; do
+            ln -s "$input" "$roots/$(basename "$input")"
+          done < "$output/external-inputs.txt"
+          eval_jobs="$(nix build --inputs-from . --no-link --print-out-paths nixpkgs-unstable#nix-eval-jobs)"
+          perl -e 'alarm shift; exec @ARGV' 60 "$eval_jobs/bin/nix-eval-jobs" --workers 1 --expr '{}' >/dev/null
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+          nix store gc
+          nix path-info --all | sort > "$output/baseline-paths.txt"
+          nix --version > "$output/nix-version.txt"
+      - uses: ./.github/actions/nix-sparsebundle-pack
+        with:
+          system: aarch64-darwin
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/darwin-evaluator/nix-root.sparsebundle
+          key: fast-ci-darwin-seed-${{ github.sha }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: darwin-seed-metadata
+          path: ${{ runner.temp }}/seed-metadata
+
+  trial:
+    needs: seed
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        round: [1, 2, 3]
+        pack: [full, seed]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start timing
+        env:
+          IMAGE_DIR: ${{ matrix.pack == 'full' && 'nix-root-ci-aarch64-darwin' || 'darwin-evaluator' }}
+        run: |
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/$IMAGE_DIR/nix-root.sparsebundle" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/measurements"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/${{ matrix.pack == 'full' && 'nix-root-ci-aarch64-darwin' || 'darwin-evaluator' }}/nix-root.sparsebundle
+          key: ${{ matrix.pack == 'full' && env.CONTROL_KEY || format('fast-ci-darwin-seed-{0}', github.sha) }}
+          fail-on-cache-miss: true
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Measure Darwin build
+        working-directory: fixture
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run .#packages.aarch64-darwin.nix-fast-build -- \
+            --flake .#ci.darwin --systems aarch64-darwin --eval-workers 1 \
+            --cachix-cache whitestrake --retries 2 \
+            --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-end.txt"
+      - name: Record environment
+        if: always()
+        env:
+          PACK: ${{ matrix.pack }}
+          ROUND: ${{ matrix.round }}
+        run: |
+          jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg round "$ROUND" --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,round:$round,runnerImage:$runnerImage,cpu:$cpu}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: trial-${{ matrix.round }}-${{ matrix.pack }}
+          path: ${{ runner.temp }}/measurements
