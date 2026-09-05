@@ -283,6 +283,7 @@ jobs:
           TREATMENT: ${{ matrix.treatment }}
           WORKLOAD_REF: ${{ inputs.workload_ref }}
           INSTRUMENTED: ${{ inputs.trace }}
+          SOURCE_RUN: ${{ inputs.source_run || github.run_id }}
         run: |
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/completion-end.txt"
           if [ -f "$RUNNER_TEMP/measurements/results.json" ]; then
@@ -290,7 +291,7 @@ jobs:
               "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
           fi
           jq -n --arg treatment "$TREATMENT" --arg round "$ROUND" --arg workloadRef "$WORKLOAD_REF" \
-            --arg sourceRun "${{ inputs.source_run || github.run_id }}" --arg fixture "$FIXTURE_SHA" \
+            --arg sourceRun "$SOURCE_RUN" --arg fixture "$FIXTURE_SHA" \
             --arg harness "$GITHUB_SHA" --arg runnerImage "${ImageVersion:-unknown}" \
             --arg cpu "$(sysctl -n machdep.cpu.brand_string)" --argjson instrumented "$INSTRUMENTED" \
             '{treatment:$treatment,round:$round,workloadRef:$workloadRef,sourceRun:$sourceRun,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,instrumented:$instrumented}' \
