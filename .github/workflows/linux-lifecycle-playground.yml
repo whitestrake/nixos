@@ -259,7 +259,8 @@ jobs:
             --arg baseCacheVersion "${{ steps.prepare.outputs.base-cache-version }}" \
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
-            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true}' \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
+            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -450,7 +451,8 @@ jobs:
             --arg target "$TARGET_SHA" --arg sourceRun "${{ steps.prepare.outputs.baseline-source }}" \
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
-            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true}' \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
+            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
