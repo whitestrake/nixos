@@ -113,7 +113,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/evidence/base"
           date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/evidence/base/experiment-start.txt"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/import-start.txt"
-          nix copy --from https://whitestrake.cachix.org "$BASE_ROOT"
+          nix-store --realise --option builders '' --option max-jobs 0 "$BASE_ROOT"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/import-end.txt"
           nix store verify --recursive --no-trust "$BASE_ROOT"
           nix-store --query --requisites "$BASE_ROOT" | sort > "$RUNNER_TEMP/evidence/base/producer-closure.txt"
@@ -251,7 +251,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/evidence/changed"
           date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/evidence/changed/experiment-start.txt"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/import-start.txt"
-          nix copy --from https://whitestrake.cachix.org "$CHANGED_ROOT"
+          nix-store --realise --option builders '' --option max-jobs 0 "$CHANGED_ROOT"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/import-end.txt"
           nix store verify --recursive --no-trust "$CHANGED_ROOT"
           nix-store --query --requisites "$CHANGED_ROOT" | sort > "$RUNNER_TEMP/evidence/changed/producer-closure.txt"
@@ -740,7 +740,7 @@ jobs:
           version: v3.0.1
           drain-timeout: '900'
           wait-manifest-version: ${{ steps.source.outputs.manifest_version }}
-      - name: Require Hestia failure, then recover explicitly from Cachix
+      - name: Require Hestia failure, then recover through normal Nix substitutes
         env:
           MISSING_PACK_CACHE_ID: ${{ inputs.missing_pack_cache_id }}
         run: |
@@ -754,7 +754,7 @@ jobs:
           python3 -c 'import time; print(time.time())' > "$evidence/hestia-copy-end.txt"
           test "$hestia_status" -ne 0
           python3 -c 'import time; print(time.time())' > "$evidence/cachix-recovery-start.txt"
-          nix copy --from https://whitestrake.cachix.org "$CHANGED_ROOT"
+          nix-store --realise --option builders '' --option max-jobs 0 "$CHANGED_ROOT"
           python3 -c 'import time; print(time.time())' > "$evidence/cachix-recovery-end.txt"
           nix store verify --recursive --no-trust "$CHANGED_ROOT"
           nix-store --query --requisites "$CHANGED_ROOT" | sort > "$evidence/recovered-closure.txt"
@@ -762,7 +762,7 @@ jobs:
           grep -Fx "$CHANGED_ROOT" "$evidence/recovered-closure.txt"
           jq -n --arg root "$CHANGED_ROOT" --argjson deletedPackCacheId "$MISSING_PACK_CACHE_ID" \
             --argjson hestiaCopyStatus "$hestia_status" \
-            '{root:$root,deletedPackCacheId:$deletedPackCacheId,hestiaCopyFailed:true,hestiaCopyStatus:$hestiaCopyStatus,recoverySource:"https://whitestrake.cachix.org",recoveredClosureMatchesProducer:true}' \
+            '{root:$root,deletedPackCacheId:$deletedPackCacheId,hestiaCopyFailed:true,hestiaCopyStatus:$hestiaCopyStatus,recoverySources:["https://whitestrake.cachix.org","https://cache.nixos.org"],recoveredClosureMatchesProducer:true}' \
             > "$evidence/recovery.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
