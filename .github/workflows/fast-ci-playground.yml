@@ -51,7 +51,7 @@ jobs:
           cp ./*.txt "$output/"
           "$erofs_tools/bin/mkfs.erofs" --version > "$output/packer-version.txt"
           started="$SECONDS"
-          "$erofs_tools/bin/mkfs.erofs" -zzstd,level=3 -C65536 "$output/image" "$RUNNER_TEMP/source"
+          "$erofs_tools/bin/mkfs.erofs" --quiet -zzstd,level=3 -C65536 "$output/image" "$RUNNER_TEMP/source"
           elapsed="$((SECONDS - started))"
           cd "$output"
           sha256sum image > image.sha256
