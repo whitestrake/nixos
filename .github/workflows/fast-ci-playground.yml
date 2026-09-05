@@ -544,6 +544,7 @@ jobs:
           skipPush: true
 
       - name: Assemble build manifest
+        id: manifest
         shell: bash
         env:
           LINUX_RECORDS: ${{ needs.linux-builds.outputs.records }}
@@ -720,6 +721,17 @@ jobs:
                   $records
                 end
             ' > "$RUNNER_TEMP/ci-enriched-records.json"
+
+      - name: Probe native cache publication after manifest failure
+        if: failure() && inputs.profile && steps.manifest.outcome == 'failure'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf 'PR 158 publication probe, run %s attempt %s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/cache-publication-probe.txt"
+          probe_path="$(nix store add --mode flat --name cache-publication-probe.txt "$RUNNER_TEMP/cache-publication-probe.txt")"
+          cachix push whitestrake "$probe_path"
+          nix path-info --store https://whitestrake.cachix.org "$probe_path"
 
       - name: Validate and publish complete build proof
         shell: bash
