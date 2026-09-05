@@ -17,10 +17,14 @@ on:
         options: [x86_64-linux, aarch64-linux]
         default: x86_64-linux
       treatment:
-        description: All formats, or repeat SquashFS maintenance from an existing baseline
+        description: All formats or one SquashFS lifecycle
         type: choice
         options: [all, squashfs]
         default: all
+      squashfs_noi:
+        description: Store SquashFS inode and directory metadata uncompressed (requires SquashFS treatment)
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -34,6 +38,8 @@ env:
   OLD_SHA: 34ae0ef228171c6f9ace59efa6c8b65ab9cad246
   TARGET_SHA: 83c56e158b04dea4da66d123fc206af2630b0501
   PACK_WORKERS: 4
+  SQUASHFS_NOI: ${{ inputs.squashfs_noi && 'true' || 'false' }}
+  SQUASHFS_KEY_SUFFIX: ${{ inputs.squashfs_noi && '-noi' || '' }}
   CACHE_QUOTA_BYTES: 50000000000
   CACHE_RESERVE_BYTES: 1000000000
 
@@ -60,8 +66,13 @@ jobs:
         id: prepare
         env:
           SYSTEM: ${{ inputs.system }}
+          TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
+          if [ "$SQUASHFS_NOI" = true ] && [ "$TREATMENT" != squashfs ]; then
+            echo "::error ::squashfs_noi requires treatment=squashfs"
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/nix-root-ci-$SYSTEM"
           date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
           sudo apt-get update -qq
@@ -141,6 +152,8 @@ jobs:
           jq -ce -f .github/scripts/nix-fast-build-records.jq \
             "$RUNNER_TEMP/cache-$SYSTEM-results.json" \
             > "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json"
+          cp "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json" \
+            "$RUNNER_TEMP/measurements/old-records.json"
           packer_paths="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
           packer_path="${packer_paths##*$'\n'}"
           test -x "$packer_path/bin/mkfs.erofs"
@@ -166,15 +179,21 @@ jobs:
       - name: Pack immutable baselines
         env:
           EROFS_MKFS: /nix/var/nix/gcroots/linux-lifecycle-erofs-utils/bin/mkfs.erofs
+          TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
-          for format in erofs squashfs; do
+          formats=(squashfs)
+          if [ "$TREATMENT" = all ]; then
+            formats=(erofs squashfs)
+          fi
+          for format in "${formats[@]}"; do
             date +%s.%N > "$RUNNER_TEMP/measurements/$format-pack-start.txt"
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" pack-immutable \
-              "$format" /nix "$RUNNER_TEMP/linux-lifecycle-$format/image" "$PACK_WORKERS"
+              "$format" /nix "$RUNNER_TEMP/linux-lifecycle-$format/image" "$PACK_WORKERS" "$SQUASHFS_NOI"
             date +%s.%N > "$RUNNER_TEMP/measurements/$format-pack-end.txt"
           done
       - name: Pack ext4 baseline
+        if: inputs.treatment == 'all'
         run: |
           set -euo pipefail
           date +%s.%N > "$RUNNER_TEMP/measurements/ext4-pack-start.txt"
@@ -185,72 +204,92 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SYSTEM: ${{ inputs.system }}
+          TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
-          for format in ext4 erofs squashfs; do
+          formats=(squashfs)
+          payloads=("$RUNNER_TEMP/linux-lifecycle-squashfs" "$RUNNER_TEMP/linux-lifecycle-metadata")
+          if [ "$TREATMENT" = all ]; then
+            formats=(ext4 erofs squashfs)
+            payloads=(
+              "$RUNNER_TEMP/linux-lifecycle-ext4"
+              "$RUNNER_TEMP/linux-lifecycle-erofs"
+              "$RUNNER_TEMP/linux-lifecycle-squashfs"
+              "$RUNNER_TEMP/linux-lifecycle-metadata"
+            )
+          fi
+          for format in "${formats[@]}"; do
             image="$RUNNER_TEMP/linux-lifecycle-$format/image"
             jq -n --arg format "$format" --arg system "$SYSTEM" \
               --arg generation "$OLD_SHA" --argjson bytes "$(stat -c %s "$image")" \
-              '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
+              --argjson squashfsNoI "$SQUASHFS_NOI" \
+              '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
               > "$RUNNER_TEMP/measurements/$format-image.json"
           done
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" budget \
-            "$CACHE_QUOTA_BYTES" "$CACHE_RESERVE_BYTES" \
-            "$RUNNER_TEMP/linux-lifecycle-ext4" \
-            "$RUNNER_TEMP/linux-lifecycle-erofs" \
-            "$RUNNER_TEMP/linux-lifecycle-squashfs" \
-            "$RUNNER_TEMP/linux-lifecycle-metadata"
+            "$CACHE_QUOTA_BYTES" "$CACHE_RESERVE_BYTES" "${payloads[@]}"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-metadata/old-records.json
           key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-records
       - name: Start ext4 baseline save timing
+        if: inputs.treatment == 'all'
         run: |
           date +%s.%N > "$RUNNER_TEMP/measurements/ext4-save-start.txt"
           echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.treatment == 'all'
         with:
           path: ${{ runner.temp }}/linux-lifecycle-ext4
           key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-ext4-baseline
       - uses: ./.github/actions/github-cache-save-report
+        if: inputs.treatment == 'all'
         env:
           GH_TOKEN: ${{ github.token }}
         with:
           cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-ext4-baseline
           system: ${{ inputs.system }}
       - name: Start EROFS baseline save timing
+        if: inputs.treatment == 'all'
         run: |
           date +%s.%N > "$RUNNER_TEMP/measurements/ext4-save-end.txt"
           date +%s.%N > "$RUNNER_TEMP/measurements/erofs-save-start.txt"
           echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.treatment == 'all'
         with:
           path: ${{ runner.temp }}/linux-lifecycle-erofs
           key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-erofs-baseline
       - uses: ./.github/actions/github-cache-save-report
+        if: inputs.treatment == 'all'
         env:
           GH_TOKEN: ${{ github.token }}
         with:
           cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-erofs-baseline
           system: ${{ inputs.system }}
       - name: Start SquashFS baseline save timing
+        env:
+          TREATMENT: ${{ inputs.treatment }}
         run: |
-          date +%s.%N > "$RUNNER_TEMP/measurements/erofs-save-end.txt"
+          if [ "$TREATMENT" = all ]; then
+            date +%s.%N > "$RUNNER_TEMP/measurements/erofs-save-end.txt"
+          fi
           date +%s.%N > "$RUNNER_TEMP/measurements/squashfs-save-start.txt"
           echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-squashfs
-          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-squashfs-baseline
+          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-squashfs${{ env.SQUASHFS_KEY_SUFFIX }}-baseline
       - uses: ./.github/actions/github-cache-save-report
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-squashfs-baseline
+          cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.OLD_SHA }}-${{ inputs.system }}-squashfs${{ env.SQUASHFS_KEY_SUFFIX }}-baseline
           system: ${{ inputs.system }}
       - name: Record baseline cache metadata
         env:
           GH_TOKEN: ${{ github.token }}
+          TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
           date +%s.%N > "$RUNNER_TEMP/measurements/squashfs-save-end.txt"
@@ -258,14 +297,20 @@ jobs:
           gh cache list --repo "$GITHUB_REPOSITORY" --key "$prefix" --limit 10 \
             --json key,ref,sizeInBytes,version \
             > "$RUNNER_TEMP/measurements/cache-metadata.json"
-          test "$(jq 'length' "$RUNNER_TEMP/measurements/cache-metadata.json")" -eq 4
+          expected_cache_count=2
+          if [ "$TREATMENT" = all ]; then
+            expected_cache_count=4
+          fi
+          test "$(jq 'length' "$RUNNER_TEMP/measurements/cache-metadata.json")" -eq "$expected_cache_count"
           jq -n --arg system "${{ inputs.system }}" --arg old "$OLD_SHA" --arg target "$TARGET_SHA" \
             --arg baseCacheKey "${{ steps.prepare.outputs.base-cache-key }}" \
             --arg baseCacheVersion "${{ steps.prepare.outputs.base-cache-version }}" \
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
+            --arg treatment "$TREATMENT" --argjson squashfsNoI "$SQUASHFS_NOI" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
-            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu}' \
+            --arg kernel "$(uname -sr)" \
+            '{system:$system,oldRevision:$old,targetRevision:$target,baseCacheKey:$baseCacheKey,baseCacheVersion:$baseCacheVersion,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,treatment:$treatment,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsDefaults:($squashfsNoI | not),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -304,10 +349,15 @@ jobs:
           SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
           SOURCE_RUN: ${{ inputs.source_run }}
           SYSTEM: ${{ inputs.system }}
+          TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
           [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          if [ "$SQUASHFS_NOI" = true ] && [ "$TREATMENT" != squashfs ]; then
+            echo "::error ::squashfs_noi requires treatment=squashfs"
+            exit 1
+          fi
           if [ -n "$SOURCE_RUN" ]; then
             baseline_source="$SOURCE_RUN-$SOURCE_ATTEMPT"
           else
@@ -331,7 +381,7 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-${{ matrix.format }}
-          key: linux-lifecycle-v1-${{ steps.prepare.outputs.baseline-source }}-${{ env.OLD_SHA }}-${{ inputs.system }}-${{ matrix.format }}-baseline
+          key: linux-lifecycle-v1-${{ steps.prepare.outputs.baseline-source }}-${{ env.OLD_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-baseline
           fail-on-cache-miss: true
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -408,7 +458,7 @@ jobs:
           else
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" freeze
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" pack-immutable \
-              "$FORMAT" /nix "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image" "$PACK_WORKERS"
+              "$FORMAT" /nix "$RUNNER_TEMP/linux-lifecycle-$FORMAT/image" "$PACK_WORKERS" "$SQUASHFS_NOI"
             bash "$RUNNER_TEMP/linux-lifecycle-image.sh" unmount-overlay "$FORMAT"
           fi
           date +%s.%N > "$RUNNER_TEMP/measurements/pack-end.txt"
@@ -421,8 +471,8 @@ jobs:
           set -euo pipefail
           image="$RUNNER_TEMP/linux-lifecycle-$FORMAT/image"
           jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg generation "$TARGET_SHA" \
-            --argjson bytes "$(stat -c %s "$image")" \
-            '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
+            --argjson bytes "$(stat -c %s "$image")" --argjson squashfsNoI "$SQUASHFS_NOI" \
+            '{format:$format,system:$system,generation:$generation,imageBytes:$bytes,squashfsNoI:$squashfsNoI,cacheArchiveBytesSource:"actions/cache/save log and cache metadata"}' \
             > "$RUNNER_TEMP/measurements/image.json"
           bash "$RUNNER_TEMP/linux-lifecycle-image.sh" budget \
             "$CACHE_QUOTA_BYTES" "$CACHE_RESERVE_BYTES" "$RUNNER_TEMP/linux-lifecycle-$FORMAT"
@@ -431,16 +481,16 @@ jobs:
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-${{ matrix.format }}
-          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}-refreshed
+          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-refreshed
       - uses: ./.github/actions/github-cache-save-report
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}-refreshed
+          cache-key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-refreshed
           system: ${{ inputs.system }}
       - name: Record refreshed cache metadata
         env:
-          CACHE_KEY: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}-refreshed
+          CACHE_KEY: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-refreshed
           FORMAT: ${{ matrix.format }}
           GH_TOKEN: ${{ github.token }}
           SYSTEM: ${{ inputs.system }}
@@ -456,8 +506,10 @@ jobs:
             --arg target "$TARGET_SHA" --arg sourceRun "${{ steps.prepare.outputs.baseline-source }}" \
             --arg harness "$GITHUB_SHA" --arg fixtureCwd "$GITHUB_WORKSPACE" \
             --arg harnessScriptsDir "$RUNNER_TEMP" --argjson packWorkers "$PACK_WORKERS" \
+            --argjson squashfsNoI "$SQUASHFS_NOI" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
-            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsDefaults:true,packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu}' \
+            --arg kernel "$(uname -sr)" \
+            '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsDefaults:($squashfsNoI | not),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -511,7 +563,7 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-${{ matrix.format }}
-          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}-refreshed
+          key: linux-lifecycle-v1-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.TARGET_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-refreshed
           fail-on-cache-miss: true
       - name: Finish refreshed restore timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/restore-end.txt"
@@ -570,8 +622,10 @@ jobs:
           jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg target "$TARGET_SHA" \
             --arg sourceRun "$GITHUB_RUN_ID" --arg harness "$GITHUB_SHA" \
             --arg fixtureCwd "$GITHUB_WORKSPACE" --arg harnessScriptsDir "$RUNNER_TEMP" \
+            --argjson squashfsNoI "$SQUASHFS_NOI" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
-            '{format:$format,system:$system,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,runnerImage:$runnerImage,cpu:$cpu}' \
+            --arg kernel "$(uname -sr)" \
+            '{format:$format,system:$system,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,squashfsNoI:$squashfsNoI,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -611,5 +665,6 @@ jobs:
             test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$record")" = "$canonical"
           done
           jq -n --argjson outputs "$canonical" --argjson formats "$EXPECTED_FORMATS" \
-            '{matching:true,readers:($formats | length),formats:$formats,outputs:$outputs}' \
+            --argjson squashfsNoI "$SQUASHFS_NOI" \
+            '{matching:true,readers:($formats | length),formats:$formats,squashfsNoI:$squashfsNoI,outputs:$outputs}' \
             | tee -a "$GITHUB_STEP_SUMMARY"

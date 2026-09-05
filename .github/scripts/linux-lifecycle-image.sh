@@ -17,6 +17,13 @@ valid_workers() {
   [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]
 }
 
+valid_boolean() {
+  case "${1:-}" in
+    true | false) ;;
+    *) return 1 ;;
+  esac
+}
+
 fits_budget() {
   local current="$1" added="$2" limit="$3" reserve="$4"
   ((current + added + reserve <= limit))
@@ -65,9 +72,12 @@ freeze() {
 }
 
 pack_immutable() {
-  local format="$1" source="$2" image="$3" workers="$4"
+  local format="$1" source="$2" image="$3" workers="$4" squashfs_noi="${5:-false}"
+  local -a squashfs_options=()
   valid_format "$format" && [ "$format" != ext4 ] || die "immutable format must be erofs or squashfs"
   valid_workers "$workers" || die "workers must be a positive integer"
+  valid_boolean "$squashfs_noi" || die "squashfs_noi must be true or false"
+  [ "$format" = squashfs ] || [ "$squashfs_noi" = false ] || die "squashfs_noi only applies to SquashFS"
   [ -d "$source" ] || die "pack source is missing: $source"
   mkdir -p "$(dirname "$image")"
   rm -f "$image" "$(dirname "$image")/image.sha256"
@@ -80,8 +90,9 @@ pack_immutable() {
       ;;
     squashfs)
       command -v mksquashfs >/dev/null || die "mksquashfs is required"
+      [ "$squashfs_noi" = false ] || squashfs_options=(-noI)
       sudo mksquashfs "$source" "$image" -noappend -comp zstd -Xcompression-level 3 \
-        -processors "$workers" -no-progress
+        -processors "$workers" -no-progress "${squashfs_options[@]}"
       ;;
   esac
   write_checksum "$image"
@@ -138,6 +149,9 @@ self_test() {
   if valid_format tar; then return 1; fi
   valid_workers 4
   if valid_workers 0; then return 1; fi
+  valid_boolean true
+  valid_boolean false
+  if valid_boolean yes; then return 1; fi
   fits_budget 10 20 40 5
   if fits_budget 10 30 40 5; then return 1; fi
   checkpoint_complete '0|3|3'
