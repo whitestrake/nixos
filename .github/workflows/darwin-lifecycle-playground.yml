@@ -1,9 +1,6 @@
 name: Darwin Sparsebundle Lifecycle Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/darwin-lifecycle-playground.yml]
   workflow_dispatch:
     inputs:
       source_run:
@@ -27,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BASE_CACHE_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-33ae17904b7a7bedebd628346a9f600e8ddf3b990dd6a60fbe8d5f2b11f5caa6-33891132223-1
+  BASE_CACHE_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-4a90d96354b3e6d91d7c72f2550b14c9dd39df8439630ed6a5c997ce435f9f0f-33971747934-1
   FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
 
 jobs:
