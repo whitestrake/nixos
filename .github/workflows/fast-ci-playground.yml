@@ -51,13 +51,13 @@ jobs:
           cp ./*.txt "$output/"
           "$erofs_tools/bin/mkfs.erofs" --version > "$output/packer-version.txt"
           started="$SECONDS"
-          "$erofs_tools/bin/mkfs.erofs" --quiet -zzstd,level=3 -C65536 "$output/image" "$RUNNER_TEMP/source"
+          "$erofs_tools/bin/mkfs.erofs" --quiet --workers=1 -zzstd,level=3 -C65536 -Efragments,ztailpacking,dedupe "$output/image" "$RUNNER_TEMP/source"
           elapsed="$((SECONDS - started))"
           cd "$output"
           sha256sum image > image.sha256
           jq -n --arg fixture "$FIXTURE_SHA" --arg producer "$GITHUB_SHA" \
             --arg source "$SEED_SHA" --argjson bytes "$(stat -c %s image)" --argjson seconds "$elapsed" \
-            '{pack:"erofs-zstd",fixture:$fixture,producer:$producer,source:$source,imageBytes:$bytes,packSeconds:$seconds}' > metadata.json
+            '{pack:"erofs-zstd-dedupe",fixture:$fixture,producer:$producer,source:$source,imageBytes:$bytes,packSeconds:$seconds}' > metadata.json
           sudo umount "$RUNNER_TEMP/source"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
