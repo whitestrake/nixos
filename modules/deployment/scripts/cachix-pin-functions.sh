@@ -21,7 +21,7 @@ cachix_fetch_pins() {
   fi
 
   cachix_with_retry curl -fsS \
-    "${auth_header[@]}" \
+    ${auth_header[@]+"${auth_header[@]}"} \
     "https://app.cachix.org/api/v1/cache/$1/pin" \
     | jq -e 'if type == "array" then . else error("Cachix pin API did not return an array") end'
 }

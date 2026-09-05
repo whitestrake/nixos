@@ -61,7 +61,6 @@ jobs:
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers 3 \
             --store ssh-ng://eu.nixbuild.net \
-            --option builders '' \
             --option max-jobs 2 \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
