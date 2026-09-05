@@ -67,7 +67,7 @@ jobs:
           nix store gc
           nix path-info --all | sort > "$output/baseline-paths.txt"
           nix path-info --recursive "$nfb" | sort > "$output/tool-closure.txt"
-          nix-store --check-validity --recursive "$nfb"
+          nix path-info --recursive "$nfb" | xargs nix-store --check-validity
           nix --version > "$output/nix-version.txt"
           python3 - <<'PY'
           import sqlite3
@@ -149,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           nfb="$(cat "$RUNNER_TEMP/fast-ci-seed/nfb-path.txt")"
-          nix-store --check-validity --recursive "$nfb"
+          nix path-info --recursive "$nfb" | xargs nix-store --check-validity
           "$nfb/bin/nix-fast-build" --help >/dev/null
       - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
