@@ -1,9 +1,6 @@
 name: Hestia Transport Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/hestia-transport-playground.yml]
   workflow_dispatch:
     inputs:
       source_run:
