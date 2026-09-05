@@ -7,6 +7,11 @@ on:
         description: Restore the Linux evaluator seed
         type: boolean
         default: true
+      eval_workers:
+        description: Linux host evaluation workers
+        type: choice
+        options: ['3', '4']
+        default: '3'
 
 permissions:
   contents: read
@@ -93,6 +98,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           FAST_CI_FORWARD_EVENTS: "1"
+          EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
         run: |
           set -euo pipefail
 
@@ -109,7 +115,7 @@ jobs:
             "${nix_fast_build[@]}" \
             --flake .#ci.linux-hosts \
             --systems 'x86_64-linux aarch64-linux' \
-            --eval-workers 3 \
+            --eval-workers "$EVAL_WORKERS" \
             --store ssh-ng://eu.nixbuild.net \
             --option builders '' \
             --option max-jobs 2 \
