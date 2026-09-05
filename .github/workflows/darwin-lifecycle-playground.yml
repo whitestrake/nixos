@@ -16,7 +16,7 @@ on:
         type: string
         default: 14a8d7657900a917560ddbe77577c0d5a1b77638
       trace:
-        description: Run one traced reader per treatment instead of timing rounds
+        description: Run one compacted reader with native tracing instead of timing rounds
         type: boolean
         default: false
       producer_only:
@@ -189,7 +189,7 @@ jobs:
       max-parallel: 1
       matrix:
         round: ${{ fromJSON(inputs.trace && '[1]' || '[1,2,3]') }}
-        treatment: [compacted, uncompacted]
+        treatment: ${{ fromJSON(inputs.trace && '["compacted"]' || '["compacted","uncompacted"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -225,7 +225,7 @@ jobs:
           trace="$RUNNER_TEMP/measurements/fs-usage.txt"
           trace_error="$RUNNER_TEMP/measurements/fs-usage.stderr.txt"
           # shellcheck disable=SC2024 # The unprivileged runner owns these telemetry files.
-          nohup sudo fs_usage -w -f filesys -f cachehit hdiutil diskimages-helper diskimagesiod > "$trace" 2> "$trace_error" &
+          nohup sudo fs_usage -w -F -t 300 -f filesys -f diskio > "$trace" 2> "$trace_error" &
           trace_pid=$!
           echo "DARWIN_TRACE_PID=$trace_pid" >> "$GITHUB_ENV"
           sleep 1
@@ -242,6 +242,12 @@ jobs:
           system: aarch64-darwin
       - name: Finish mount timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/mount-end.txt"
+      - name: Capture mounted device identity for native trace
+        if: inputs.trace
+        run: |
+          diskutil info -plist /nix > "$RUNNER_TEMP/measurements/nix-device.plist" 2> "$RUNNER_TEMP/measurements/device-errors.txt" || true
+          hdiutil info -plist > "$RUNNER_TEMP/measurements/hdiutil-info.plist" 2>> "$RUNNER_TEMP/measurements/device-errors.txt" || true
+          cp "$NIX_ROOT_IMAGE_BUNDLE/Info.plist" "$RUNNER_TEMP/measurements/sparsebundle-info.plist" 2>> "$RUNNER_TEMP/measurements/device-errors.txt" || true
       - name: Start installer timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-start.txt"
       - uses: ./.harness/.github/actions/install-nix
@@ -318,7 +324,7 @@ jobs:
           path: ${{ runner.temp }}/readers
       - name: Verify all reader output maps match
         env:
-          EXPECTED_READERS: ${{ inputs.trace && 2 || 6 }}
+          EXPECTED_READERS: ${{ inputs.trace && 1 || 6 }}
         run: |
           set -euo pipefail
           mapfile -d '' records < <(find "$RUNNER_TEMP/readers" -name records.json -print0 | sort -z)
