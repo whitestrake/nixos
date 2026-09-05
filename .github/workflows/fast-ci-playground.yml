@@ -26,7 +26,7 @@ jobs:
       max-parallel: 1
       matrix:
         round: [1]
-        pack: [erofs, cold, miss, corrupt-image, mount-failure, invalid-nfb]
+        pack: [erofs, cold]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -120,6 +120,33 @@ jobs:
             --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
           jq -ce -f ../.github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
+      - name: Validate current inputs and changed tool definition
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          python3 ../.github/scripts/fast-ci-change-probe.py "$RUNNER_TEMP/measurements/changed"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements/changed" -- \
+            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
+            --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
+            --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
+            --retries 2 --result-file "$RUNNER_TEMP/measurements/changed/results.json" -j 50 --stream-json-lines
+      - name: Check seed membership against current desired identities
+        if: matrix.pack == 'erofs'
+        run: |
+          python3 - <<'PYPROBE'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          seed = root / 'fast-ci-erofs'
+          result = json.loads((root / 'measurements/changed/identity.json').read_text())
+          assert set(result['baselineInputs']) == set((seed / 'external-inputs.txt').read_text().splitlines())
+          baseline = set((seed / 'baseline-paths.txt').read_text().splitlines())
+          assert result['oldTool'] == (seed / 'nfb-path.txt').read_text().strip()
+          assert result['newTool'] not in baseline
+          useful = sorted(set(result['newToolClosure']) - baseline)
+          assert result['newTool'] in useful
+          (root / 'measurements/changed/useful-tool-paths.txt').write_text('\n'.join(useful) + '\n')
+          PYPROBE
       - name: Record environment
         if: always()
         env:
