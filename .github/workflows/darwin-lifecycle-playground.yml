@@ -7,6 +7,10 @@ on:
         description: Existing producer run (empty creates both treatments)
         type: string
         default: ''
+      base_uncompacted_key:
+        description: Exact previous lifecycle uncompacted key (empty uses maintenance base)
+        type: string
+        default: ''
       workload_ref:
         description: Exact commit to refresh and read
         type: string
@@ -44,19 +48,31 @@ jobs:
       - name: Validate inputs and start producer timing
         env:
           WORKLOAD_REF: ${{ inputs.workload_ref }}
+          BASE_UNCOMPACTED_KEY: ${{ inputs.base_uncompacted_key }}
         run: |
           set -euo pipefail
           [[ "$WORKLOAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ -z "$BASE_UNCOMPACTED_KEY" || "$BASE_UNCOMPACTED_KEY" =~ ^darwin-lifecycle-v1-[0-9]+-[0-9a-f]{40}-uncompacted$ ]]
           mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/nix-root-ci-aarch64-darwin"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
           echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/nix-root-ci-aarch64-darwin/nix-root.sparsebundle" >> "$GITHUB_ENV"
       - name: Start frozen base restore timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.base_uncompacted_key == ''
         with:
           path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
           key: ${{ env.BASE_CACHE_KEY }}
           fail-on-cache-miss: true
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.base_uncompacted_key != ''
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/uncompacted/nix-root.sparsebundle
+          key: ${{ inputs.base_uncompacted_key }}
+          fail-on-cache-miss: true
+      - name: Move previous generation into maintenance path
+        if: inputs.base_uncompacted_key != ''
+        run: mv "$RUNNER_TEMP/darwin-lifecycle/uncompacted/nix-root.sparsebundle" "$NIX_ROOT_IMAGE_BUNDLE"
       - name: Finish frozen base restore timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
       - name: Start mount timing
@@ -120,6 +136,7 @@ jobs:
       - name: Record producer image telemetry
         env:
           WORKLOAD_REF: ${{ inputs.workload_ref }}
+          RESOLVED_BASE_KEY: ${{ inputs.base_uncompacted_key || env.BASE_CACHE_KEY }}
         run: |
           set -euo pipefail
           for treatment in compacted uncompacted; do
@@ -128,7 +145,7 @@ jobs:
             logical_bytes="$(find "$bundle" -type f -exec stat -f '%z' {} + | awk '{sum += $1} END {print sum + 0}')"
             band_count="$(find "$bundle/bands" -type f | wc -l | tr -d ' ')"
             jq -n --arg treatment "$treatment" --arg workloadRef "$WORKLOAD_REF" \
-              --arg baseCacheKey "$BASE_CACHE_KEY" --arg harness "$GITHUB_SHA" \
+              --arg baseCacheKey "$RESOLVED_BASE_KEY" --arg harness "$GITHUB_SHA" \
               --argjson allocatedBytes "$allocated_bytes" --argjson logicalBytes "$logical_bytes" \
               --argjson bandCount "$band_count" \
               '{treatment:$treatment,workloadRef:$workloadRef,baseCacheKey:$baseCacheKey,harness:$harness,allocatedBytes:$allocatedBytes,logicalBytes:$logicalBytes,bandCount:$bandCount,cacheArchiveBytesSource:"actions/cache/save log"}' \
