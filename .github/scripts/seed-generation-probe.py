@@ -56,7 +56,7 @@ run(
         "zstd",
         "-q",
         "-d",
-        "-M1G",
+        "--memory=1024MB",
         "--patch-from=" + str(base),
         str(out / "patch.zst"),
         "-o",
@@ -69,6 +69,21 @@ run(
     ["zstd", "-q", "-d", str(out / "full.zst"), "-o", str(out / "full.erofs")],
 )
 assert digest(out / "full.erofs") == digest(new)
+fresh_store = out / "fresh-chunks"
+run(
+    "newCasyncFreshSeconds",
+    [
+        "casync",
+        "--compression=zstd",
+        "--chunk-size=1M",
+        "--store=" + str(fresh_store),
+        "make",
+        str(out / "fresh.caibx"),
+        str(new),
+    ],
+)
+metrics["freshChunkBytes"] = sum(inventory(fresh_store).values())
+metrics["freshChunks"] = len(inventory(fresh_store))
 store = out / "chunks"
 for name in ["base", "new"]:
     run(
