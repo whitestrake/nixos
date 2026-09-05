@@ -38,48 +38,30 @@ jobs:
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
           settings: |
-            caches =
-
-      - name: Configure Cachix
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: whitestrake
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: true
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: Build Linux configurations
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -euo pipefail
 
-          nix_fast_build_store_path="$(
-            nix build --no-link --print-out-paths \
+          nix_fast_build=(
+            nix run \
               --option builders '' \
               --option max-jobs auto \
-              .#packages.x86_64-linux.nix-fast-build
-          )"
-          nix_eval_jobs_store_path="$(
-            nix build --no-link --print-out-paths \
-              --option builders '' \
-              --option max-jobs auto \
-              --inputs-from . nixpkgs-unstable#nix-eval-jobs
-          )"
-          # Finish store migrations before Cachix opens the store concurrently.
-          timeout 60 "$nix_eval_jobs_store_path/bin/nix-eval-jobs" \
-            --workers 1 --expr '{}' >/dev/null
-          echo "NIX_STORE_MIGRATION_PREFLIGHT_COMPLETE"
-
+              ".#packages.x86_64-linux.nix-fast-build" \
+              --
+          )
           python3 .github/scripts/nix_fast_build.py --publish-checks -- \
-            "$nix_fast_build_store_path/bin/nix-fast-build" \
+            "${nix_fast_build[@]}" \
             --flake .#ci.linux \
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers 3 \
-            --option max-jobs 0 \
-            --cachix-cache whitestrake \
-            --push-build-closure \
+            --store ssh-ng://eu.nixbuild.net \
+            --option max-jobs 2 \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50
