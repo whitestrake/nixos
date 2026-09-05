@@ -2,6 +2,7 @@
 """Runnable smoke checks for the temporary timing wrapper."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -36,4 +37,23 @@ with tempfile.TemporaryDirectory() as directory:
             assert 0 <= timing["firstEvalSeconds"] <= timing["totalSeconds"]
         if name == "malformed":
             assert timing["malformedEvents"] == 1
-print("Timing wrapper: four subprocess probes passed")
+    forwarded = subprocess.run(
+        [
+            sys.executable,
+            str(wrapper),
+            directory,
+            "--",
+            sys.executable,
+            "-c",
+            'print(\'{"type":"EVAL"}\'); print(\'{"type":"BUILD"}\')',
+        ],
+        env={**os.environ, "FAST_CI_FORWARD_EVENTS": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert forwarded.returncode == 0, forwarded.stderr
+    assert [json.loads(line)["type"] for line in forwarded.stdout.splitlines()] == [
+        "EVAL",
+        "BUILD",
+    ]
+print("Timing wrapper: five subprocess probes passed")

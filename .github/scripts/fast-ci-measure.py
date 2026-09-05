@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Temporary playground timing wrapper; no GitHub check or promotion writes."""
+"""Temporary timing wrapper, optionally forwarding events to the normal publisher."""
 
 import json
 import os
@@ -27,6 +27,7 @@ def main():
     first_eval = None
     events = 0
     malformed = 0
+    forward_events = os.environ.get("FAST_CI_FORWARD_EVENTS") == "1"
     with (output / "events.jsonl").open("w") as stream:
         for line in process.stdout:
             elapsed = time.monotonic() - started
@@ -40,6 +41,8 @@ def main():
             if event.get("type") == "EVAL" and first_eval is None:
                 first_eval = elapsed
             stream.write(json.dumps({"elapsedSeconds": elapsed, "event": event}) + "\n")
+            if forward_events:
+                print(line, end="", flush=True)
             events += 1
     status = process.wait()
     result = dict(
@@ -50,7 +53,7 @@ def main():
         exitCode=status,
     )
     (output / "timing.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result))
+    print(json.dumps(result), file=sys.stderr if forward_events else sys.stdout)
     return status or bool(malformed) or first_eval is None
 
 

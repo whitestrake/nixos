@@ -1,9 +1,14 @@
-name: Fast CI Playground
+name: "Fast CI Production Probe"
 
 on:
   push:
     branches: [feat/ci-optimisation]
   workflow_dispatch:
+    inputs:
+      seed:
+        description: Restore the Linux evaluator seed
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -13,52 +18,43 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
   SEED_SHA: c2f6bc94bb96d535467b2f20f81b2108ee0b2cb9
 
 jobs:
-  trial:
-    name: Trial ${{ matrix.round }} ${{ matrix.pack }}
+  linux-builds:
+    name: "Linux"
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        round: [1]
-        pack: [erofs, cold]
+    timeout-minutes: 355
+    outputs:
+      records: ${{ steps.records.outputs.records }}
+    permissions:
+      checks: write
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Start timing
+
+      - name: Start Linux timing
         run: |
           mkdir -p "$RUNNER_TEMP/measurements"
           date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ env.FIXTURE_SHA }}
-          path: fixture
-          persist-credentials: false
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: restore
-        if: matrix.pack != 'cold'
+        if: github.event_name == 'push' || inputs.seed
+        continue-on-error: true
         with:
           path: ${{ runner.temp }}/fast-ci-erofs
-          key: fast-ci-playground-v2-${{ matrix.pack == 'miss' && github.run_id || env.SEED_SHA }}-erofs
-      - name: Attempt seed mount and validate tool
+          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-erofs
+      - name: Try evaluator seed
         id: mount
         if: steps.restore.outputs.cache-hit == 'true'
         continue-on-error: true
-        env:
-          PACK: ${{ matrix.pack }}
         run: |
           set -euo pipefail
           test ! -e /nix
           cd "$RUNNER_TEMP/fast-ci-erofs"
-          if [ "$PACK" = corrupt-image ]; then
-            printf broken > image
-          fi
           sha256sum --check image.sha256
           sudo modprobe erofs
           sudo modprobe overlay
@@ -66,108 +62,473 @@ jobs:
           sudo mkdir /nix
           touch "$RUNNER_TEMP/created-nix"
           sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
-          options="lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work"
-          if [ "$PACK" = mount-failure ]; then
-            options="$options,deliberately_invalid_option=1"
-          fi
-          sudo mount -t overlay overlay -o "$options" /nix
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
           nfb="$(cat nfb-path.txt)"
-          if [ "$PACK" = invalid-nfb ]; then
-            nfb=/nix/store/00000000000000000000000000000000-missing-tool
-          fi
           "$nfb/bin/nix-fast-build" --help >/dev/null
-          findmnt /nix
-      - name: Recover rejected seed and assert fault outcome
-        env:
-          PACK: ${{ matrix.pack }}
-          MOUNT_OUTCOME: ${{ steps.mount.outcome }}
-          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+      - name: Recover rejected evaluator seed
+        if: steps.mount.outcome == 'failure'
         run: |
           set -euo pipefail
-          if [ "$MOUNT_OUTCOME" = failure ]; then
-            if [ -e "$RUNNER_TEMP/created-nix" ]; then
-              if mountpoint -q /nix; then sudo umount /nix; fi
-              if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
-              sudo rmdir /nix
-            fi
+          if [ -e "$RUNNER_TEMP/created-nix" ]; then
+            if mountpoint -q /nix; then sudo umount /nix; fi
+            if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
+            sudo rmdir /nix
           fi
-          case "$PACK" in
-            erofs) test "$MOUNT_OUTCOME" = success; mountpoint -q /nix ;;
-            cold|miss) test "$CACHE_HIT" != true; test ! -e /nix ;;
-            *) test "$CACHE_HIT" = true; test "$MOUNT_OUTCOME" = failure; test ! -e /nix ;;
-          esac
-          jq -n --arg treatment "$PACK" --arg mount "$MOUNT_OUTCOME" --arg hit "$CACHE_HIT" \
-            '{treatment:$treatment,mountOutcome:$mount,cacheHit:$hit}' > "$RUNNER_TEMP/measurements/fallback.json"
-      - uses: ./.github/actions/install-nix
+          test ! -e /nix
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
             max-jobs = auto
-      - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+
+      - name: Configure nixbuild.net
+        uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
           settings: |
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Measure Linux build
-        working-directory: fixture
+
+      - name: Build Linux configurations
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FAST_CI_FORWARD_EVENTS: "1"
         run: |
           set -euo pipefail
+
+          nix_fast_build=(
+            nix run \
+              --option builders '' \
+              --option max-jobs auto \
+              ".#packages.x86_64-linux.nix-fast-build" \
+              --
+          )
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
-          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
-            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
-            --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
-            --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
-            --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+            python3 .github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            "${nix_fast_build[@]}" \
+            --flake .#ci.linux \
+            --systems 'x86_64-linux aarch64-linux' \
+            --eval-workers 3 \
+            --store ssh-ng://eu.nixbuild.net \
+            --option builders '' \
+            --option max-jobs 2 \
+            --retries 2 \
+            --result-file "$RUNNER_TEMP/ci-linux-results.json" \
+            -j 50
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
-          jq -ce -f ../.github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
-      - name: Validate current inputs and changed tool definition
-        working-directory: fixture
+
+      - name: Publish Linux records
+        id: records
+        shell: bash
         run: |
           set -euo pipefail
-          python3 ../.github/scripts/fast-ci-change-probe.py "$RUNNER_TEMP/measurements/changed"
-          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements/changed" -- \
-            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
-            --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
-            --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
-            --retries 2 --result-file "$RUNNER_TEMP/measurements/changed/results.json" -j 50 --stream-json-lines
-      - name: Check seed membership against current desired identities
-        if: matrix.pack == 'erofs'
-        run: |
-          python3 - <<'PYPROBE'
-          import json, os
-          from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP'])
-          seed = root / 'fast-ci-erofs'
-          result = json.loads((root / 'measurements/changed/identity.json').read_text())
-          assert set(result['baselineInputs']) == set((seed / 'external-inputs.txt').read_text().splitlines())
-          baseline = set((seed / 'baseline-paths.txt').read_text().splitlines())
-          assert result['oldTool'] == (seed / 'nfb-path.txt').read_text().strip()
-          assert result['newTool'] not in baseline
-          useful = sorted(set(result['newToolClosure']) - baseline)
-          assert result['newTool'] in useful
-          (root / 'measurements/changed/useful-tool-paths.txt').write_text('\n'.join(useful) + '\n')
-          PYPROBE
-      - name: Record environment
+
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-linux-results.json")"
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+
+      - name: Record Linux evidence
         if: always()
         env:
-          PACK: ${{ matrix.pack }}
-          ROUND: ${{ matrix.round }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          MOUNT_OUTCOME: ${{ steps.mount.outcome }}
         run: |
-          jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
-            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg round "$ROUND" \
-            --arg runnerImage "${ImageVersion:-unknown}" \
+          if [ -f "$RUNNER_TEMP/ci-linux-results.json" ]; then
+            cp "$RUNNER_TEMP/ci-linux-results.json" "$RUNNER_TEMP/measurements/results.json"
+          fi
+          jq -n --arg hit "$CACHE_HIT" --arg mount "$MOUNT_OUTCOME" --arg harness "$GITHUB_SHA" \
             --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
-            --arg cores "$(nproc)" --arg kernel "$(uname -r)" \
-            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,round:$round,runnerImage:$runnerImage,cpu:$cpu,cores:$cores,kernel:$kernel}' \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg run "$GITHUB_RUN_ID" \
+            '{cacheHit:$hit,mountOutcome:$mount,harness:$harness,cpu:$cpu,runnerImage:$runnerImage,run:$run}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: trial-${{ matrix.round }}-${{ matrix.pack }}
+          name: linux-evidence
           path: ${{ runner.temp }}/measurements
-      - name: Unmount disposable seed
+      - name: Unmount evaluator seed
         if: always() && steps.mount.outcome == 'success'
         run: |
-          if mountpoint -q /nix; then sudo umount /nix; fi
-          if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
+          sudo umount /nix
+          sudo umount "$RUNNER_TEMP/lower"
+
+  darwin-builds:
+    name: "Darwin"
+    runs-on: macos-26
+    timeout-minutes: 355
+    outputs:
+      records: ${{ steps.records.outputs.records }}
+    permissions:
+      checks: write
+      contents: read
+    env:
+      NIX_ROOT_CACHE_KEY_PREFIX: nix-root-ci-aarch64-darwin-sparsebundle-v1
+      NIX_ROOT_IMAGE_DIR_NAME: nix-root-ci-aarch64-darwin
+      NIX_ROOT_IMAGE_SIZE: 64g
+      NIX_ROOT_SYSTEM: aarch64-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore sparsebundle Nix root cache
+        uses: ./.github/actions/nix-sparsebundle-cache-restore
+        with:
+          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
+          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount sparsebundle Nix root
+        uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
+          system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+
+      - name: Configure Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: Build Darwin configurations
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          df -h
+
+          nix_fast_build_prepare_started="$SECONDS"
+          cached_nix_fast_build="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
+          nix_fast_build=()
+          if [ -d "$cached_nix_fast_build" ]; then
+            cached_nix_fast_build="$(cd -P "$cached_nix_fast_build" && pwd)/bin/nix-fast-build"
+            if [ -x "$cached_nix_fast_build" ] && "$cached_nix_fast_build" --help >/dev/null; then
+              nix_fast_build=("$cached_nix_fast_build")
+              echo "NIX_FAST_BUILD_SOURCE source=cache-root path=$cached_nix_fast_build"
+            fi
+          fi
+          if [ "${#nix_fast_build[@]}" -eq 0 ]; then
+            nix_fast_build_store_path="$(
+              nix build \
+                --no-link \
+                --print-out-paths \
+                .#packages.aarch64-darwin.nix-fast-build
+            )"
+            nix_fast_build=("$nix_fast_build_store_path/bin/nix-fast-build")
+            echo "NIX_FAST_BUILD_SOURCE source=nix-build path=${nix_fast_build[0]}"
+
+            nix_eval_jobs_store_path="$(
+              nix build \
+                --inputs-from . \
+                --no-link \
+                --print-out-paths \
+                nixpkgs-unstable#nix-eval-jobs
+            )"
+            migration_started="$SECONDS"
+            set +e
+            perl -e 'alarm shift; exec @ARGV' \
+              60 \
+              "$nix_eval_jobs_store_path/bin/nix-eval-jobs" \
+              --workers 1 \
+              --expr '{}' \
+              >/dev/null
+            migration_status="$?"
+            set -e
+            if [ "$migration_status" -ne 0 ]; then
+              echo "::error ::Nix store migration preflight failed with status $migration_status."
+              lsof -F pcfn /nix/var/nix/db/big-lock || true
+              exit "$migration_status"
+            fi
+            echo "NIX_STORE_MIGRATION_PREFLIGHT_COMPLETE durationSeconds=$((SECONDS - migration_started))"
+          fi
+          echo "NIX_FAST_BUILD_PREPARE_COMPLETE durationSeconds=$((SECONDS - nix_fast_build_prepare_started))"
+
+          python3 .github/scripts/nix_fast_build.py --publish-checks -- \
+            "${nix_fast_build[@]}" \
+            --flake .#ci.darwin \
+            --systems aarch64-darwin \
+            --eval-workers 1 \
+            --cachix-cache whitestrake \
+            --retries 2 \
+            --result-file "$RUNNER_TEMP/ci-darwin-results.json" \
+            -j 50
+
+      - name: Publish Darwin records
+        id: records
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-darwin-results.json")"
+          printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+
+  all-builds:
+    name: "All Builds"
+    needs:
+      - linux-builds
+      - darwin-builds
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    permissions:
+      contents: read
+    steps:
+      - name: Require successful platform builds
+        env:
+          LINUX_RESULT: ${{ needs.linux-builds.result }}
+          DARWIN_RESULT: ${{ needs.darwin-builds.result }}
+        run: |
+          if [ "$LINUX_RESULT" != success ] || [ "$DARWIN_RESULT" != success ]; then
+            echo "::error ::Linux and Darwin builds must both succeed: linux=$LINUX_RESULT darwin=$DARWIN_RESULT"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+
+      - name: Configure Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: Assemble build manifest
+        shell: bash
+        env:
+          LINUX_RECORDS: ${{ needs.linux-builds.outputs.records }}
+          DARWIN_RECORDS: ${{ needs.darwin-builds.outputs.records }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$LINUX_RECORDS" ] || [ -z "$DARWIN_RECORDS" ]; then
+            echo "::error ::Linux and Darwin build records must both be present."
+            exit 1
+          fi
+
+          records="$(
+            jq -cne \
+              --argjson linux "$LINUX_RECORDS" \
+              --argjson darwin "$DARWIN_RECORDS" \
+              'if ($linux | type) != "array" or ($darwin | type) != "array" then
+                 error("Linux and Darwin build records must be arrays")
+               elif ($linux | length) == 0 or ($darwin | length) == 0 then
+                 error("Linux and Darwin build records must be non-empty")
+               else
+                 $linux + $darwin
+               end'
+          )"
+
+          if ! jq -e '
+            type == "array"
+            and length > 0
+            and all(.[]; (
+              type == "object"
+              and (.attr | type == "string" and test("^(nixosConfigurations|darwinConfigurations)\\.[A-Za-z0-9_-]+$"))
+              and (.kind | type == "string" and length > 0)
+              and (.name | type == "string" and test("^[A-Za-z0-9_-]+$"))
+              and (.storePath | type == "string" and test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$"))
+            ))
+          ' <<< "$records" >/dev/null; then
+            echo "::error ::Nix Fast Build produced malformed configuration records."
+            exit 1
+          fi
+
+          artifact_metadata_dir="$RUNNER_TEMP/ci-artifact-metadata"
+          mkdir -p "$artifact_metadata_dir"
+          artifact_pids=()
+          while IFS=$'\t' read -r index kind name store_path; do
+            (
+              set -euo pipefail
+
+              cache_store="https://whitestrake.cachix.org"
+              system="$(nix store cat --store "$cache_store" "$store_path/system")"
+              rollback_script=""
+              if [ "$kind" = "nixosConfiguration" ]; then
+                dependencies="$(nix store cat --store "$cache_store" "$store_path/extra-dependencies")"
+                rollback_matches="$(
+                  jq -cn \
+                    --arg dependencies "$dependencies" \
+                    --arg name "$name" \
+                    '[
+                      $dependencies
+                      | scan("/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+")
+                      | select(endswith("-deploy-health-rollback-script-" + $name))
+                    ]'
+                )"
+                nondeployable_matches="$(
+                  jq -cn \
+                    --arg dependencies "$dependencies" \
+                    --arg name "$name" \
+                    '[
+                      $dependencies
+                      | scan("/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+")
+                      | select(endswith("-cachix-nondeployable-" + $name))
+                    ]'
+                )"
+                rollback_count="$(jq -r 'length' <<< "$rollback_matches")"
+                nondeployable_count="$(jq -r 'length' <<< "$nondeployable_matches")"
+                marker_count=$((rollback_count + nondeployable_count))
+                if [ "$rollback_count" -gt 1 ] || [ "$nondeployable_count" -gt 1 ] || [ "$marker_count" -ne 1 ]; then
+                  echo "::error ::Expected exactly one deployability marker for $name (one rollback script or one nondeployable sentinel)."
+                  exit 1
+                elif [ "$rollback_count" = 1 ]; then
+                  rollback_script="$(jq -r '.[0]' <<< "$rollback_matches")"
+                fi
+              fi
+
+              jq -cn \
+                --argjson index "$index" \
+                --arg system "$system" \
+                --arg rollbackScript "$rollback_script" \
+                '{
+                  index: $index,
+                  system: $system
+                } + if $rollbackScript == "" then {} else {rollbackScript: $rollbackScript} end' \
+                > "$artifact_metadata_dir/$index.json"
+            ) &
+            artifact_pids+=("$!")
+          done < <(
+            jq -r 'to_entries[] | [.key, .value.kind, .value.name, .value.storePath] | @tsv' <<< "$records"
+          )
+
+          artifact_status=0
+          for artifact_pid in "${artifact_pids[@]}"; do
+            if ! wait "$artifact_pid"; then
+              artifact_status=1
+            fi
+          done
+          if [ "$artifact_status" -ne 0 ]; then
+            echo "::error ::Failed to read one or more CI artefacts from Cachix."
+            exit 1
+          fi
+
+          artifact_metadata="$(jq -sc '.' "$artifact_metadata_dir"/*.json)"
+          jq -cne \
+            --argjson records "$records" \
+            --argjson metadata "$artifact_metadata" '
+              ($records | to_entries) as $entries
+              | if ($metadata | length) != ($entries | length) then
+                  error("Cachix artefact metadata count does not match build records")
+                elif (($metadata | map(.index) | sort) != [range(0; ($entries | length))]) then
+                  error("Cachix artefact metadata indexes are not unique and complete")
+                elif any($metadata[]; (
+                  type != "object"
+                  or (.index | type != "number")
+                  or (.system | type != "string")
+                  or (has("rollbackScript") and (.rollbackScript | type != "string"))
+                )) then
+                  error("invalid Cachix artefact metadata")
+                else
+                  $entries
+                  | map(
+                      . as $entry
+                      | ($metadata[] | select(.index == $entry.key)) as $metadata_entry
+                      | $entry.value
+                        + {system: $metadata_entry.system}
+                        + (if ($metadata_entry.rollbackScript // "") == ""
+                           then {}
+                           else {rollbackScript: $metadata_entry.rollbackScript}
+                           end)
+                    )
+                end
+              | sort_by(.system, .attr) as $records
+              | ($records
+                  | map(select(.system != "aarch64-darwin" and .system != "aarch64-linux" and .system != "x86_64-linux") | .system)
+                  | unique) as $unknown_systems
+              | ($records | group_by(.attr) | map(select(length > 1) | .[0].attr)) as $duplicate_attrs
+              | ($records | group_by(.name) | map(select(length > 1) | .[0].name)) as $duplicate_names
+              | if ($unknown_systems | length) > 0 then
+                  error("unknown CI systems: \($unknown_systems | join(", "))")
+                elif ($duplicate_attrs | length) > 0 then
+                  error("duplicate CI attributes: \($duplicate_attrs | join(", "))")
+                elif ($duplicate_names | length) > 0 then
+                  error("duplicate CI configuration names: \($duplicate_names | join(", "))")
+                elif (["aarch64-darwin", "aarch64-linux", "x86_64-linux"] - ($records | map(.system) | unique) | length) > 0 then
+                  error("CI records do not cover all systems")
+                elif any($records[]; (
+                  (.attr | type != "string" or test("^(nixosConfigurations|darwinConfigurations)\\.[A-Za-z0-9_-]+$") | not)
+                  or (.kind | type != "string" or length == 0)
+                  or (.name | type != "string" or test("^[A-Za-z0-9_-]+$") | not)
+                  or (.system | type != "string" or (. == "aarch64-darwin" or . == "aarch64-linux" or . == "x86_64-linux") | not)
+                  or (.storePath | type != "string" or test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$") | not)
+                  or (has("rollbackScript") and (
+                    . as $record
+                    | $record.kind != "nixosConfiguration"
+                      or ($record.rollbackScript | type != "string" or test("^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+$") | not)
+                      or ($record.rollbackScript | endswith("-deploy-health-rollback-script-" + $record.name) | not)
+                  ))
+                )) then
+                  error("invalid CI build record")
+                elif any($records[]; (
+                  (.attr | split(".")) as $parts
+                  | .name != $parts[1]
+                    or .kind != (if $parts[0] == "nixosConfigurations" then "nixosConfiguration" else "darwinConfiguration" end)
+                )) then
+                  error("CI build record identity does not match its attribute")
+                else
+                  $records
+                end
+            ' > "$RUNNER_TEMP/ci-enriched-records.json"
+
+      - name: Validate and publish complete build proof
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          source modules/deployment/scripts/cachix-pin-functions.sh
+
+          records="$(jq -ce '.' "$RUNNER_TEMP/ci-enriched-records.json")"
+          proof_file="$RUNNER_TEMP/ci-build-proof.json"
+          proof_canonical_file="$RUNNER_TEMP/ci-build-proof.canonical.json"
+          jq -cn \
+            --arg revision "$GITHUB_SHA" \
+            --argjson records "$records" \
+            '{
+              revision: $revision,
+              records: ($records | map({attr, system, storePath}))
+            }' > "$proof_file"
+          jq -ceS -f .github/scripts/ci-build-proof.jq "$proof_file" > "$proof_canonical_file"
+          mv "$proof_canonical_file" "$proof_file"
+          proof_path="$(nix store add --mode flat --name ci-build-proof.json "$proof_file")"
+          cachix push whitestrake "$proof_path"
+          mapfile -t recorded_paths < <(jq -r '.[].storePath' <<< "$records")
+          nix path-info --store https://whitestrake.cachix.org "${recorded_paths[@]}" >/dev/null
+          echo "Published durable CI build proof: $proof_path"
+          {
+            echo "### Durable CI build proof"
+            echo
+            echo "Revision: \`$GITHUB_SHA\`"
+            echo
+            echo "Store path: \`$proof_path\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: complete-build-proof
+          path: |
+            ${{ runner.temp }}/ci-build-proof.json
+            ${{ runner.temp }}/ci-enriched-records.json
