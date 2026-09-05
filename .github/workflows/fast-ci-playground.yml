@@ -14,74 +14,19 @@ concurrency:
 
 env:
   FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
-  SEED_SHA: a1150a01a8e9e1fcbbfb7b9b44c5ac9b0b2f4ad9
+  SEED_SHA: c2f6bc94bb96d535467b2f20f81b2108ee0b2cb9
 
 jobs:
-  seed:
-    name: Repack frozen seed with modern EROFS
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ env.FIXTURE_SHA }}
-          path: fixture
-          persist-credentials: false
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/fast-ci-squashfs
-          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-squashfs
-          fail-on-cache-miss: true
-      - uses: ./.github/actions/install-nix
-      - name: Repack the immutable snapshot
-        working-directory: fixture
-        run: |
-          set -euo pipefail
-          erofs_tools="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
-          output="$RUNNER_TEMP/fast-ci-erofs"
-          mkdir -p "$output" "$RUNNER_TEMP/source"
-          cd "$RUNNER_TEMP/fast-ci-squashfs"
-          sha256sum --check image.sha256
-          sudo modprobe squashfs
-          sudo modprobe erofs
-          sudo mount -t squashfs -o loop,ro image "$RUNNER_TEMP/source"
-          cp ./*.txt "$output/"
-          "$erofs_tools/bin/mkfs.erofs" --version > "$output/packer-version.txt"
-          started="$SECONDS"
-          "$erofs_tools/bin/mkfs.erofs" --quiet --workers=1 -zzstd,level=3 -C65536 -Efragments,ztailpacking,dedupe "$output/image" "$RUNNER_TEMP/source"
-          elapsed="$((SECONDS - started))"
-          cd "$output"
-          sha256sum image > image.sha256
-          jq -n --arg fixture "$FIXTURE_SHA" --arg producer "$GITHUB_SHA" \
-            --arg source "$SEED_SHA" --argjson bytes "$(stat -c %s image)" --argjson seconds "$elapsed" \
-            '{pack:"erofs-zstd-dedupe",fixture:$fixture,producer:$producer,source:$source,imageBytes:$bytes,packSeconds:$seconds}' > metadata.json
-          sudo umount "$RUNNER_TEMP/source"
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/fast-ci-erofs
-          key: fast-ci-playground-v2-${{ github.sha }}-erofs
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: seed-metadata
-          path: |
-            ${{ runner.temp }}/fast-ci-erofs/*.txt
-            ${{ runner.temp }}/fast-ci-erofs/*.json
-            ${{ runner.temp }}/fast-ci-erofs/*.sha256
-
   trial:
     name: Trial ${{ matrix.round }} ${{ matrix.pack }}
-    needs: seed
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        round: [1, 2, 3]
-        pack: [squashfs, erofs]
+        round: [1]
+        pack: [erofs, cold, miss, corrupt-image, mount-failure, invalid-nfb]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -96,39 +41,67 @@ jobs:
           path: fixture
           persist-credentials: false
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: restore
         if: matrix.pack != 'cold'
         with:
-          path: ${{ runner.temp }}/fast-ci-${{ matrix.pack }}
-          key: fast-ci-playground-v2-${{ matrix.pack == 'erofs' && github.sha || env.SEED_SHA }}-${{ matrix.pack }}
-          fail-on-cache-miss: true
-      - name: Mount seed and writable overlay
-        if: matrix.pack != 'cold'
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-playground-v2-${{ matrix.pack == 'miss' && github.run_id || env.SEED_SHA }}-erofs
+      - name: Attempt seed mount and validate tool
+        id: mount
+        if: steps.restore.outputs.cache-hit == 'true'
+        continue-on-error: true
         env:
           PACK: ${{ matrix.pack }}
         run: |
           set -euo pipefail
-          ln -s "$RUNNER_TEMP/fast-ci-$PACK" "$RUNNER_TEMP/fast-ci-seed"
-          cd "$RUNNER_TEMP/fast-ci-seed"
-          sha256sum --check image.sha256
-          sudo modprobe "$PACK"
-          sudo modprobe overlay
           test ! -e /nix
+          cd "$RUNNER_TEMP/fast-ci-erofs"
+          if [ "$PACK" = corrupt-image ]; then
+            printf broken > image
+          fi
+          sha256sum --check image.sha256
+          sudo modprobe erofs
+          sudo modprobe overlay
           mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
           sudo mkdir /nix
-          sudo mount -t "$PACK" -o loop,ro image "$RUNNER_TEMP/lower"
-          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+          touch "$RUNNER_TEMP/created-nix"
+          sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
+          options="lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work"
+          if [ "$PACK" = mount-failure ]; then
+            options="$options,deliberately_invalid_option=1"
+          fi
+          sudo mount -t overlay overlay -o "$options" /nix
+          nfb="$(cat nfb-path.txt)"
+          if [ "$PACK" = invalid-nfb ]; then
+            nfb=/nix/store/00000000000000000000000000000000-missing-tool
+          fi
+          "$nfb/bin/nix-fast-build" --help >/dev/null
           findmnt /nix
+      - name: Recover rejected seed and assert fault outcome
+        env:
+          PACK: ${{ matrix.pack }}
+          MOUNT_OUTCOME: ${{ steps.mount.outcome }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          if [ "$MOUNT_OUTCOME" = failure ]; then
+            if [ -e "$RUNNER_TEMP/created-nix" ]; then
+              if mountpoint -q /nix; then sudo umount /nix; fi
+              if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
+              sudo rmdir /nix
+            fi
+          fi
+          case "$PACK" in
+            erofs) test "$MOUNT_OUTCOME" = success; mountpoint -q /nix ;;
+            cold|miss) test "$CACHE_HIT" != true; test ! -e /nix ;;
+            *) test "$CACHE_HIT" = true; test "$MOUNT_OUTCOME" = failure; test ! -e /nix ;;
+          esac
+          jq -n --arg treatment "$PACK" --arg mount "$MOUNT_OUTCOME" --arg hit "$CACHE_HIT" \
+            '{treatment:$treatment,mountOutcome:$mount,cacheHit:$hit}' > "$RUNNER_TEMP/measurements/fallback.json"
       - uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
             max-jobs = auto
-      - name: Validate seed
-        if: matrix.pack != 'cold'
-        run: |
-          set -euo pipefail
-          nfb="$(cat "$RUNNER_TEMP/fast-ci-seed/nfb-path.txt")"
-          nix path-info --recursive "$nfb" | xargs nix-store --check-validity
-          "$nfb/bin/nix-fast-build" --help >/dev/null
       - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
@@ -147,16 +120,6 @@ jobs:
             --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
           jq -ce -f ../.github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
-      - name: Observe reusable local additions
-        if: success() && matrix.pack != 'cold'
-        run: |
-          set -euo pipefail
-          nix path-info --all | sort > "$RUNNER_TEMP/measurements/after-paths.txt"
-          comm -13 "$RUNNER_TEMP/fast-ci-seed/baseline-paths.txt" "$RUNNER_TEMP/measurements/after-paths.txt" > "$RUNNER_TEMP/measurements/new-paths.txt"
-          cat "$RUNNER_TEMP/fast-ci-seed/external-inputs.txt" "$RUNNER_TEMP/fast-ci-seed/tool-closure.txt" | sort -u > "$RUNNER_TEMP/desired-paths.txt"
-          comm -12 "$RUNNER_TEMP/measurements/new-paths.txt" "$RUNNER_TEMP/desired-paths.txt" > "$RUNNER_TEMP/measurements/useful-paths.txt"
-          echo "New paths: $(wc -l < "$RUNNER_TEMP/measurements/new-paths.txt")"
-          echo "Useful reusable paths: $(wc -l < "$RUNNER_TEMP/measurements/useful-paths.txt")"
       - name: Record environment
         if: always()
         env:
@@ -177,7 +140,7 @@ jobs:
           name: trial-${{ matrix.round }}-${{ matrix.pack }}
           path: ${{ runner.temp }}/measurements
       - name: Unmount disposable seed
-        if: always() && matrix.pack != 'cold'
+        if: always() && steps.mount.outcome == 'success'
         run: |
           if mountpoint -q /nix; then sudo umount /nix; fi
           if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
