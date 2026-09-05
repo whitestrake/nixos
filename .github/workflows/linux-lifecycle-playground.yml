@@ -1,9 +1,6 @@
 name: Linux Image Maintenance Lifecycle Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/linux-lifecycle-playground.yml]
   workflow_dispatch:
     inputs:
       source_run:

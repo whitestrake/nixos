@@ -19,6 +19,10 @@ on:
         description: Run one traced reader per treatment instead of timing rounds
         type: boolean
         default: false
+      producer_only:
+        description: Prepare a lineage parent without running reader comparisons
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -177,7 +181,7 @@ jobs:
 
   reader:
     needs: produce
-    if: ${{ always() && (needs.produce.result == 'success' || (inputs.source_run != '' && needs.produce.result == 'skipped')) }}
+    if: ${{ always() && !inputs.producer_only && (needs.produce.result == 'success' || (inputs.source_run != '' && needs.produce.result == 'skipped')) }}
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
