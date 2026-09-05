@@ -1,8 +1,6 @@
 name: "Fast CI Production Probe"
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
   workflow_dispatch:
     inputs:
       seed:
