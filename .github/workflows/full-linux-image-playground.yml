@@ -1,0 +1,156 @@
+name: Full Linux Image Probe
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing image producer run (empty builds new images)
+        type: string
+        default: ''
+permissions:
+  contents: read
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+jobs:
+  pack:
+    if: inputs.source_run == ''
+    strategy:
+      fail-fast: false
+      matrix:
+        system: [x86_64-linux, aarch64-linux]
+    runs-on: ${{ matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/nix-ext4-cache-restore
+        with:
+          cache-key-prefix: nix-root-ci-${{ matrix.system }}-ext4-v1
+          image-dir-name: nix-root-ci-${{ matrix.system }}
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/install-nix
+      - name: Repack frozen full lane
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/frozen" "$RUNNER_TEMP/full-erofs" "$RUNNER_TEMP/full-squashfs" "$RUNNER_TEMP/pack-evidence"
+          test -f "$NIX_ROOT_IMAGE_ARCHIVE"
+          zstd -d --sparse "$NIX_ROOT_IMAGE_ARCHIVE" -o "$NIX_ROOT_IMAGE"
+          sudo mount -o loop,ro,noload "$NIX_ROOT_IMAGE" "$RUNNER_TEMP/frozen"
+          erofs="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools
+          started="$SECONDS"
+          sudo "$erofs/bin/mkfs.erofs" --quiet --workers=1 -zzstd,level=3 -C65536 -Efragments,ztailpacking,dedupe "$RUNNER_TEMP/full-erofs/image" "$RUNNER_TEMP/frozen"
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/pack-evidence/erofs-seconds.txt"
+          started="$SECONDS"
+          sudo mksquashfs "$RUNNER_TEMP/frozen" "$RUNNER_TEMP/full-squashfs/image" -noappend -comp zstd -Xcompression-level 3 -no-progress
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/pack-evidence/squashfs-seconds.txt"
+          for format in erofs squashfs; do
+            cd "$RUNNER_TEMP/full-$format"
+            sha256sum image > image.sha256
+            stat -c %s image > "$RUNNER_TEMP/pack-evidence/$format-bytes.txt"
+            cp image.sha256 "$RUNNER_TEMP/pack-evidence/$format.sha256"
+          done
+          sudo umount "$RUNNER_TEMP/frozen"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/full-erofs
+          key: full-image-probe-${{ github.run_id }}-${{ matrix.system }}-erofs
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/full-squashfs
+          key: full-image-probe-${{ github.run_id }}-${{ matrix.system }}-squashfs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: full-pack-${{ matrix.system }}
+          path: ${{ runner.temp }}/pack-evidence
+  reader:
+    needs: pack
+    if: ${{ always() && (needs.pack.result == 'success' || (inputs.source_run != '' && needs.pack.result == 'skipped')) }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        system: [x86_64-linux, aarch64-linux]
+        format: [ext4, erofs, squashfs]
+    runs-on: ${{ matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start reader timing
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurements"
+          date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: ./.github/actions/nix-ext4-cache-restore
+        if: matrix.format == 'ext4'
+        with:
+          cache-key-prefix: nix-root-ci-${{ matrix.system }}-ext4-v1
+          image-dir-name: nix-root-ci-${{ matrix.system }}
+          system: ${{ matrix.system }}
+      - uses: ./.github/actions/nix-ext4-mount
+        if: matrix.format == 'ext4'
+        with:
+          image-size: 32G
+          system: ${{ matrix.system }}
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: matrix.format != 'ext4'
+        with:
+          path: ${{ runner.temp }}/full-${{ matrix.format }}
+          key: full-image-probe-${{ inputs.source_run || github.run_id }}-${{ matrix.system }}-${{ matrix.format }}
+          fail-on-cache-miss: true
+      - name: Mount immutable full image with overlay
+        if: matrix.format != 'ext4'
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          set -euo pipefail
+          test ! -e /nix
+          cd "$RUNNER_TEMP/full-$FORMAT"
+          sha256sum --check image.sha256
+          sudo modprobe "$FORMAT"
+          sudo modprobe overlay
+          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
+          sudo mkdir /nix
+          sudo mount -t "$FORMAT" -o loop,ro image "$RUNNER_TEMP/lower"
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Measure local full-lane build
+        working-directory: fixture
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          set -euo pipefail
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run ".#packages.$SYSTEM.nix-fast-build" -- \
+            --flake ".#ci.$SYSTEM" --systems "$SYSTEM" --eval-workers 3 \
+            --option builders '' --option max-jobs 2 --retries 2 \
+            --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+      - name: Record environment
+        if: always()
+        env:
+          FORMAT: ${{ matrix.format }}
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg revision "$GITHUB_SHA" \
+            --arg cpu "$(lscpu | sed -n '/Model name/p')" --arg image "${ImageVersion:-unknown}" \
+            '{format:$format,system:$system,revision:$revision,cpu:$cpu,runnerImage:$image}' > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: full-reader-${{ matrix.system }}-${{ matrix.format }}
+          path: ${{ runner.temp }}/measurements

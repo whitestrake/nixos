@@ -1,0 +1,754 @@
+name: Hestia Transport Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing producer run (empty creates the salted generations)
+        type: string
+        default: ''
+      source_attempt:
+        description: Attempt number for an existing producer run
+        type: string
+        default: '1'
+      mode:
+        description: Normal readers and control, or post-deletion recovery
+        type: choice
+        options: [normal, recovery]
+        default: normal
+      missing_pack_cache_id:
+        description: Exact externally deleted changed-generation pack cache ID
+        type: string
+        default: ''
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: hestia-transport-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BASE_ROOT: /nix/store/hj9db71yrzyjy0ixfcvz30r7fpcwv1dk-darwin-system-26.05.c3e90c8
+  BASE_SHA: 34ae0ef228171c6f9ace59efa6c8b65ab9cad246
+  CHANGED_ROOT: /nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8
+  CHANGED_SHA: 83c56e158b04dea4da66d123fc206af2630b0501
+  CONTROL_CACHE_ID: '7362863423'
+  CONTROL_CACHE_KEY: darwin-lifecycle-v1-33972271852-14a8d7657900a917560ddbe77577c0d5a1b77638-compacted
+  CONTROL_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
+  CONTROL_CACHE_BYTES: '2236965460'
+  CACHE_RESERVE_BYTES: '8000000000'
+  CACHE_LIMIT_BYTES: '50000000000' # Verified through the repository owner's API before dispatch.
+  HESTIA_CACHE_VERSION_SALT: transport-v1-${{ inputs.source_run != '' && inputs.source_run || github.run_id }}-${{ inputs.source_run != '' && inputs.source_attempt || github.run_attempt }}
+
+jobs:
+  validate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      source_run: ${{ steps.inputs.outputs.source_run }}
+      source_attempt: ${{ steps.inputs.outputs.source_attempt }}
+      cache_version: ${{ steps.inputs.outputs.cache_version }}
+    steps:
+      - name: Validate dispatch and telemetry parsers
+        id: inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          SOURCE_RUN_INPUT: ${{ inputs.source_run }}
+          SOURCE_ATTEMPT_INPUT: ${{ inputs.source_attempt }}
+          MISSING_PACK_CACHE_ID: ${{ inputs.missing_pack_cache_id }}
+        run: |
+          set -euo pipefail
+          [[ -z "$SOURCE_RUN_INPUT" || "$SOURCE_RUN_INPUT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ATTEMPT_INPUT" =~ ^[1-9][0-9]*$ ]]
+          if [ "$MODE" = recovery ]; then
+            test -n "$SOURCE_RUN_INPUT"
+            [[ "$MISSING_PACK_CACHE_ID" =~ ^[1-9][0-9]*$ ]]
+          else
+            test -z "$MISSING_PACK_CACHE_ID"
+          fi
+
+          source_run="${SOURCE_RUN_INPUT:-$GITHUB_RUN_ID}"
+          if [ -n "$SOURCE_RUN_INPUT" ]; then
+            source_attempt="$SOURCE_ATTEMPT_INPUT"
+          else
+            source_attempt="$GITHUB_RUN_ATTEMPT"
+          fi
+          expected_salt="transport-v1-$source_run-$source_attempt"
+          test "$HESTIA_CACHE_VERSION_SALT" = "$expected_salt"
+          cache_version="$(printf 'hestia-2:%s' "$expected_salt" | sha256sum | cut -d ' ' -f 1)"
+          [[ "$cache_version" =~ ^[0-9a-f]{64}$ ]]
+
+          sample='[{"id":1,"key":"m3#1","size_in_bytes":3},{"id":2,"key":"pack-a","size_in_bytes":7}]'
+          test "$(jq '[.[] | select(.key | startswith("pack-")) | .size_in_bytes] | add // 0' <<< "$sample")" -eq 7
+          test "$((10000000000 - 2000000000))" -ge "$CACHE_RESERVE_BYTES"
+          test "$((9999999999 - 2000000000))" -lt "$CACHE_RESERVE_BYTES"
+
+          {
+            echo "source_run=$source_run"
+            echo "source_attempt=$source_attempt"
+            echo "cache_version=$cache_version"
+          } >> "$GITHUB_OUTPUT"
+
+  produce_base:
+    needs: validate
+    if: inputs.mode == 'normal' && inputs.source_run == ''
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      manifest_version: ${{ steps.drain.outputs.manifest_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Import and verify accepted base closure
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/base"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/evidence/base/experiment-start.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/import-start.txt"
+          nix-store --realise --option builders '' --option max-jobs 0 "$BASE_ROOT"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/import-end.txt"
+          nix store verify --recursive --no-trust "$BASE_ROOT"
+          nix-store --query --requisites "$BASE_ROOT" | sort > "$RUNNER_TEMP/evidence/base/producer-closure.txt"
+          test -s "$RUNNER_TEMP/evidence/base/producer-closure.txt"
+          grep -Fx "$BASE_ROOT" "$RUNNER_TEMP/evidence/base/producer-closure.txt"
+      - name: Gate cache headroom and snapshot namespace
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/base"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
+          limit_bytes="$CACHE_LIMIT_BYTES"
+          listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
+          active_bytes="$listed_bytes"
+          headroom_bytes="$((limit_bytes - active_bytes))"
+          jq -n --argjson limitBytes "$limit_bytes" \
+            --argjson listedActiveBytes "$listed_bytes" --argjson countedActiveBytes "$active_bytes" \
+            --argjson headroomBytes "$headroom_bytes" --argjson requiredBytes "$CACHE_RESERVE_BYTES" \
+            '{limitBytes:$limitBytes,limitSource:"owner-verified fixed experiment limit",usageSource:"paginated cache inventory",listedActiveBytes:$listedActiveBytes,countedActiveBytes:$countedActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
+            > "$evidence/quota-before.json"
+          test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
+          jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
+            "$RUNNER_TEMP/all-caches.json" > "$evidence/cache-before.json"
+          test "$(jq length "$evidence/cache-before.json")" -eq 0
+      - name: Start pinned Hestia
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/hestia-start.txt"
+      - uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          drain-timeout: '900'
+      - name: Record Hestia startup
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/base/hestia-ready.txt"
+      - name: Register and drain base closure
+        id: drain
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/base"
+          "$HESTIA_BIN" hook --socket "$HESTIA_SOCKET" "$BASE_ROOT"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$evidence/drain-start-utc.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-start.txt"
+          "$HESTIA_BIN" drain --socket "$HESTIA_SOCKET" --timeout 900 2>&1 | tee "$evidence/drain-summary.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-end.txt"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$evidence/drain-end-utc.txt"
+          grep -Eq '^hestia drain: pushed [1-9][0-9]* paths?.*; manifest m3#[1-9][0-9]*$' "$evidence/drain-summary.txt"
+          manifest_version="$(sed -nE 's/^.*; manifest m3#([1-9][0-9]*)$/\1/p' "$evidence/drain-summary.txt")"
+          test -n "$manifest_version"
+          grep -E '^hestia serve: drain stages: [a-z]+ [0-9]+\.[0-9]s' "$HESTIA_SERVE_LOG" \
+            | tail -1 > "$evidence/drain-stages.txt"
+          test -s "$evidence/drain-stages.txt"
+          echo "manifest_version=$manifest_version" >> "$GITHUB_OUTPUT"
+      - name: Capture exact base payload metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+          MANIFEST_VERSION: ${{ steps.drain.outputs.manifest_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/base"
+          snapshot() {
+            gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+              --jq '.actions_caches[]' | jq -s --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+              '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)'
+          }
+          for _ in {1..30}; do
+            snapshot > "$evidence/cache-after.json"
+            jq --slurpfile before "$evidence/cache-before.json" \
+              '($before[0] | map(.id)) as $ids | [.[] | select(.id as $id | $ids | index($id) | not)]' \
+              "$evidence/cache-after.json" > "$evidence/new-entries.json"
+            jq '[.[] | select(.key | startswith("pack-"))]' "$evidence/new-entries.json" > "$evidence/new-packs.json"
+            if [ "$(jq length "$evidence/new-packs.json")" -gt 0 ] && \
+              jq -e --arg key "m3#$MANIFEST_VERSION" 'any(.key == $key)' "$evidence/new-entries.json" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          test "$(jq length "$evidence/new-packs.json")" -gt 0
+          jq -e --arg key "m3#$MANIFEST_VERSION" 'any(.key == $key)' "$evidence/new-entries.json" >/dev/null
+          drain_start="$(cat "$evidence/drain-start-utc.txt")"
+          drain_end="$(cat "$evidence/drain-end-utc.txt")"
+          jq -e --arg start "$drain_start" --arg end "$drain_end" \
+            '($start | fromdateiso8601) as $startEpoch |
+             ($end | fromdateiso8601) as $endEpoch |
+             all((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $created |
+               $created >= $startEpoch and $created <= $endEpoch)' \
+            "$evidence/new-packs.json" >/dev/null
+          pack_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/new-packs.json")"
+          cache_delta="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/new-entries.json")"
+          test "$pack_bytes" -gt 0
+          jq -n --arg generation base --arg revision "$BASE_SHA" --arg root "$BASE_ROOT" \
+            --arg acceptedRun '33774487121' --arg salt "$HESTIA_CACHE_VERSION_SALT" \
+            --arg cacheVersion "$CACHE_VERSION" --argjson manifestVersion "$MANIFEST_VERSION" \
+            --argjson closurePaths "$(wc -l < "$evidence/producer-closure.txt" | tr -d ' ')" \
+            --argjson packCount "$(jq length "$evidence/new-packs.json")" \
+            --argjson packBytes "$pack_bytes" --argjson cacheSizeDeltaBytes "$cache_delta" \
+            '{generation:$generation,revision:$revision,acceptedRun:$acceptedRun,root:$root,salt:$salt,cacheVersion:$cacheVersion,manifestVersion:$manifestVersion,closurePaths:$closurePaths,packCount:$packCount,packBytesExact:$packBytes,cacheSizeDeltaBytes:$cacheSizeDeltaBytes,packBytesSource:"GitHub cache metadata",drainBytesSource:"rounded human-readable summary only"}' \
+            > "$evidence/transport.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hestia-transport-base-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/evidence/base
+
+  produce_changed:
+    needs: [validate, produce_base]
+    if: inputs.mode == 'normal' && inputs.source_run == '' && needs.produce_base.result == 'success'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-base-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/evidence/base
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Import and verify accepted changed closure
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence/changed"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/evidence/changed/experiment-start.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/import-start.txt"
+          nix-store --realise --option builders '' --option max-jobs 0 "$CHANGED_ROOT"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/import-end.txt"
+          nix store verify --recursive --no-trust "$CHANGED_ROOT"
+          nix-store --query --requisites "$CHANGED_ROOT" | sort > "$RUNNER_TEMP/evidence/changed/producer-closure.txt"
+          test -s "$RUNNER_TEMP/evidence/changed/producer-closure.txt"
+          grep -Fx "$CHANGED_ROOT" "$RUNNER_TEMP/evidence/changed/producer-closure.txt"
+      - name: Recheck cache headroom and snapshot namespace
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/changed"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
+          limit_bytes="$CACHE_LIMIT_BYTES"
+          listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
+          active_bytes="$listed_bytes"
+          headroom_bytes="$((limit_bytes - active_bytes))"
+          jq -n --argjson limitBytes "$limit_bytes" \
+            --argjson listedActiveBytes "$listed_bytes" --argjson countedActiveBytes "$active_bytes" \
+            --argjson headroomBytes "$headroom_bytes" --argjson requiredBytes "$CACHE_RESERVE_BYTES" \
+            '{limitBytes:$limitBytes,limitSource:"owner-verified fixed experiment limit",usageSource:"paginated cache inventory",listedActiveBytes:$listedActiveBytes,countedActiveBytes:$countedActiveBytes,headroomBytes:$headroomBytes,requiredBytes:$requiredBytes}' \
+            > "$evidence/quota-before.json"
+          test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
+          jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
+            "$RUNNER_TEMP/all-caches.json" > "$evidence/cache-before.json"
+          test "$(jq length "$evidence/cache-before.json")" -gt 0
+      - name: Read base manifest version
+        id: base_manifest
+        run: |
+          version="$(jq -r '.manifestVersion' "$RUNNER_TEMP/evidence/base/transport.json")"
+          [[ "$version" =~ ^[1-9][0-9]*$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Start pinned Hestia
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/hestia-start.txt"
+      - uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          drain-timeout: '900'
+          wait-manifest-version: ${{ steps.base_manifest.outputs.version }}
+      - name: Record Hestia startup
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/changed/hestia-ready.txt"
+      - name: Register and drain changed closure
+        id: drain
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/changed"
+          "$HESTIA_BIN" hook --socket "$HESTIA_SOCKET" "$CHANGED_ROOT"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$evidence/drain-start-utc.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-start.txt"
+          "$HESTIA_BIN" drain --socket "$HESTIA_SOCKET" --timeout 900 2>&1 | tee "$evidence/drain-summary.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-end.txt"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$evidence/drain-end-utc.txt"
+          grep -Eq '^hestia drain: pushed [1-9][0-9]* paths?.*; manifest m3#[1-9][0-9]*$' "$evidence/drain-summary.txt"
+          manifest_version="$(sed -nE 's/^.*; manifest m3#([1-9][0-9]*)$/\1/p' "$evidence/drain-summary.txt")"
+          test "$manifest_version" -gt "${{ steps.base_manifest.outputs.version }}"
+          grep -E '^hestia serve: drain stages: [a-z]+ [0-9]+\.[0-9]s' "$HESTIA_SERVE_LOG" \
+            | tail -1 > "$evidence/drain-stages.txt"
+          test -s "$evidence/drain-stages.txt"
+          echo "manifest_version=$manifest_version" >> "$GITHUB_OUTPUT"
+      - name: Capture exact changed payload metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+          MANIFEST_VERSION: ${{ steps.drain.outputs.manifest_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence/changed"
+          snapshot() {
+            gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+              --jq '.actions_caches[]' | jq -s --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+              '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)'
+          }
+          for _ in {1..30}; do
+            snapshot > "$evidence/cache-after.json"
+            jq --slurpfile before "$evidence/cache-before.json" \
+              '($before[0] | map(.id)) as $ids | [.[] | select(.id as $id | $ids | index($id) | not)]' \
+              "$evidence/cache-after.json" > "$evidence/new-entries.json"
+            jq '[.[] | select(.key | startswith("pack-"))]' "$evidence/new-entries.json" > "$evidence/new-packs.json"
+            if [ "$(jq length "$evidence/new-packs.json")" -gt 0 ] && \
+              jq -e --arg key "m3#$MANIFEST_VERSION" 'any(.key == $key)' "$evidence/new-entries.json" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          test "$(jq length "$evidence/new-packs.json")" -gt 0
+          jq -e --arg key "m3#$MANIFEST_VERSION" 'any(.key == $key)' "$evidence/new-entries.json" >/dev/null
+          drain_start="$(cat "$evidence/drain-start-utc.txt")"
+          drain_end="$(cat "$evidence/drain-end-utc.txt")"
+          jq -e --arg start "$drain_start" --arg end "$drain_end" \
+            '($start | fromdateiso8601) as $startEpoch |
+             ($end | fromdateiso8601) as $endEpoch |
+             all((.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $created |
+               $created >= $startEpoch and $created <= $endEpoch)' \
+            "$evidence/new-packs.json" >/dev/null
+          pack_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/new-packs.json")"
+          cache_delta="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/new-entries.json")"
+          test "$pack_bytes" -gt 0
+          jq -n --arg generation changed --arg revision "$CHANGED_SHA" --arg root "$CHANGED_ROOT" \
+            --arg acceptedRun '33890915513' --arg salt "$HESTIA_CACHE_VERSION_SALT" \
+            --arg cacheVersion "$CACHE_VERSION" --argjson manifestVersion "$MANIFEST_VERSION" \
+            --argjson closurePaths "$(wc -l < "$evidence/producer-closure.txt" | tr -d ' ')" \
+            --argjson packCount "$(jq length "$evidence/new-packs.json")" \
+            --argjson packBytes "$pack_bytes" --argjson cacheSizeDeltaBytes "$cache_delta" \
+            '{generation:$generation,revision:$revision,acceptedRun:$acceptedRun,root:$root,salt:$salt,cacheVersion:$cacheVersion,manifestVersion:$manifestVersion,closurePaths:$closurePaths,packCount:$packCount,packBytesExact:$packBytes,cacheSizeDeltaBytes:$cacheSizeDeltaBytes,packBytesSource:"GitHub cache metadata",drainBytesSource:"rounded human-readable summary only"}' \
+            > "$evidence/transport.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hestia-transport-producers-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/evidence
+
+  reader:
+    needs: [validate, produce_base, produce_changed]
+    if: ${{ always() && inputs.mode == 'normal' && (needs.produce_changed.result == 'success' || inputs.source_run != '') }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        include:
+          - generation: base
+            root: /nix/store/hj9db71yrzyjy0ixfcvz30r7fpcwv1dk-darwin-system-26.05.c3e90c8
+          - generation: changed
+            root: /nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-producers-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/source
+          run-id: ${{ needs.validate.outputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Start Nix installation timing
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/nix-install-start.txt"
+      - uses: ./.github/actions/install-nix
+      - name: Finish Nix installation timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/nix-install-end.txt"
+      - name: Validate source evidence
+        id: source
+        env:
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          generation='${{ matrix.generation }}'
+          root='${{ matrix.root }}'
+          test "$(jq -r '.root' "$RUNNER_TEMP/source/$generation/transport.json")" = "$root"
+          test "$(jq -r '.cacheVersion' "$RUNNER_TEMP/source/$generation/transport.json")" = "$CACHE_VERSION"
+          version="$(jq -r '.manifestVersion' "$RUNNER_TEMP/source/changed/transport.json")"
+          [[ "$version" =~ ^[1-9][0-9]*$ ]]
+          echo "manifest_version=$version" >> "$GITHUB_OUTPUT"
+      - name: Start pinned Hestia
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/hestia-start.txt"
+      - uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          drain-timeout: '900'
+          wait-manifest-version: ${{ steps.source.outputs.manifest_version }}
+      - name: Snapshot namespace and network counter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/hestia-ready.txt"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
+            > "$evidence/cache-before.json"
+          test "$(jq length "$evidence/cache-before.json")" -gt 0
+          interface="$(route -n get default | awk '$1 == "interface:" {print $2; exit}')"
+          test -n "$interface"
+          inbound_bytes() {
+            netstat -ibn -I "$interface" | awk -v iface="$interface" '
+              NR == 1 { for (i = 1; i <= NF; i++) if ($i == "Ibytes") col = i; next }
+              $1 == iface && col {
+                if (first == "") first = $col
+                if ($3 ~ /^<Link#/) { print $col; found = 1; exit }
+              }
+              END { if (!found && first != "") print first }
+            '
+          }
+          before="$(inbound_bytes)"
+          [[ "$before" =~ ^[0-9]+$ ]]
+          echo "$interface" > "$evidence/network-interface.txt"
+          echo "$before" > "$evidence/network-before.txt"
+      - name: Import from Hestia
+        env:
+          ROOT: ${{ matrix.root }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/copy-start.txt"
+          nix copy --no-check-sigs --from "http://$HESTIA_LISTEN" "$ROOT"
+          python3 -c 'import time; print(time.time())' > "$evidence/copy-end.txt"
+          interface="$(cat "$evidence/network-interface.txt")"
+          after="$(netstat -ibn -I "$interface" | awk -v iface="$interface" '
+            NR == 1 { for (i = 1; i <= NF; i++) if ($i == "Ibytes") col = i; next }
+            $1 == iface && col {
+              if (first == "") first = $col
+              if ($3 ~ /^<Link#/) { print $col; found = 1; exit }
+            }
+            END { if (!found && first != "") print first }
+          ')"
+          [[ "$after" =~ ^[0-9]+$ ]]
+          before="$(cat "$evidence/network-before.txt")"
+          test "$after" -ge "$before"
+          echo "$after" > "$evidence/network-after.txt"
+          echo "$((after - before))" > "$evidence/network-inbound-delta.txt"
+      - name: Manually drain reader metadata
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-start.txt"
+          "$HESTIA_BIN" drain --socket "$HESTIA_SOCKET" --timeout 900 2>&1 | tee "$evidence/drain-summary.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/drain-end.txt"
+          grep -Eq '^hestia drain: pushed 0 paths(; manifest m3#[1-9][0-9]*|; nothing to commit)$' "$evidence/drain-summary.txt"
+          grep -E '^hestia serve: drain stages: [a-z]+ [0-9]+\.[0-9]s' "$HESTIA_SERVE_LOG" \
+            | tail -1 > "$evidence/drain-stages.txt" || true
+      - name: Verify reader closure separately
+        env:
+          ROOT: ${{ matrix.root }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/verify-start.txt"
+          nix store verify --recursive --no-trust "$ROOT"
+          nix-store --query --requisites "$ROOT" | sort > "$evidence/reader-closure.txt"
+          diff -u "$RUNNER_TEMP/source/${{ matrix.generation }}/producer-closure.txt" "$evidence/reader-closure.txt"
+          grep -Fx "$ROOT" "$evidence/reader-closure.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/verify-end.txt"
+      - name: Record reader telemetry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+          GENERATION: ${{ matrix.generation }}
+          ROOT: ${{ matrix.root }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
+            > "$evidence/cache-after.json"
+          available_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/cache-before.json")"
+          install_seconds="$(awk -v start="$(cat "$evidence/nix-install-start.txt")" -v end="$(cat "$evidence/nix-install-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          startup_seconds="$(awk -v start="$(cat "$evidence/hestia-start.txt")" -v end="$(cat "$evidence/hestia-ready.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          copy_seconds="$(awk -v start="$(cat "$evidence/copy-start.txt")" -v end="$(cat "$evidence/copy-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          drain_seconds="$(awk -v start="$(cat "$evidence/drain-start.txt")" -v end="$(cat "$evidence/drain-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          copy_and_drain_seconds="$(awk -v start="$(cat "$evidence/copy-start.txt")" -v end="$(cat "$evidence/drain-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          consumer_seconds="$(awk -v start="$(cat "$evidence/nix-install-start.txt")" -v end="$(cat "$evidence/drain-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          verify_seconds="$(awk -v start="$(cat "$evidence/verify-start.txt")" -v end="$(cat "$evidence/verify-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          jq -n --arg generation "$GENERATION" --arg root "$ROOT" \
+            --arg interface "$(cat "$evidence/network-interface.txt")" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cacheVersion "$CACHE_VERSION" \
+            --argjson inboundDeltaBytes "$(cat "$evidence/network-inbound-delta.txt")" \
+            --argjson availableCacheEntryBytes "$available_bytes" --argjson nixInstallSeconds "$install_seconds" \
+            --argjson hestiaStartupSeconds "$startup_seconds" --argjson copySeconds "$copy_seconds" \
+            --argjson manualDrainSeconds "$drain_seconds" --argjson copyAndDrainSeconds "$copy_and_drain_seconds" \
+            --argjson consumerSeconds "$consumer_seconds" --argjson verificationSeconds "$verify_seconds" \
+            '{generation:$generation,root:$root,runnerImage:$runnerImage,cacheVersion:$cacheVersion,nixInstallSeconds:$nixInstallSeconds,hestiaStartupSeconds:$hestiaStartupSeconds,copySeconds:$copySeconds,manualDrainSeconds:$manualDrainSeconds,copyAndDrainSeconds:$copyAndDrainSeconds,consumerSeconds:$consumerSeconds,consumerCostScope:"Nix installation through manual drain, including harness/API gaps; verification excluded",verificationSeconds:$verificationSeconds,inboundInterface:$interface,inboundInterfaceDeltaBytes:$inboundDeltaBytes,inboundDeltaIncludes:"Hestia traffic plus background runner traffic",availableCacheEntryBytes:$availableCacheEntryBytes,availableCacheEntryBytesMeaning:"Inventory size, not a transfer bound; repeated range fetches can exceed it"}' \
+            > "$evidence/reader.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hestia-transport-reader-${{ matrix.generation }}
+          path: ${{ runner.temp }}/evidence
+
+  sparsebundle_control:
+    needs: [validate, reader]
+    if: ${{ always() && inputs.mode == 'normal' && needs.reader.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-producers-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/source
+          run-id: ${{ needs.validate.outputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Validate exact compacted control cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence" "$RUNNER_TEMP/darwin-lifecycle/compacted"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s --arg key "$CONTROL_CACHE_KEY" \
+            '[.[] | select(.key == $key)]' > "$RUNNER_TEMP/evidence/control-cache.json"
+          jq -e --argjson id "$CONTROL_CACHE_ID" --arg ref "$GITHUB_REF" \
+            --arg version "$CONTROL_CACHE_VERSION" --argjson bytes "$CONTROL_CACHE_BYTES" \
+            'length == 1 and .[0].id == $id and .[0].ref == $ref and .[0].version == $version and .[0].size_in_bytes == $bytes' \
+            "$RUNNER_TEMP/evidence/control-cache.json" >/dev/null
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: restore
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.CONTROL_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Finish exact restore timing
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          test "$CACHE_HIT" = true
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/restore-end.txt"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/mount-start.txt"
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Finish mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/mount-end.txt"
+      - name: Start Nix installation timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/nix-install-start.txt"
+      - uses: ./.github/actions/install-nix
+      - name: Finish Nix installation timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/evidence/nix-install-end.txt"
+      - name: Realise and verify changed root without substitution
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/realise-start.txt"
+          nix-store --realise "$CHANGED_ROOT" --option substituters ''
+          python3 -c 'import time; print(time.time())' > "$evidence/realise-end.txt"
+          nix store verify --recursive --no-trust "$CHANGED_ROOT"
+          nix-store --query --requisites "$CHANGED_ROOT" | sort > "$evidence/control-closure.txt"
+          diff -u "$RUNNER_TEMP/source/changed/producer-closure.txt" "$evidence/control-closure.txt"
+          grep -Fx "$CHANGED_ROOT" "$evidence/control-closure.txt"
+          restore_seconds="$(awk -v start="$(cat "$evidence/restore-start.txt")" -v end="$(cat "$evidence/restore-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          mount_seconds="$(awk -v start="$(cat "$evidence/mount-start.txt")" -v end="$(cat "$evidence/mount-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          install_seconds="$(awk -v start="$(cat "$evidence/nix-install-start.txt")" -v end="$(cat "$evidence/nix-install-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          realise_seconds="$(awk -v start="$(cat "$evidence/realise-start.txt")" -v end="$(cat "$evidence/realise-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          consumer_seconds="$(awk -v start="$(cat "$evidence/restore-start.txt")" -v end="$(cat "$evidence/realise-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
+          jq -n --arg root "$CHANGED_ROOT" --arg cacheKey "$CONTROL_CACHE_KEY" \
+            --argjson cacheId "$CONTROL_CACHE_ID" --argjson archiveBytes "$CONTROL_CACHE_BYTES" \
+            --argjson restoreSeconds "$restore_seconds" --argjson mountSeconds "$mount_seconds" \
+            --argjson nixInstallSeconds "$install_seconds" --argjson realiseSeconds "$realise_seconds" \
+            --argjson consumerSeconds "$consumer_seconds" \
+            '{root:$root,cacheKey:$cacheKey,cacheId:$cacheId,archiveBytes:$archiveBytes,restoreSeconds:$restoreSeconds,mountSeconds:$mountSeconds,nixInstallSeconds:$nixInstallSeconds,realiseSeconds:$realiseSeconds,consumerSeconds:$consumerSeconds,consumerCostScope:"exact restore through realise; verification excluded",substitutionDisabled:true,compacted:true,workloadRef:"14a8d7657900a917560ddbe77577c0d5a1b77638",hostOutputEquivalentRevision:"83c56e158b04dea4da66d123fc206af2630b0501"}' \
+            > "$evidence/control.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hestia-transport-control
+          path: ${{ runner.temp }}/evidence
+
+  audit:
+    needs: [validate, sparsebundle_control]
+    if: ${{ always() && inputs.mode == 'normal' && needs.sparsebundle_control.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-producers-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/evidence/source
+          run-id: ${{ needs.validate.outputs.source_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: hestia-transport-reader-*
+          path: ${{ runner.temp }}/evidence/readers
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-control
+          path: ${{ runner.temp }}/evidence/control
+      - name: Check exact payloads, closures and final quota
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -p "$evidence/audit"
+          diff -u "$evidence/source/base/producer-closure.txt" "$evidence/readers/hestia-transport-reader-base/reader-closure.txt"
+          diff -u "$evidence/source/changed/producer-closure.txt" "$evidence/readers/hestia-transport-reader-changed/reader-closure.txt"
+          diff -u "$evidence/source/changed/producer-closure.txt" "$evidence/control/control-closure.txt"
+          base_bytes="$(jq '.packBytesExact' "$evidence/source/base/transport.json")"
+          changed_bytes="$(jq '.packBytesExact' "$evidence/source/changed/transport.json")"
+          test "$base_bytes" -gt 0
+          test "$changed_bytes" -gt 0
+          fraction="$(awk -v changed="$changed_bytes" -v base="$base_bytes" 'BEGIN {printf "%.9f", changed/base}')"
+
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s '.' > "$RUNNER_TEMP/all-caches.json"
+          limit_bytes="$CACHE_LIMIT_BYTES"
+          listed_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$RUNNER_TEMP/all-caches.json")"
+          active_bytes="$listed_bytes"
+          headroom_bytes="$((limit_bytes - active_bytes))"
+          test "$headroom_bytes" -ge "$CACHE_RESERVE_BYTES"
+          jq --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
+            "$RUNNER_TEMP/all-caches.json" > "$evidence/audit/final-namespace.json"
+          test "$(jq length "$evidence/audit/final-namespace.json")" -gt 0
+          jq -s '[.[][] | .id] | unique' \
+            "$evidence/source/base/new-entries.json" "$evidence/source/changed/new-entries.json" \
+            > "$RUNNER_TEMP/producer-ids.json"
+          jq -e --slurpfile expected "$RUNNER_TEMP/producer-ids.json" \
+            '([.[].id] as $actual | all($expected[0][]; . as $id | $actual | index($id) != null))' \
+            "$evidence/audit/final-namespace.json" >/dev/null
+          jq -n --argjson basePackBytes "$base_bytes" --argjson changedPackBytes "$changed_bytes" \
+            --argjson changedFractionOfBase "$fraction" --argjson e15HousekeepingBytes 106553433 \
+            --argjson finalHeadroomBytes "$headroom_bytes" --argjson requiredHeadroomBytes "$CACHE_RESERVE_BYTES" \
+            --argjson compactedControlArchiveBytes "$CONTROL_CACHE_BYTES" \
+            '{basePackBytesExact:$basePackBytes,changedPackBytesExact:$changedPackBytes,changedFractionOfBase:$changedFractionOfBase,e15HousekeepingBytes:$e15HousekeepingBytes,comparisonScope:"Hestia host closure transport versus full mutable sparsebundle control",compactedControlArchiveBytes:$compactedControlArchiveBytes,finalHeadroomBytes:$finalHeadroomBytes,requiredHeadroomBytes:$requiredHeadroomBytes,closuresMatch:true}' \
+            | tee "$evidence/audit/summary.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hestia-transport-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+
+  recovery:
+    needs: validate
+    if: inputs.mode == 'recovery'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: hestia-transport-producers-${{ needs.validate.outputs.source_run }}-${{ needs.validate.outputs.source_attempt }}
+          path: ${{ runner.temp }}/source
+          run-id: ${{ needs.validate.outputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Prove the selected salted pack is absent
+        env:
+          CACHE_VERSION: ${{ needs.validate.outputs.cache_version }}
+          GH_TOKEN: ${{ github.token }}
+          MISSING_PACK_CACHE_ID: ${{ inputs.missing_pack_cache_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          jq -e --argjson id "$MISSING_PACK_CACHE_ID" --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
+            'map(select(.id == $id and .version == $version and .ref == $ref and (.key | startswith("pack-")))) | length == 1' \
+            "$RUNNER_TEMP/source/changed/new-packs.json" >/dev/null
+          jq --argjson id "$MISSING_PACK_CACHE_ID" '.[] | select(.id == $id)' \
+            "$RUNNER_TEMP/source/changed/new-packs.json" > "$RUNNER_TEMP/evidence/deleted-pack.json"
+          gh api --method GET --paginate -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/actions/caches" -F per_page=100 \
+            --jq '.actions_caches[]' | jq -s --argjson id "$MISSING_PACK_CACHE_ID" \
+            '[.[] | select(.id == $id)]' > "$RUNNER_TEMP/evidence/missing-pack-query.json"
+          jq -e 'length == 0' "$RUNNER_TEMP/evidence/missing-pack-query.json" >/dev/null
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Read changed manifest version
+        id: source
+        run: |
+          version="$(jq -r '.manifestVersion' "$RUNNER_TEMP/source/changed/transport.json")"
+          [[ "$version" =~ ^[1-9][0-9]*$ ]]
+          echo "manifest_version=$version" >> "$GITHUB_OUTPUT"
+      - uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          drain-timeout: '900'
+          wait-manifest-version: ${{ steps.source.outputs.manifest_version }}
+      - name: Require Hestia failure, then recover through normal Nix substitutes
+        env:
+          MISSING_PACK_CACHE_ID: ${{ inputs.missing_pack_cache_id }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          python3 -c 'import time; print(time.time())' > "$evidence/hestia-copy-start.txt"
+          set +e
+          nix copy --no-check-sigs --from "http://$HESTIA_LISTEN" "$CHANGED_ROOT"
+          hestia_status=$?
+          set -e
+          python3 -c 'import time; print(time.time())' > "$evidence/hestia-copy-end.txt"
+          test "$hestia_status" -ne 0
+          python3 -c 'import time; print(time.time())' > "$evidence/cachix-recovery-start.txt"
+          nix-store --realise --option builders '' --option max-jobs 0 "$CHANGED_ROOT"
+          python3 -c 'import time; print(time.time())' > "$evidence/cachix-recovery-end.txt"
+          nix store verify --recursive --no-trust "$CHANGED_ROOT"
+          nix-store --query --requisites "$CHANGED_ROOT" | sort > "$evidence/recovered-closure.txt"
+          diff -u "$RUNNER_TEMP/source/changed/producer-closure.txt" "$evidence/recovered-closure.txt"
+          grep -Fx "$CHANGED_ROOT" "$evidence/recovered-closure.txt"
+          jq -n --arg root "$CHANGED_ROOT" --argjson deletedPackCacheId "$MISSING_PACK_CACHE_ID" \
+            --argjson hestiaCopyStatus "$hestia_status" \
+            '{root:$root,deletedPackCacheId:$deletedPackCacheId,hestiaCopyFailed:true,hestiaCopyStatus:$hestiaCopyStatus,recoverySources:["https://whitestrake.cachix.org","https://cache.nixos.org"],recoveredClosureMatchesProducer:true}' \
+            > "$evidence/recovery.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: hestia-transport-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence

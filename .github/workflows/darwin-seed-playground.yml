@@ -1,0 +1,99 @@
+name: Darwin Warm Bootstrap Playground
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-seed-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  CONTROL_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-33ae17904b7a7bedebd628346a9f600e8ddf3b990dd6a60fbe8d5f2b11f5caa6-33891132223-1
+
+jobs:
+  trial:
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        round: [1, 2]
+        pack: [installer, reuse]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start timing
+        env:
+          IMAGE_DIR: nix-root-ci-aarch64-darwin
+        run: |
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/$IMAGE_DIR/nix-root.sparsebundle" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/measurements"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.CONTROL_KEY }}
+          fail-on-cache-miss: true
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Start bootstrap timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/bootstrap-start.txt"
+      - uses: ./.github/actions/install-nix
+        if: matrix.pack == 'installer'
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+      - name: Reuse validated cached Nix
+        if: matrix.pack == 'reuse'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fast-ci-bootstrap.sh
+      - name: Finish bootstrap timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/bootstrap-end.txt"
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Measure Darwin build
+        working-directory: fixture
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run .#packages.aarch64-darwin.nix-fast-build -- \
+            --flake .#ci.darwin --systems aarch64-darwin --eval-workers 1 \
+            --cachix-cache whitestrake --retries 2 \
+            --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-end.txt"
+      - name: Record environment
+        if: always()
+        env:
+          PACK: ${{ matrix.pack }}
+          ROUND: ${{ matrix.round }}
+        run: |
+          jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg round "$ROUND" --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,round:$round,runnerImage:$runnerImage,cpu:$cpu}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: trial-${{ matrix.round }}-${{ matrix.pack }}
+          path: ${{ runner.temp }}/measurements

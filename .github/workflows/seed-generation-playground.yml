@@ -1,0 +1,76 @@
+name: Seed Generation Transport Probe
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/seed-generation-playground.yml, .github/scripts/seed-generation-probe.py]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  generations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: 14a8d7657900a917560ddbe77577c0d5a1b77638
+          path: fixture
+          persist-credentials: false
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y casync
+      - uses: ./.github/actions/install-nix
+      - name: Build two evaluator seed generations
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/generations"
+          root=/nix/var/nix/gcroots/seed-generation-probe
+          mkdir -p "$output" "$root"
+          packer="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
+          ln -s "$packer" "$root/packer"
+          nix flake archive --json path:. > "$output/archive.json"
+          while IFS= read -r input; do
+            ln -s "$input" "$root/$(basename "$input")"
+          done < <(jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$output/archive.json")
+          for generation in base new; do
+            if [ "$generation" = new ]; then
+              python3 - <<'PY'
+          from pathlib import Path
+          p = Path('packages/nix-fast-build.nix')
+          s = p.read_text()
+          needle = '      substituteInPlace nix_fast_build/options.py'
+          assert s.count(needle) == 1
+          p.write_text(s.replace(needle, "      echo '# Fast CI changed-tool probe' >> nix_fast_build/options.py\n" + needle))
+          PY
+            fi
+            nfb="$(nix build --no-link --print-out-paths .#packages.x86_64-linux.nix-fast-build)"
+            ln -sfn "$nfb" "$root/nfb"
+            "$nfb/bin/nix-fast-build" --help >/dev/null
+            printf '%s\n' "$nfb" > "$output/$generation-nfb.txt"
+            nix store gc
+            nix path-info --all | sort > "$output/$generation-paths.txt"
+            python3 - <<'PY'
+          import sqlite3
+          with sqlite3.connect('/nix/var/nix/db/db.sqlite') as db:
+              assert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+          PY
+            # No Nix writers run between checkpoint and image completion.
+            started="$SECONDS"
+            "$packer/bin/mkfs.erofs" --quiet --workers=1 -zzstd,level=3 -C65536 -Efragments,ztailpacking,dedupe "$output/$generation.erofs" /nix
+            echo "$((SECONDS - started))" > "$output/$generation-pack-seconds.txt"
+          done
+          test "$(cat "$output/base-nfb.txt")" != "$(cat "$output/new-nfb.txt")"
+      - name: Compare CDC chunks and one-generation delta
+        run: python3 .github/scripts/seed-generation-probe.py "$RUNNER_TEMP/generations"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: seed-generation-evidence
+          path: |
+            ${{ runner.temp }}/generations/*.json
+            ${{ runner.temp }}/generations/*.txt
+            ${{ runner.temp }}/generations/*.caibx

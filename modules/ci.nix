@@ -64,6 +64,9 @@ in {
         systemRoots.aarch64-linux
       ];
 
+      linux-hosts = {inherit (self.ci.linux) nixosConfigurations;};
+      linux-checks = {inherit (self.ci.linux) checks;};
+
       darwin = mergeCiRoots [
         systemRoots.aarch64-darwin
       ];

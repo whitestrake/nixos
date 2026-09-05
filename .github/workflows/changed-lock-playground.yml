@@ -1,0 +1,122 @@
+name: Changed Lock Host Build Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/changed-lock-playground.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changed-lock-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  SEED_SHA: c2f6bc94bb96d535467b2f20f81b2108ee0b2cb9
+
+jobs:
+  trial:
+    name: Trial ${{ matrix.round }} ${{ matrix.seed }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        round: [1]
+        seed: [warm, cold]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start timing
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurements"
+          date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: restore
+        if: matrix.seed == 'warm'
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-erofs
+      - name: Mount fixed seed
+        id: mount
+        if: matrix.seed == 'warm'
+        run: |
+          set -euo pipefail
+          test ! -e /nix
+          cd "$RUNNER_TEMP/fast-ci-erofs"
+          sha256sum --check image.sha256
+          sudo modprobe erofs
+          sudo modprobe overlay
+          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
+          sudo mkdir /nix
+          sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+      - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+        with:
+          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
+          settings: |
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Change one real fixture input and lock
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          nix flake archive --json path:. > "$RUNNER_TEMP/measurements/old-archive.json"
+          old="$(jq -r '.inputs["whitestrake-github-keys"].path' "$RUNNER_TEMP/measurements/old-archive.json")"
+          cat "$old" > "$RUNNER_TEMP/fixture-public.keys"
+          printf '\n# CI cache input invalidation probe\n' >> "$RUNNER_TEMP/fixture-public.keys"
+          nix flake lock --override-input whitestrake-github-keys "file+file://$RUNNER_TEMP/fixture-public.keys"
+          cp flake.lock "$RUNNER_TEMP/measurements/changed-flake.lock"
+          nix flake archive --json path:. > "$RUNNER_TEMP/measurements/new-archive.json"
+          new="$(jq -r '.inputs["whitestrake-github-keys"].path' "$RUNNER_TEMP/measurements/new-archive.json")"
+          test "$old" != "$new"
+          diff -u <(sed '/^#/d; /^[[:space:]]*$/d' "$old") <(sed '/^#/d; /^[[:space:]]*$/d' "$new")
+      - name: Measure Linux build
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
+            --flake .#ci.linux.nixosConfigurations --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
+            --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
+            --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+      - name: Record environment
+        if: always()
+        env:
+          PACK: ${{ matrix.seed }}
+          ROUND: ${{ matrix.round }}
+        run: |
+          jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg round "$ROUND" \
+            --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
+            --arg cores "$(nproc)" --arg kernel "$(uname -r)" \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,round:$round,runnerImage:$runnerImage,cpu:$cpu,cores:$cores,kernel:$kernel}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: trial-${{ matrix.round }}-${{ matrix.seed }}
+          path: ${{ runner.temp }}/measurements
+      - name: Unmount disposable seed
+        if: always() && steps.mount.outcome == 'success'
+        run: |
+          if mountpoint -q /nix; then sudo umount /nix; fi
+          if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
