@@ -16,6 +16,11 @@ on:
         type: choice
         options: [x86_64-linux, aarch64-linux]
         default: x86_64-linux
+      treatment:
+        description: All formats, or repeat SquashFS maintenance from an existing baseline
+        type: choice
+        options: [all, squashfs]
+        default: all
 
 permissions:
   actions: read
@@ -277,7 +282,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        format: [ext4, erofs, squashfs]
+        format: ${{ fromJSON(inputs.treatment == 'squashfs' && '["squashfs"]' || '["ext4","erofs","squashfs"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -469,7 +474,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        format: [ext4, erofs, squashfs]
+        format: ${{ fromJSON(inputs.treatment == 'squashfs' && '["squashfs"]' || '["ext4","erofs","squashfs"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -595,14 +600,16 @@ jobs:
           pattern: linux-lifecycle-reader-${{ inputs.system }}-*
           path: ${{ runner.temp }}/readers
       - name: Verify all next-reader output maps match
+        env:
+          EXPECTED_FORMATS: ${{ inputs.treatment == 'squashfs' && '["squashfs"]' || '["ext4","erofs","squashfs"]' }}
         run: |
           set -euo pipefail
           mapfile -d '' records < <(find "$RUNNER_TEMP/readers" -name records.json -print0 | sort -z)
-          test "${#records[@]}" -eq 3
+          test "${#records[@]}" -eq "$(jq length <<< "$EXPECTED_FORMATS")"
           canonical="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "${records[0]}")"
           for record in "${records[@]}"; do
             test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$record")" = "$canonical"
           done
-          jq -n --argjson outputs "$canonical" \
-            '{matching:true,readers:3,formats:["ext4","erofs","squashfs"],outputs:$outputs}' \
+          jq -n --argjson outputs "$canonical" --argjson formats "$EXPECTED_FORMATS" \
+            '{matching:true,readers:($formats | length),formats:$formats,outputs:$outputs}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
