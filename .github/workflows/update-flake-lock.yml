@@ -1,4 +1,4 @@
-name: "Flake.lock: update Nix dependencies"
+name: "Update flake.lock"
 on:
   workflow_dispatch: # allow manual runs
   schedule:
