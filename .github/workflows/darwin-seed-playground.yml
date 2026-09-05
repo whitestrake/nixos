@@ -1,4 +1,4 @@
-name: Darwin Compressed Image Playground
+name: Darwin Warm Bootstrap Playground
 
 on:
   push:
@@ -17,49 +17,15 @@ env:
   CONTROL_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-33ae17904b7a7bedebd628346a9f600e8ddf3b990dd6a60fbe8d5f2b11f5caa6-33891132223-1
 
 jobs:
-  seed:
-    runs-on: macos-26
-    timeout-minutes: 30
-    steps:
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
-          key: ${{ env.CONTROL_KEY }}
-          fail-on-cache-miss: true
-      - name: Convert full frozen store to LZFSE DMG
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/darwin-dmg"
-          started="$SECONDS"
-          hdiutil convert "$RUNNER_TEMP/nix-root-ci-aarch64-darwin/nix-root.sparsebundle" \
-            -format ULFO -o "$RUNNER_TEMP/darwin-dmg/nix-root.dmg"
-          elapsed="$((SECONDS - started))"
-          cd "$RUNNER_TEMP/darwin-dmg"
-          shasum -a 256 nix-root.dmg > image.sha256
-          jq -n --arg source "$CONTROL_KEY" --arg producer "$GITHUB_SHA" \
-            --argjson bytes "$(stat -f %z nix-root.dmg)" --argjson seconds "$elapsed" \
-            '{source:$source,producer:$producer,imageBytes:$bytes,convertSeconds:$seconds,format:"ULFO"}' > metadata.json
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ${{ runner.temp }}/darwin-dmg
-          key: fast-ci-darwin-dmg-${{ github.sha }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: darwin-dmg-metadata
-          path: |
-            ${{ runner.temp }}/darwin-dmg/*.json
-            ${{ runner.temp }}/darwin-dmg/*.sha256
-
   trial:
-    needs: seed
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        round: [1, 2, 3]
-        pack: [full, dmg]
+        round: [1, 2]
+        pack: [installer, reuse]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -77,50 +43,28 @@ jobs:
           path: fixture
           persist-credentials: false
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        if: matrix.pack == 'full'
         with:
           path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
           key: ${{ env.CONTROL_KEY }}
           fail-on-cache-miss: true
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        if: matrix.pack == 'dmg'
-        with:
-          path: ${{ runner.temp }}/darwin-dmg
-          key: fast-ci-darwin-dmg-${{ github.sha }}
-          fail-on-cache-miss: true
       - uses: ./.github/actions/nix-sparsebundle-mount
-        if: matrix.pack == 'full'
         with:
           image-size: 64g
           system: aarch64-darwin
-      - name: Mount compressed image with writable shadow
-        if: matrix.pack == 'dmg'
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/darwin-dmg"
-          shasum -a 256 --check image.sha256
-          sudo touch /etc/synthetic.conf
-          if ! grep -qx nix /etc/synthetic.conf; then
-            if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
-              echo 'Conflicting synthetic /nix entry'
-              exit 1
-            fi
-            printf 'nix\n' | sudo tee -a /etc/synthetic.conf >/dev/null
-          fi
-          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1 \
-            || sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 \
-            || true
-          test -d /nix
-          test ! -L /nix
-          # SHA-256 above verifies compressed bytes without eagerly decoding the image.
-          sudo hdiutil attach -noverify -mountpoint /nix -nobrowse \
-            -shadow "$RUNNER_TEMP/nix-root.shadow" nix-root.dmg
-          sudo chown "$USER" /nix
-          chmod u+rwx /nix
+      - name: Start bootstrap timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/bootstrap-start.txt"
       - uses: ./.github/actions/install-nix
+        if: matrix.pack == 'installer'
         with:
           extra-nix-conf: |
             max-jobs = auto
+      - name: Reuse validated cached Nix
+        if: matrix.pack == 'reuse'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/fast-ci-bootstrap.sh
+      - name: Finish bootstrap timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/bootstrap-end.txt"
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: whitestrake
