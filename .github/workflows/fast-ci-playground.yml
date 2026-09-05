@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y squashfs-tools erofs-utils
           uname -a
           mksquashfs -version | head -1
-          mkfs.erofs -V
+          dpkg-query --show erofs-utils
       - uses: ./.github/actions/install-nix
       - name: Prepare complete seed
         working-directory: fixture
