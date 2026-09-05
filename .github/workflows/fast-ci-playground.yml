@@ -1,0 +1,201 @@
+name: Fast CI Playground
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-ci-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+
+jobs:
+  seed:
+    name: Seed ${{ matrix.pack }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pack: [tools, inputs]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - name: Filesystem capability
+        run: |
+          set -euo pipefail
+          sudo modprobe squashfs
+          sudo modprobe overlay
+          if ! command -v mksquashfs >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y squashfs-tools
+          fi
+          uname -a
+          mksquashfs -version | head -1
+      - uses: ./.github/actions/install-nix
+      - name: Prepare complete seed
+        working-directory: fixture
+        env:
+          PACK: ${{ matrix.pack }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/fast-ci-seed"
+          mkdir -p "$output" /nix/var/nix/gcroots/fast-ci-seed
+          nix build --no-link --print-out-paths .#packages.x86_64-linux.nix-fast-build > "$output/nfb-path.txt"
+          nfb="$(cat "$output/nfb-path.txt")"
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+          ln -s "$nfb" /nix/var/nix/gcroots/fast-ci-seed/nfb
+          nix flake archive --json path:. > "$RUNNER_TEMP/archive.json"
+          jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$RUNNER_TEMP/archive.json" > "$output/external-inputs.txt"
+          if [ "$PACK" = inputs ]; then
+            while IFS= read -r input; do
+              ln -s "$input" "/nix/var/nix/gcroots/fast-ci-seed/$(basename "$input")"
+            done < "$output/external-inputs.txt"
+          fi
+          nix store gc
+          nix path-info --all | sort > "$output/baseline-paths.txt"
+          nix path-info --recursive "$nfb" | sort > "$output/tool-closure.txt"
+          nix-store --check-validity --recursive "$nfb"
+          nix --version > "$output/nix-version.txt"
+          python3 - <<'PY'
+          import sqlite3
+          with sqlite3.connect('/nix/var/nix/db/db.sqlite') as db:
+              result = db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+              assert result[0] == 0, result
+          PY
+          # No Nix writers run after the checkpoint until packing completes.
+          started="$SECONDS"
+          mksquashfs /nix "$output/image.squashfs" -noappend -comp zstd -Xcompression-level 3 -no-progress
+          echo "PACK_SECONDS=$((SECONDS - started))"
+          cd "$output"
+          sha256sum image.squashfs > image.sha256
+          du -h image.squashfs
+          jq -n --arg pack "$PACK" --arg fixture "$FIXTURE_SHA" \
+            --arg producer "$GITHUB_SHA" --argjson bytes "$(stat -c %s image.squashfs)" \
+            '{pack:$pack, fixture:$fixture, producer:$producer, imageBytes:$bytes}' > metadata.json
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/fast-ci-seed
+          key: fast-ci-playground-v1-${{ github.sha }}-${{ matrix.pack }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: seed-metadata-${{ matrix.pack }}
+          path: |
+            ${{ runner.temp }}/fast-ci-seed/*.txt
+            ${{ runner.temp }}/fast-ci-seed/*.json
+            ${{ runner.temp }}/fast-ci-seed/*.sha256
+
+  trial:
+    name: Trial ${{ matrix.pack }}
+    needs: seed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pack: [cold, tools, inputs]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Start timing
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurements"
+          date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: matrix.pack != 'cold'
+        with:
+          path: ${{ runner.temp }}/fast-ci-seed
+          key: fast-ci-playground-v1-${{ github.sha }}-${{ matrix.pack }}
+          fail-on-cache-miss: true
+      - name: Mount seed and writable overlay
+        if: matrix.pack != 'cold'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/fast-ci-seed"
+          sha256sum --check image.sha256
+          sudo modprobe squashfs
+          sudo modprobe overlay
+          test ! -e /nix
+          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
+          sudo mkdir /nix
+          sudo mount -t squashfs -o loop,ro image.squashfs "$RUNNER_TEMP/lower"
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+          findmnt /nix
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+      - name: Validate seed
+        if: matrix.pack != 'cold'
+        run: |
+          set -euo pipefail
+          nfb="$(cat "$RUNNER_TEMP/fast-ci-seed/nfb-path.txt")"
+          nix-store --check-validity --recursive "$nfb"
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+      - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+        with:
+          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
+          settings: |
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Measure Linux build
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
+            --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
+            --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
+            --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+          jq -ce -f ../.github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
+      - name: Observe reusable local additions
+        if: success() && matrix.pack != 'cold'
+        run: |
+          set -euo pipefail
+          nix path-info --all | sort > "$RUNNER_TEMP/measurements/after-paths.txt"
+          comm -13 "$RUNNER_TEMP/fast-ci-seed/baseline-paths.txt" "$RUNNER_TEMP/measurements/after-paths.txt" > "$RUNNER_TEMP/measurements/new-paths.txt"
+          cat "$RUNNER_TEMP/fast-ci-seed/external-inputs.txt" "$RUNNER_TEMP/fast-ci-seed/tool-closure.txt" | sort -u > "$RUNNER_TEMP/desired-paths.txt"
+          comm -12 "$RUNNER_TEMP/measurements/new-paths.txt" "$RUNNER_TEMP/desired-paths.txt" > "$RUNNER_TEMP/measurements/useful-paths.txt"
+          echo "New paths: $(wc -l < "$RUNNER_TEMP/measurements/new-paths.txt")"
+          echo "Useful reusable paths: $(wc -l < "$RUNNER_TEMP/measurements/useful-paths.txt")"
+      - name: Record environment
+        if: always()
+        env:
+          PACK: ${{ matrix.pack }}
+        run: |
+          jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg runnerImage "${ImageVersion:-unknown}" \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,runnerImage:$runnerImage}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: trial-${{ matrix.pack }}
+          path: ${{ runner.temp }}/measurements
+      - name: Unmount disposable seed
+        if: always() && matrix.pack != 'cold'
+        run: |
+          if mountpoint -q /nix; then sudo umount /nix; fi
+          if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
