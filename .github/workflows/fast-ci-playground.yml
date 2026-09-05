@@ -40,7 +40,7 @@ jobs:
         working-directory: fixture
         run: |
           set -euo pipefail
-          erofs_tools="$(nix build --inputs-from . --no-link --print-out-paths nixpkgs-unstable#erofs-utils)"
+          erofs_tools="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
           output="$RUNNER_TEMP/fast-ci-erofs"
           mkdir -p "$output" "$RUNNER_TEMP/source"
           cd "$RUNNER_TEMP/fast-ci-squashfs"
