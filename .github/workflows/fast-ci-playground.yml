@@ -17,8 +17,63 @@ env:
   SEED_SHA: a1150a01a8e9e1fcbbfb7b9b44c5ac9b0b2f4ad9
 
 jobs:
+  seed:
+    name: Repack frozen seed with modern EROFS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/fast-ci-squashfs
+          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-squashfs
+          fail-on-cache-miss: true
+      - uses: ./.github/actions/install-nix
+      - name: Repack the immutable snapshot
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          erofs_tools="$(nix build --inputs-from . --no-link --print-out-paths nixpkgs-unstable#erofs-utils)"
+          output="$RUNNER_TEMP/fast-ci-erofs"
+          mkdir -p "$output" "$RUNNER_TEMP/source"
+          cd "$RUNNER_TEMP/fast-ci-squashfs"
+          sha256sum --check image.sha256
+          sudo modprobe squashfs
+          sudo modprobe erofs
+          sudo mount -t squashfs -o loop,ro image "$RUNNER_TEMP/source"
+          cp ./*.txt "$output/"
+          "$erofs_tools/bin/mkfs.erofs" --version > "$output/packer-version.txt"
+          started="$SECONDS"
+          "$erofs_tools/bin/mkfs.erofs" -zzstd,level=3 -C65536 "$output/image" "$RUNNER_TEMP/source"
+          elapsed="$((SECONDS - started))"
+          cd "$output"
+          sha256sum image > image.sha256
+          jq -n --arg fixture "$FIXTURE_SHA" --arg producer "$GITHUB_SHA" \
+            --arg source "$SEED_SHA" --argjson bytes "$(stat -c %s image)" --argjson seconds "$elapsed" \
+            '{pack:"erofs-zstd",fixture:$fixture,producer:$producer,source:$source,imageBytes:$bytes,packSeconds:$seconds}' > metadata.json
+          sudo umount "$RUNNER_TEMP/source"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-playground-v2-${{ github.sha }}-erofs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: seed-metadata
+          path: |
+            ${{ runner.temp }}/fast-ci-erofs/*.txt
+            ${{ runner.temp }}/fast-ci-erofs/*.json
+            ${{ runner.temp }}/fast-ci-erofs/*.sha256
+
   trial:
-    name: Trial ${{ matrix.round }} ${{ matrix.pack }} ${{ matrix.launch }}
+    name: Trial ${{ matrix.round }} ${{ matrix.pack }}
+    needs: seed
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -26,8 +81,7 @@ jobs:
       max-parallel: 1
       matrix:
         round: [1, 2, 3]
-        pack: [squashfs]
-        launch: [flake, direct]
+        pack: [squashfs, erofs]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -45,7 +99,7 @@ jobs:
         if: matrix.pack != 'cold'
         with:
           path: ${{ runner.temp }}/fast-ci-${{ matrix.pack }}
-          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-${{ matrix.pack }}
+          key: fast-ci-playground-v2-${{ matrix.pack == 'erofs' && github.sha || env.SEED_SHA }}-${{ matrix.pack }}
           fail-on-cache-miss: true
       - name: Mount seed and writable overlay
         if: matrix.pack != 'cold'
@@ -83,19 +137,11 @@ jobs:
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Measure Linux build
         working-directory: fixture
-        env:
-          LAUNCH: ${{ matrix.launch }}
         run: |
           set -euo pipefail
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
-          nix_fast_build=(nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build --)
-          if [ "$LAUNCH" = direct ]; then
-            # This probe fixes the source revision; production needs a tool-identity guard.
-            jq -e --arg fixture "$FIXTURE_SHA" '.fixture == $fixture' "$RUNNER_TEMP/fast-ci-seed/metadata.json" >/dev/null
-            nix_fast_build=("$(cat "$RUNNER_TEMP/fast-ci-seed/nfb-path.txt")/bin/nix-fast-build")
-          fi
           python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
-            "${nix_fast_build[@]}" \
+            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
             --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
             --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
             --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
@@ -114,19 +160,21 @@ jobs:
       - name: Record environment
         if: always()
         env:
-          PACK: ${{ matrix.pack }}-${{ matrix.launch }}
+          PACK: ${{ matrix.pack }}
           ROUND: ${{ matrix.round }}
         run: |
           jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
             --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
             --arg round "$ROUND" \
             --arg runnerImage "${ImageVersion:-unknown}" \
-            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,round:$round,runnerImage:$runnerImage}' \
+            --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
+            --arg cores "$(nproc)" --arg kernel "$(uname -r)" \
+            '{treatment:$treatment,fixture:$fixture,harness:$harness,run:$run,attempt:$attempt,round:$round,runnerImage:$runnerImage,cpu:$cpu,cores:$cores,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: trial-${{ matrix.round }}-${{ matrix.pack }}-${{ matrix.launch }}
+          name: trial-${{ matrix.round }}-${{ matrix.pack }}
           path: ${{ runner.temp }}/measurements
       - name: Unmount disposable seed
         if: always() && matrix.pack != 'cold'
