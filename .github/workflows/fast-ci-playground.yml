@@ -12,6 +12,14 @@ on:
         type: choice
         options: ['3', '4']
         default: '3'
+      fail_source_check:
+        description: Inject an unformatted Nix source change and require source checks to fail
+        type: boolean
+        default: false
+      profile:
+        description: Sample Linux runner memory and run the native Nix evaluation profiler
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -98,6 +106,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           FAST_CI_FORWARD_EVENTS: "1"
+          FAST_CI_SAMPLE_MEMORY: ${{ inputs.profile && '1' || '0' }}
           EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
         run: |
           set -euo pipefail
@@ -123,6 +132,57 @@ jobs:
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+
+      - name: Profile Linux evaluation
+        if: inputs.profile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          profile_dir="$RUNNER_TEMP/measurements/eval-profile"
+          mkdir -p "$profile_dir"
+          nix_version="$(nix --version)"
+          printf '%s\n' "$nix_version" | tee "$profile_dir/nix-version.txt"
+          test "$nix_version" = 'nix (Nix) 2.34.7'
+          nix eval --help > "$profile_dir/nix-eval-help.txt"
+          nix config show --json \
+            | jq '{
+                "eval-profiler": .["eval-profiler"],
+                "eval-profile-file": .["eval-profile-file"],
+                "eval-profiler-frequency": .["eval-profiler-frequency"]
+              }' \
+            > "$profile_dir/eval-profiler-config-help.json"
+          jq -e 'all(.[]; . != null)' "$profile_dir/eval-profiler-config-help.json" >/dev/null
+
+          profile_started="$(date +%s.%N)"
+          nix eval --json \
+            .#ci.linux-hosts.nixosConfigurations \
+            --apply 'hosts: builtins.mapAttrs (_: drv: drv.drvPath) hosts' \
+            --eval-profiler flamegraph \
+            --eval-profile-file "$profile_dir/linux-hosts.folded" \
+            > "$profile_dir/drv-paths.json"
+          profile_finished="$(date +%s.%N)"
+          test -s "$profile_dir/linux-hosts.folded"
+          jq -e '
+            type == "object"
+            and length > 0
+            and all(.[]; type == "string" and test("^/nix/store/[0-9a-z]{32}-.+\\.drv$"))
+          ' "$profile_dir/drv-paths.json" >/dev/null
+          jq -n \
+            --argjson started "$profile_started" \
+            --argjson finished "$profile_finished" \
+            --argjson foldedStackLines "$(wc -l < "$profile_dir/linux-hosts.folded")" \
+            '{
+              instrumented: true,
+              scope: "single-process Linux host derivation evaluation",
+              profiler: "Nix flamegraph sampling profiler",
+              sampleFormat: "folded stacks with leaf-stack sample counts",
+              inclusiveFrameCountsComputed: false,
+              startedEpochSeconds: $started,
+              finishedEpochSeconds: $finished,
+              durationSeconds: ($finished - $started),
+              foldedStackLines: $foldedStackLines
+            }' > "$profile_dir/metadata.json"
 
       - name: Publish Linux records
         id: records
@@ -175,6 +235,19 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/measurements"
           date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - name: Inject unformatted source-check failure
+        if: inputs.fail_source_check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target=modules/ci.nix
+          sed -i '1,6c\{ config, lib, self, ... }: let' "$target"
+          if git diff --quiet -- "$target"; then
+            echo "::error ::Failed to inject the source-check formatting change."
+            exit 1
+          fi
+          git diff -- "$target" | tee "$RUNNER_TEMP/measurements/injected-source.diff"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: restore
         if: github.event_name == 'push' || inputs.seed
@@ -218,10 +291,13 @@ jobs:
             max-jobs = auto
 
       - name: Build source checks locally
+        id: build-source-checks
+        continue-on-error: true
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           FAST_CI_FORWARD_EVENTS: "1"
+          FAST_CI_SAMPLE_MEMORY: ${{ inputs.profile && '1' || '0' }}
         run: |
           set -euo pipefail
 
@@ -246,19 +322,53 @@ jobs:
             -j 2
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
 
+      - name: Require source-check outcome
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_FAILURE: ${{ inputs.fail_source_check }}
+          SOURCE_CHECK_OUTCOME: ${{ steps.build-source-checks.outcome }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EXPECTED_FAILURE" = true ]; then
+            if [ "$SOURCE_CHECK_OUTCOME" != failure ]; then
+              echo "::error ::Injected source change did not fail the ordinary source-check runner: outcome=$SOURCE_CHECK_OUTCOME"
+              exit 1
+            fi
+            echo "::error ::Intentional source-check failure confirmed; blocking proof assembly."
+            exit 1
+          fi
+          if [ "$SOURCE_CHECK_OUTCOME" != success ]; then
+            echo "::error ::Source checks failed unexpectedly: outcome=$SOURCE_CHECK_OUTCOME"
+            exit 1
+          fi
+
       - name: Record source-check evidence
         if: always()
         env:
           CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          FAIL_SOURCE_CHECK: ${{ inputs.fail_source_check }}
           MOUNT_OUTCOME: ${{ steps.mount.outcome }}
+          SOURCE_CHECK_OUTCOME: ${{ steps.build-source-checks.outcome }}
         run: |
           if [ -f "$RUNNER_TEMP/ci-checks-results.json" ]; then
             cp "$RUNNER_TEMP/ci-checks-results.json" "$RUNNER_TEMP/measurements/results.json"
           fi
           jq -n --arg hit "$CACHE_HIT" --arg mount "$MOUNT_OUTCOME" --arg harness "$GITHUB_SHA" \
+            --arg failSourceCheck "$FAIL_SOURCE_CHECK" --arg sourceCheckOutcome "$SOURCE_CHECK_OUTCOME" \
             --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg run "$GITHUB_RUN_ID" \
-            '{cacheHit:$hit,mountOutcome:$mount,harness:$harness,cpu:$cpu,runnerImage:$runnerImage,run:$run}' \
+            '{
+              cacheHit: $hit,
+              mountOutcome: $mount,
+              harness: $harness,
+              cpu: $cpu,
+              runnerImage: $runnerImage,
+              run: $run,
+              failSourceCheck: ($failSourceCheck == "true"),
+              sourceCheckOutcome: $sourceCheckOutcome
+            }' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()

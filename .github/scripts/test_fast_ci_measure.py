@@ -2,6 +2,7 @@
 """Runnable smoke checks for the temporary timing wrapper."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -9,7 +10,14 @@ import sys
 import tempfile
 
 wrapper = Path(__file__).with_name("fast-ci-measure.py")
+spec = importlib.util.spec_from_file_location("fast_ci_measure", wrapper)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 with tempfile.TemporaryDirectory() as directory:
+    meminfo = Path(directory) / "meminfo"
+    meminfo.write_text("MemTotal:       16384 kB\nMemAvailable:    4096 kB\n")
+    assert module.read_mem_available(meminfo) == 4096
+
     for name, program, expected in [
         ("success", 'print(\'{"type":"EVAL"}\'); print(\'{"type":"BUILD"}\')', 0),
         ("failure", 'print(\'{"type":"EVAL"}\'); raise SystemExit(7)', 7),
@@ -56,4 +64,4 @@ with tempfile.TemporaryDirectory() as directory:
         "EVAL",
         "BUILD",
     ]
-print("Timing wrapper: five subprocess probes passed")
+print("Timing wrapper: memory parser and five subprocess probes passed")

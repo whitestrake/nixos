@@ -7,17 +7,44 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
+
+
+def read_mem_available(path):
+    for line in path.read_text().splitlines():
+        fields = line.split()
+        if fields[:1] == ["MemAvailable:"]:
+            if len(fields) != 3 or fields[2] != "kB":
+                raise ValueError("unexpected MemAvailable format")
+            return int(fields[1])
+    raise ValueError("MemAvailable is missing")
 
 
 def main():
     output = Path(sys.argv[1])
     assert sys.argv[2] == "--"
     output.mkdir(parents=True, exist_ok=True)
+    meminfo = Path("/proc/meminfo")
+    memory_samples = []
+    memory_stop = None
+    memory_thread = None
+    if os.environ.get("FAST_CI_SAMPLE_MEMORY") == "1":
+        memory_samples.append(read_mem_available(meminfo))
+        memory_stop = threading.Event()
+
+        def sample_memory():
+            while not memory_stop.wait(1):
+                memory_samples.append(read_mem_available(meminfo))
+
+        memory_thread = threading.Thread(target=sample_memory, daemon=True)
+
     started = time.monotonic()
     process = subprocess.Popen(
         sys.argv[3:], stdout=subprocess.PIPE, text=True, start_new_session=True
     )
+    if memory_thread is not None:
+        memory_thread.start()
 
     def stop(signum, _frame):
         os.killpg(process.pid, signum)
@@ -45,6 +72,23 @@ def main():
                 print(line, end="", flush=True)
             events += 1
     status = process.wait()
+    if memory_thread is not None:
+        memory_stop.set()
+        memory_thread.join()
+        memory_samples.append(read_mem_available(meminfo))
+        baseline = memory_samples[0]
+        minimum = min(memory_samples)
+        memory = {
+            "scope": "whole Linux runner",
+            "source": "/proc/meminfo MemAvailable",
+            "unit": "KiB",
+            "sampleIntervalSeconds": 1,
+            "samples": len(memory_samples),
+            "baselineMemAvailableKiB": baseline,
+            "minimumMemAvailableKiB": minimum,
+            "maximumRunnerMemoryUseAboveBaselineKiB": max(0, baseline - minimum),
+        }
+        (output / "runner-memory.json").write_text(json.dumps(memory, indent=2) + "\n")
     result = dict(
         totalSeconds=time.monotonic() - started,
         firstEvalSeconds=first_eval,
