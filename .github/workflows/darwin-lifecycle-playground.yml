@@ -1,0 +1,309 @@
+name: Darwin Sparsebundle Lifecycle Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing producer run (empty creates both treatments)
+        type: string
+        default: ''
+      workload_ref:
+        description: Exact commit to refresh and read
+        type: string
+        default: 14a8d7657900a917560ddbe77577c0d5a1b77638
+      trace:
+        description: Run one traced reader per treatment instead of timing rounds
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-lifecycle-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BASE_CACHE_KEY: nix-root-ci-aarch64-darwin-sparsebundle-v1-fp-33ae17904b7a7bedebd628346a9f600e8ddf3b990dd6a60fbe8d5f2b11f5caa6-33891132223-1
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+
+jobs:
+  produce:
+    if: inputs.source_run == ''
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.workload_ref }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Validate inputs and start producer timing
+        env:
+          WORKLOAD_REF: ${{ inputs.workload_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKLOAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/nix-root-ci-aarch64-darwin"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/nix-root-ci-aarch64-darwin/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - name: Start frozen base restore timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
+          key: ${{ env.BASE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Finish frozen base restore timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
+      - name: Start mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/mount-start.txt"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Finish mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/mount-end.txt"
+      - name: Start installer timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-start.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Finish installer timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-end.txt"
+      - name: Start refresh timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/refresh-start.txt"
+      - uses: ./.harness/.github/actions/nix-root-build
+        with:
+          system: aarch64-darwin
+      - name: Finish refresh timing and record outputs
+        run: |
+          set -euo pipefail
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/refresh-end.txt"
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
+            "$RUNNER_TEMP/cache-aarch64-darwin-results.json" > "$RUNNER_TEMP/measurements/producer-records.json"
+      - name: Freeze identical pre-treatment state
+        run: |
+          set -euo pipefail
+          started="$SECONDS"
+          nix store gc
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/measurements/gc-seconds.txt"
+          started="$SECONDS"
+          optimise_status=0
+          nix store optimise || optimise_status=$?
+          echo "$optimise_status" > "$RUNNER_TEMP/measurements/optimise-status.txt"
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/measurements/optimise-seconds.txt"
+          sync
+          sudo hdiutil detach /nix
+          mkdir -p "$RUNNER_TEMP/darwin-lifecycle/compacted" "$RUNNER_TEMP/darwin-lifecycle/uncompacted"
+          started="$SECONDS"
+          ditto "$NIX_ROOT_IMAGE_BUNDLE" "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
+          mv "$NIX_ROOT_IMAGE_BUNDLE" "$RUNNER_TEMP/darwin-lifecycle/uncompacted/nix-root.sparsebundle"
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/measurements/duplicate-seconds.txt"
+          diff -qr \
+            "$RUNNER_TEMP/darwin-lifecycle/uncompacted/nix-root.sparsebundle" \
+            "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
+      - name: Compact treatment copy
+        run: |
+          set -euo pipefail
+          started="$SECONDS"
+          perl -e 'alarm shift; exec @ARGV' 300 hdiutil compact \
+            "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" \
+            | tee "$RUNNER_TEMP/measurements/compaction.log"
+          echo "$((SECONDS - started))" > "$RUNNER_TEMP/measurements/compaction-seconds.txt"
+      - name: Record producer image telemetry
+        env:
+          WORKLOAD_REF: ${{ inputs.workload_ref }}
+        run: |
+          set -euo pipefail
+          for treatment in compacted uncompacted; do
+            bundle="$RUNNER_TEMP/darwin-lifecycle/$treatment/nix-root.sparsebundle"
+            allocated_bytes="$(( $(du -sk "$bundle" | awk '{print $1}') * 1024 ))"
+            logical_bytes="$(find "$bundle" -type f -exec stat -f '%z' {} + | awk '{sum += $1} END {print sum + 0}')"
+            band_count="$(find "$bundle/bands" -type f | wc -l | tr -d ' ')"
+            jq -n --arg treatment "$treatment" --arg workloadRef "$WORKLOAD_REF" \
+              --arg baseCacheKey "$BASE_CACHE_KEY" --arg harness "$GITHUB_SHA" \
+              --argjson allocatedBytes "$allocated_bytes" --argjson logicalBytes "$logical_bytes" \
+              --argjson bandCount "$band_count" \
+              '{treatment:$treatment,workloadRef:$workloadRef,baseCacheKey:$baseCacheKey,harness:$harness,allocatedBytes:$allocatedBytes,logicalBytes:$logicalBytes,bandCount:$bandCount,cacheArchiveBytesSource:"actions/cache/save log"}' \
+              > "$RUNNER_TEMP/measurements/$treatment-image.json"
+          done
+      - name: Start compacted cache save timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/compacted-save-start.txt"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: darwin-lifecycle-v1-${{ github.run_id }}-${{ inputs.workload_ref }}-compacted
+      - name: Finish compacted cache save timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/compacted-save-end.txt"
+      - name: Start uncompacted cache save timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/uncompacted-save-start.txt"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/uncompacted/nix-root.sparsebundle
+          key: darwin-lifecycle-v1-${{ github.run_id }}-${{ inputs.workload_ref }}-uncompacted
+      - name: Finish producer timing
+        run: |
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/uncompacted-save-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/completion-end.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-lifecycle-producer
+          path: ${{ runner.temp }}/measurements
+
+  reader:
+    needs: produce
+    if: ${{ always() && (needs.produce.result == 'success' || (inputs.source_run != '' && needs.produce.result == 'skipped')) }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        round: ${{ fromJSON(inputs.trace && '[1]' || '[1,2,3]') }}
+        treatment: [compacted, uncompacted]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.workload_ref }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Validate inputs and start reader timing
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+          WORKLOAD_REF: ${{ inputs.workload_ref }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKLOAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/darwin-lifecycle/${{ matrix.treatment }}"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/${{ matrix.treatment }}/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - name: Start cache restore timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/${{ matrix.treatment }}/nix-root.sparsebundle
+          key: darwin-lifecycle-v1-${{ inputs.source_run || github.run_id }}-${{ inputs.workload_ref }}-${{ matrix.treatment }}
+          fail-on-cache-miss: true
+      - name: Finish cache restore timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
+      - name: Start native trace
+        if: inputs.trace
+        run: |
+          trace="$RUNNER_TEMP/measurements/fs-usage.txt"
+          trace_error="$RUNNER_TEMP/measurements/fs-usage.stderr.txt"
+          # shellcheck disable=SC2024 # The unprivileged runner owns these telemetry files.
+          nohup sudo fs_usage -w -f filesys -f cachehit hdiutil diskimages-helper diskimagesiod > "$trace" 2> "$trace_error" &
+          trace_pid=$!
+          echo "DARWIN_TRACE_PID=$trace_pid" >> "$GITHUB_ENV"
+          sleep 1
+          if sudo kill -0 "$trace_pid" 2>/dev/null; then
+            echo running > "$RUNNER_TEMP/measurements/fs-usage-status.txt"
+          else
+            echo unavailable > "$RUNNER_TEMP/measurements/fs-usage-status.txt"
+          fi
+      - name: Start mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/mount-start.txt"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Finish mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/mount-end.txt"
+      - name: Start installer timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-start.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Finish installer timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-end.txt"
+      - name: Measure Darwin build
+        run: |
+          set -euo pipefail
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 .harness/.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+            nix run ".#packages.aarch64-darwin.nix-fast-build" -- \
+            --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --retries 2 \
+            --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-end.txt"
+      - name: Stop and summarise native trace
+        if: always() && inputs.trace
+        run: |
+          status_file="$RUNNER_TEMP/measurements/fs-usage-status.txt"
+          if [ -n "${DARWIN_TRACE_PID:-}" ] && sudo kill -0 "$DARWIN_TRACE_PID" 2>/dev/null; then
+            sudo kill -INT "$DARWIN_TRACE_PID" 2>/dev/null || true
+            sleep 2
+            if sudo kill -0 "$DARWIN_TRACE_PID" 2>/dev/null; then
+              sudo kill -TERM "$DARWIN_TRACE_PID" 2>/dev/null || true
+            fi
+            echo stopped > "$status_file"
+          elif [ ! -f "$status_file" ]; then
+            echo unavailable > "$status_file"
+          fi
+          python3 .harness/.github/scripts/darwin_sparsebundle_trace.py \
+            "$RUNNER_TEMP/measurements/fs-usage.txt" \
+            --stderr "$RUNNER_TEMP/measurements/fs-usage.stderr.txt" \
+            --status "$status_file" > "$RUNNER_TEMP/measurements/fs-usage-summary.json"
+      - name: Record reader outputs and environment
+        if: always()
+        env:
+          ROUND: ${{ matrix.round }}
+          TREATMENT: ${{ matrix.treatment }}
+          WORKLOAD_REF: ${{ inputs.workload_ref }}
+          INSTRUMENTED: ${{ inputs.trace }}
+        run: |
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/completion-end.txt"
+          if [ -f "$RUNNER_TEMP/measurements/results.json" ]; then
+            jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
+              "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
+          fi
+          jq -n --arg treatment "$TREATMENT" --arg round "$ROUND" --arg workloadRef "$WORKLOAD_REF" \
+            --arg sourceRun "${{ inputs.source_run || github.run_id }}" --arg fixture "$FIXTURE_SHA" \
+            --arg harness "$GITHUB_SHA" --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(sysctl -n machdep.cpu.brand_string)" --argjson instrumented "$INSTRUMENTED" \
+            '{treatment:$treatment,round:$round,workloadRef:$workloadRef,sourceRun:$sourceRun,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,instrumented:$instrumented}' \
+            > "$RUNNER_TEMP/measurements/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-lifecycle-reader-${{ matrix.round }}-${{ matrix.treatment }}
+          path: ${{ runner.temp }}/measurements
+
+  compare:
+    needs: reader
+    if: always() && needs.reader.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: darwin-lifecycle-reader-*
+          path: ${{ runner.temp }}/readers
+      - name: Verify all reader output maps match
+        env:
+          EXPECTED_READERS: ${{ inputs.trace && 2 || 6 }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' records < <(find "$RUNNER_TEMP/readers" -name records.json -print0 | sort -z)
+          test "${#records[@]}" -eq "$EXPECTED_READERS"
+          canonical="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "${records[0]}")"
+          for record in "${records[@]}"; do
+            test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$record")" = "$canonical"
+          done
+          jq -n --argjson outputs "$canonical" --argjson readers "${#records[@]}" \
+            '{matching:true,readers:$readers,outputs:$outputs}' | tee -a "$GITHUB_STEP_SUMMARY"
