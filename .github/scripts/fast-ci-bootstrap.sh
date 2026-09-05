@@ -24,7 +24,7 @@ CONF
 printf 'access-tokens = github.com=%s\n' "$GITHUB_TOKEN" >> "$config"
 printf 'machine github.com\nlogin github-token\npassword %s\n' "$GITHUB_TOKEN" >> "$HOME/.netrc"
 chmod 600 "$config" "$HOME/.netrc"
-printf '%s/bin\n' "$nix" >> "$GITHUB_PATH"
+printf '%s/bin\n%s/.nix-profile/bin\n' "$nix" "$HOME" >> "$GITHUB_PATH"
 {
   printf 'NIX_PROFILES=/nix/var/nix/profiles/default %s/.nix-profile\n' "$HOME"
   printf 'NIX_USER_PROFILE_DIR=/nix/var/nix/profiles/per-user/%s\n' "$USER"
