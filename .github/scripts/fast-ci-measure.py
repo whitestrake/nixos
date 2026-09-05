@@ -68,6 +68,7 @@ def main():
             if event.get("type") == "EVAL" and first_eval is None:
                 first_eval = elapsed
             stream.write(json.dumps({"elapsedSeconds": elapsed, "event": event}) + "\n")
+            stream.flush()
             if forward_events:
                 print(line, end="", flush=True)
             events += 1
