@@ -79,7 +79,7 @@ jobs:
           old="$(jq -r '.inputs["whitestrake-github-keys"].path' "$RUNNER_TEMP/measurements/old-archive.json")"
           cat "$old" > "$RUNNER_TEMP/fixture-public.keys"
           printf '\n# CI cache input invalidation probe\n' >> "$RUNNER_TEMP/fixture-public.keys"
-          nix flake lock --override-input whitestrake-github-keys "file://$RUNNER_TEMP/fixture-public.keys"
+          nix flake lock --override-input whitestrake-github-keys "file+file://$RUNNER_TEMP/fixture-public.keys"
           cp flake.lock "$RUNNER_TEMP/measurements/changed-flake.lock"
           nix flake archive --json path:. > "$RUNNER_TEMP/measurements/new-archive.json"
           new="$(jq -r '.inputs["whitestrake-github-keys"].path' "$RUNNER_TEMP/measurements/new-archive.json")"
