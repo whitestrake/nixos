@@ -102,7 +102,7 @@ jobs:
             ${{ runner.temp }}/fast-ci-*/*.sha256
 
   trial:
-    name: Trial ${{ matrix.round }} ${{ matrix.pack }}
+    name: Trial ${{ matrix.round }} ${{ matrix.pack }} ${{ matrix.launch }}
     needs: seed
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -111,7 +111,8 @@ jobs:
       max-parallel: 1
       matrix:
         round: [1, 2, 3]
-        pack: [squashfs, erofs]
+        pack: [squashfs]
+        launch: [flake, direct]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -167,11 +168,19 @@ jobs:
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Measure Linux build
         working-directory: fixture
+        env:
+          LAUNCH: ${{ matrix.launch }}
         run: |
           set -euo pipefail
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          nix_fast_build=(nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build --)
+          if [ "$LAUNCH" = direct ]; then
+            # This probe fixes the source revision; production needs a tool-identity guard.
+            jq -e --arg fixture "$FIXTURE_SHA" '.fixture == $fixture' "$RUNNER_TEMP/fast-ci-seed/metadata.json" >/dev/null
+            nix_fast_build=("$(cat "$RUNNER_TEMP/fast-ci-seed/nfb-path.txt")/bin/nix-fast-build")
+          fi
           python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
-            nix run --option builders '' --option max-jobs auto .#packages.x86_64-linux.nix-fast-build -- \
+            "${nix_fast_build[@]}" \
             --flake .#ci.linux --systems 'x86_64-linux aarch64-linux' --eval-workers 3 \
             --store ssh-ng://eu.nixbuild.net --option builders '' --option max-jobs 2 \
             --retries 2 --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
@@ -190,7 +199,7 @@ jobs:
       - name: Record environment
         if: always()
         env:
-          PACK: ${{ matrix.pack }}
+          PACK: ${{ matrix.pack }}-${{ matrix.launch }}
           ROUND: ${{ matrix.round }}
         run: |
           jq -n --arg treatment "$PACK" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
@@ -202,7 +211,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: trial-${{ matrix.round }}-${{ matrix.pack }}
+          name: trial-${{ matrix.round }}-${{ matrix.pack }}-${{ matrix.launch }}
           path: ${{ runner.temp }}/measurements
       - name: Unmount disposable seed
         if: always() && matrix.pack != 'cold'
