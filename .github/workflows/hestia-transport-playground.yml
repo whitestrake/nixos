@@ -502,7 +502,7 @@ jobs:
             --jq '.actions_caches[]' | jq -s --arg version "$CACHE_VERSION" --arg ref "$GITHUB_REF" \
             '[.[] | select(.version == $version and .ref == $ref)] | sort_by(.id)' \
             > "$evidence/cache-after.json"
-          upper_bound="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/cache-before.json")"
+          available_bytes="$(jq '[.[].size_in_bytes] | add // 0' "$evidence/cache-before.json")"
           install_seconds="$(awk -v start="$(cat "$evidence/nix-install-start.txt")" -v end="$(cat "$evidence/nix-install-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
           startup_seconds="$(awk -v start="$(cat "$evidence/hestia-start.txt")" -v end="$(cat "$evidence/hestia-ready.txt")" 'BEGIN {printf "%.6f", end-start}')"
           copy_seconds="$(awk -v start="$(cat "$evidence/copy-start.txt")" -v end="$(cat "$evidence/copy-end.txt")" 'BEGIN {printf "%.6f", end-start}')"
@@ -514,11 +514,11 @@ jobs:
             --arg interface "$(cat "$evidence/network-interface.txt")" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cacheVersion "$CACHE_VERSION" \
             --argjson inboundDeltaBytes "$(cat "$evidence/network-inbound-delta.txt")" \
-            --argjson cacheEntryBytesUpperBound "$upper_bound" --argjson nixInstallSeconds "$install_seconds" \
+            --argjson availableCacheEntryBytes "$available_bytes" --argjson nixInstallSeconds "$install_seconds" \
             --argjson hestiaStartupSeconds "$startup_seconds" --argjson copySeconds "$copy_seconds" \
             --argjson manualDrainSeconds "$drain_seconds" --argjson copyAndDrainSeconds "$copy_and_drain_seconds" \
             --argjson consumerSeconds "$consumer_seconds" --argjson verificationSeconds "$verify_seconds" \
-            '{generation:$generation,root:$root,runnerImage:$runnerImage,cacheVersion:$cacheVersion,nixInstallSeconds:$nixInstallSeconds,hestiaStartupSeconds:$hestiaStartupSeconds,copySeconds:$copySeconds,manualDrainSeconds:$manualDrainSeconds,copyAndDrainSeconds:$copyAndDrainSeconds,consumerSeconds:$consumerSeconds,consumerCostScope:"Nix installation through manual drain, including harness/API gaps; verification excluded",verificationSeconds:$verificationSeconds,inboundInterface:$interface,inboundInterfaceDeltaBytes:$inboundDeltaBytes,inboundDeltaIncludes:"Hestia traffic plus background runner traffic",cacheEntryBytesUpperBound:$cacheEntryBytesUpperBound,cacheEntryBytesUpperBoundMeaning:"compressed salted entries available; Hestia range requests transfer less"}' \
+            '{generation:$generation,root:$root,runnerImage:$runnerImage,cacheVersion:$cacheVersion,nixInstallSeconds:$nixInstallSeconds,hestiaStartupSeconds:$hestiaStartupSeconds,copySeconds:$copySeconds,manualDrainSeconds:$manualDrainSeconds,copyAndDrainSeconds:$copyAndDrainSeconds,consumerSeconds:$consumerSeconds,consumerCostScope:"Nix installation through manual drain, including harness/API gaps; verification excluded",verificationSeconds:$verificationSeconds,inboundInterface:$interface,inboundInterfaceDeltaBytes:$inboundDeltaBytes,inboundDeltaIncludes:"Hestia traffic plus background runner traffic",availableCacheEntryBytes:$availableCacheEntryBytes,availableCacheEntryBytesMeaning:"Inventory size, not a transfer bound; repeated range fetches can exceed it"}' \
             > "$evidence/reader.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
