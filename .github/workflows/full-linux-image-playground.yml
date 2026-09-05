@@ -1,15 +1,18 @@
 name: Full Linux Image Probe
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/full-linux-image-playground.yml]
   workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing image producer run (empty builds new images)
+        type: string
+        default: ''
 permissions:
   contents: read
 env:
   FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
 jobs:
   pack:
+    if: inputs.source_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +67,7 @@ jobs:
           path: ${{ runner.temp }}/pack-evidence
   reader:
     needs: pack
+    if: ${{ always() && (needs.pack.result == 'success' || (inputs.source_run != '' && needs.pack.result == 'skipped')) }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -100,7 +104,7 @@ jobs:
         if: matrix.format != 'ext4'
         with:
           path: ${{ runner.temp }}/full-${{ matrix.format }}
-          key: full-image-probe-${{ github.run_id }}-${{ matrix.system }}-${{ matrix.format }}
+          key: full-image-probe-${{ inputs.source_run || github.run_id }}-${{ matrix.system }}-${{ matrix.format }}
           fail-on-cache-miss: true
       - name: Mount immutable full image with overlay
         if: matrix.format != 'ext4'
@@ -133,7 +137,7 @@ jobs:
           python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
             nix run ".#packages.$SYSTEM.nix-fast-build" -- \
             --flake ".#ci.$SYSTEM" --systems "$SYSTEM" --eval-workers 3 \
-            --option builders '' --option max-jobs 0 --retries 2 \
+            --option builders '' --option max-jobs 2 --retries 2 \
             --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
       - name: Record environment
