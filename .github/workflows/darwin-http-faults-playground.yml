@@ -1,0 +1,351 @@
+name: Darwin HTTP Image Fault Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/darwin-http-faults-playground.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-http-faults-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
+  RELEASE_ID: '383622742'
+  MANIFEST_SHA: 8406fdfb37a9c2bdfe98195cf1193a02470b1d84d3a1451c78e8248a8fc6d3aa
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+
+jobs:
+  fault-recovery:
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+
+      - name: Prove corrupt block and wrong manifest rejection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults"
+          mkdir -p "$root/contracts"
+          wrong_status=0
+          python3 .harness/.github/scripts/darwin-release-image.py eager \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --manifest-sha "$(printf '0%.0s' {1..64})" \
+            --directory "$root/wrong-manifest" \
+            > "$root/contracts/wrong-manifest.stdout" \
+            2> "$root/contracts/wrong-manifest.stderr" || wrong_status=$?
+          test "$wrong_status" -ne 0
+          test ! -e "$root/wrong-manifest/image.dmg"
+          printf '%s\n' "$wrong_status" > "$root/contracts/wrong-manifest.status"
+
+          python3 .harness/.github/scripts/test_darwin_release_image.py \
+            ReleaseImageTest.test_verified_store_rejects_missing_and_corrupt_blocks_and_reads_boundary \
+            > "$root/contracts/corrupt-block.stdout" \
+            2> "$root/contracts/corrupt-block.stderr"
+          jq -n --argjson wrongManifestStatus "$wrong_status" \
+            '{wrongManifestRejected:($wrongManifestStatus != 0),corruptOriginBlockRejected:true,corruptBlockScope:"verified helper range fetch against a synthetic corrupt origin"}' \
+            > "$root/contracts/result.json"
+
+      - name: Prove native loss, clean detach and lazy restart
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults"
+          helper=.harness/.github/scripts/darwin-release-image.py
+          fault_mount="$RUNNER_TEMP/http-fault-mount"
+          restart_mount="$RUNNER_TEMP/http-restart-mount"
+          mkdir -p "$root/native" "$fault_mount" "$restart_mount"
+
+          bounded_hdi() {
+            perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil "$@"
+          }
+
+          start_server() {
+            name="$1"
+            mkdir -p "$root/$name"
+            python3 "$helper" serve --repo "$GITHUB_REPOSITORY" \
+              --release-id "$RELEASE_ID" --manifest-sha "$MANIFEST_SHA" \
+              --directory "$root/$name/cache" --ready "$root/$name/url.txt" \
+              --log "$root/$name/requests.jsonl" \
+              > "$root/$name/summary.json" 2> "$root/$name/server.stderr" &
+            server_pid=$!
+            server_pidfile="$root/$name/server.pid"
+            printf '%s\n' "$server_pid" > "$server_pidfile"
+            for _ in {1..600}; do
+              [ -s "$root/$name/url.txt" ] && break
+              kill -0 "$server_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            test -s "$root/$name/url.txt"
+            url="$(cat "$root/$name/url.txt")"
+            [[ "$url" =~ ^http://127\.0\.0\.1:[0-9]+/image$ ]]
+          }
+
+          stop_server() {
+            kill -TERM "$server_pid"
+            for _ in {1..300}; do
+              kill -0 "$server_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            if kill -0 "$server_pid" 2>/dev/null; then
+              return 1
+            fi
+            wait "$server_pid"
+            rm -f "$server_pidfile"
+          }
+
+          start_server first
+          bounded_hdi attach "$url" -shadow "$root/native/fault.shadow" \
+            -mountpoint "$fault_mount" -nobrowse -noautoopen -owners on \
+            > "$root/native/fault-attach.stdout" 2> "$root/native/fault-attach.stderr"
+
+          python3 - "$fault_mount" "$root/native/candidates.txt" <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+
+          mount = Path(sys.argv[1])
+          output = Path(sys.argv[2])
+          candidates = []
+          for directory, _subdirectories, files in os.walk(mount / "store"):
+              for name in files:
+                  path = Path(directory) / name
+                  try:
+                      if path.stat().st_size >= 32 * 1024 * 1024 and os.access(path, os.R_OK):
+                          candidates.append((path.stat().st_size, path.relative_to(mount)))
+                  except OSError:
+                      pass
+                  if len(candidates) == 12:
+                      output.write_text("".join(f"{size}\t{path}\n" for size, path in candidates))
+                      raise SystemExit
+          output.write_text("".join(f"{size}\t{path}\n" for size, path in candidates))
+          PY
+          test -s "$root/native/candidates.txt"
+
+          stop_server
+          native_failed=false
+          : > "$root/native/read-attempts.jsonl"
+          while IFS=$'\t' read -r source_size relative; do
+            test "$source_size" -ge 33554432
+            source="$fault_mount/$relative"
+            output="$root/native/fault-read.bin"
+            : > "$output"
+            read_status=0
+            perl -e 'alarm shift; exec @ARGV' 30 dd if="$source" of="$output" \
+              bs=1048576 count=16 \
+              > "$root/native/fault-read.stdout" \
+              2> "$root/native/fault-read.stderr" || read_status=$?
+            bytes="$(stat -f '%z' "$output")"
+            jq -cn --arg path "$relative" --argjson status "$read_status" \
+              --argjson bytes "$bytes" --argjson sourceBytes "$source_size" \
+              '{path:$path,sourceBytes:$sourceBytes,status:$status,bytes:$bytes,timedOut:($status == 142)}' \
+              >> "$root/native/read-attempts.jsonl"
+            if [ "$read_status" -ne 0 ] && [ "$read_status" -ne 142 ] && \
+               [ "$bytes" -lt 16777216 ]; then
+              if grep -Eq 'Permission denied|No such file' "$root/native/fault-read.stderr"; then
+                continue
+              fi
+              printf '%s\n' "$relative" > "$root/native/probe-relative.txt"
+              printf '%s\n' "$read_status" > "$root/native/fault-read.status"
+              printf '%s\n' "$bytes" > "$root/native/fault-read.bytes"
+              native_failed=true
+              break
+            fi
+          done < "$root/native/candidates.txt"
+          test "$native_failed" = true
+          bounded_hdi detach "$fault_mount" \
+            > "$root/native/fault-detach.stdout" 2> "$root/native/fault-detach.stderr"
+
+          start_server restart
+          bounded_hdi attach "$url" -shadow "$root/native/restart.shadow" \
+            -mountpoint "$restart_mount" -nobrowse -noautoopen -owners on \
+            > "$root/native/restart-attach.stdout" 2> "$root/native/restart-attach.stderr"
+          relative="$(cat "$root/native/probe-relative.txt")"
+          perl -e 'alarm shift; exec @ARGV' 180 dd if="$restart_mount/$relative" \
+            of="$root/native/restart-read.bin" bs=1048576 count=16 \
+            > "$root/native/restart-read.stdout" 2> "$root/native/restart-read.stderr"
+          test "$(stat -f '%z' "$root/native/restart-read.bin")" -eq 16777216
+          bounded_hdi detach "$restart_mount" \
+            > "$root/native/restart-detach.stdout" 2> "$root/native/restart-detach.stderr"
+          stop_server
+
+          python3 - "$root/native/fault-read.bin" "$root/native/restart-read.bin" <<'PY'
+          from pathlib import Path
+          import sys
+
+          failed = Path(sys.argv[1]).read_bytes()
+          recovered = Path(sys.argv[2]).read_bytes()
+          assert len(failed) < len(recovered) == 16 * 1024 * 1024
+          assert recovered[:len(failed)] == failed
+          PY
+          jq -se --argjson release "$RELEASE_ID" --arg sha "$MANIFEST_SHA" '
+            length == 2 and all(.[];
+              .releaseId == $release and .manifestSha256 == $sha
+              and .requestCount > 0 and .responseBytes > 0
+              and .interfaceRequests > 0 and .interfaceBytes > 0)
+          ' "$root/first/summary.json" "$root/restart/summary.json"
+          jq -n --arg path "$(cat "$root/native/probe-relative.txt")" \
+            --argjson status "$(cat "$root/native/fault-read.status")" \
+            --argjson shortBytes "$(cat "$root/native/fault-read.bytes")" \
+            --arg recoveredSha "$(shasum -a 256 "$root/native/restart-read.bin" | awk '{print $1}')" \
+            '{nativeBackingLossObserved:true,probePath:$path,failedReadStatus:$status,failedReadTimedOut:false,failedReadBytes:$shortBytes,requestedBytes:16777216,silentZeroSubstitution:false,normalDetachAfterLoss:true,lazyRestartReadBytes:16777216,lazyRestartSha256:$recoveredSha}' \
+            > "$root/native/result.json"
+
+      - name: Eagerly recover the verified full image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults"
+          python3 .harness/.github/scripts/darwin-release-image.py eager \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --manifest-sha "$MANIFEST_SHA" --directory "$root/eager" \
+            > "$root/eager.json"
+          jq -e --argjson release "$RELEASE_ID" --arg sha "$MANIFEST_SHA" '
+            .releaseId == $release and .manifestSha256 == $sha
+            and (.imageBytes | type == "number" and . > 0)
+            and (.imageSha256 | test("^[0-9a-f]{64}$"))
+            and .requestCount > 0 and .responseBytes == .imageBytes
+            and .uniqueResponseBytes == .imageBytes
+          ' "$root/eager.json"
+          test "$(jq -r .image "$root/eager.json")" = "$root/eager/image.dmg"
+          echo "RELEASE_IMAGE=$root/eager/image.dmg" >> "$GITHUB_ENV"
+
+      - name: Mount the eager recovery image
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults"
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE" \
+            -shadow "$root/eager.shadow" -mountpoint /nix \
+            -nobrowse -noautoopen -owners on \
+            > "$root/eager-attach.stdout" 2> "$root/eager-attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: Finish frozen Andred output and proof
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults/recovery"
+          mkdir -p "$root"
+          nfb=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build
+          test -x "$nfb"
+          "$nfb" --help >/dev/null
+          readlink /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build > "$root/nfb-path.txt"
+          python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
+            "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --cachix-cache whitestrake --retries 2 \
+            --result-file "$root/results.json" -j 50 --stream-json-lines
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
+            "$root/results.json" > "$root/records.json"
+          test "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
+            "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -e 'any(.results[]; .type == "CACHIX" and .success == true)' "$root/results.json"
+          jq -r '.[].storePath' "$root/records.json" | while IFS= read -r path; do
+            nix path-info --store https://whitestrake.cachix.org "$path" >/dev/null
+          done
+          jq -cnS --arg revision "$FIXTURE_SHA" --argjson records "$EXPECTED_RECORDS" \
+            '{revision:$revision,records:($records | map({attr,storePath}))}' > "$root/darwin-proof.json"
+          proof_path="$(nix store add --mode flat --name darwin-release-proof.json "$root/darwin-proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          echo "$proof_path" > "$root/proof-path.txt"
+          jq -n --arg fixture "$FIXTURE_SHA" --arg proofPath "$proof_path" \
+            --arg runnerImage "${ImageVersion:-unknown}" \
+            '{fullStoreRecovery:true,fixture:$fixture,proofPath:$proofPath,runner:"macos-26",runnerImage:$runnerImage}' \
+            > "$root/result.json"
+
+      - name: Detach eager recovery and verify immutable base
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-http-faults"
+          perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix \
+            > "$root/eager-detach.stdout" 2> "$root/eager-detach.stderr"
+          expected="$(jq -r .imageSha256 "$root/eager.json")"
+          actual="$(shasum -a 256 "$RELEASE_IMAGE" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          jq --arg baseSha256 "$actual" \
+            '. + {normalDetach:true,baseShaUnchanged:true,baseSha256:$baseSha256}' \
+            "$root/recovery/result.json" > "$root/recovery/result.next.json"
+          mv "$root/recovery/result.next.json" "$root/recovery/result.json"
+
+      - name: Clean up mounted images and helper processes
+        if: always()
+        run: |
+          root="$RUNNER_TEMP/darwin-http-faults"
+          for mountpoint in /nix "$RUNNER_TEMP/http-fault-mount" "$RUNNER_TEMP/http-restart-mount"; do
+            if mount | grep -Fq " on $mountpoint "; then
+              perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force "$mountpoint" || true
+            fi
+          done
+          for pidfile in "$root"/*/server.pid; do
+            [ -f "$pidfile" ] || continue
+            pid="$(cat "$pidfile")"
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -TERM "$pid" 2>/dev/null || true
+              for _ in {1..100}; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+              done
+              if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+              fi
+            fi
+            rm -f "$pidfile"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-http-fault-evidence
+          path: |
+            ${{ runner.temp }}/darwin-http-faults
+            !${{ runner.temp }}/darwin-http-faults/first/cache/blocks/**
+            !${{ runner.temp }}/darwin-http-faults/restart/cache/blocks/**
+            !${{ runner.temp }}/darwin-http-faults/eager/image.dmg
+            !${{ runner.temp }}/darwin-http-faults/native/fault.shadow
+            !${{ runner.temp }}/darwin-http-faults/native/restart.shadow
+            !${{ runner.temp }}/darwin-http-faults/eager.shadow
+            !${{ runner.temp }}/darwin-http-faults/native/fault-read.bin
+            !${{ runner.temp }}/darwin-http-faults/native/restart-read.bin
