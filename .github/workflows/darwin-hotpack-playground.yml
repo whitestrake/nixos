@@ -8,6 +8,11 @@ on:
         type: choice
         options: [matched, all]
         default: matched
+      rounds:
+        description: Number of repeated pairs per selected scenario
+        type: choice
+        options: ['1', '3']
+        default: '1'
       source_hot_release:
         description: Existing immutable hot-pack release ID; requires source_hot_sha
         type: string
@@ -47,15 +52,36 @@ jobs:
       reuse: ${{ steps.inputs.outputs.reuse }}
       release-id: ${{ steps.inputs.outputs.release-id }}
       manifest-sha: ${{ steps.inputs.outputs.manifest-sha }}
+      matrix: ${{ steps.inputs.outputs.matrix }}
+      rounds: ${{ steps.inputs.outputs.rounds }}
+      scenarios: ${{ steps.inputs.outputs.scenarios }}
     steps:
       - name: Validate optional hot-pack generation
         id: inputs
         env:
           SOURCE_HOT_RELEASE: ${{ inputs.source_hot_release }}
           SOURCE_HOT_SHA: ${{ inputs.source_hot_sha }}
+          ROUNDS: ${{ github.event_name == 'push' && '1' || inputs.rounds }}
+          SCENARIOS: ${{ github.event_name == 'push' && 'matched' || inputs.scenarios }}
         run: |
           set -euo pipefail
+          [[ "$ROUNDS" = 1 || "$ROUNDS" = 3 ]]
+          [[ "$SCENARIOS" = matched || "$SCENARIOS" = all ]]
+          definitions='[{"scenario":"matched","treatments":["cold","hot"]}]'
+          if [ "$SCENARIOS" = all ]; then
+            definitions='[{"scenario":"matched","treatments":["cold","hot"]},{"scenario":"changed-input","treatments":["hot","cold"]},{"scenario":"unprofiled-file","treatments":["cold","hot"]}]'
+          fi
+          matrix="$(jq -cn --argjson rounds "$ROUNDS" --argjson definitions "$definitions" '
+            [range(1; $rounds + 1) as $pair
+             | $definitions[]
+             | .scenario as $scenario
+             | (if $pair % 2 == 0 then .treatments | reverse else .treatments end)[]
+             | {pair:$pair, scenario:$scenario, treatment:.}]
+          ')"
           {
+            echo "matrix=$matrix"
+            echo "rounds=$ROUNDS"
+            echo "scenarios=$SCENARIOS"
             if [ -z "$SOURCE_HOT_RELEASE" ] && [ -z "$SOURCE_HOT_SHA" ]; then
               echo 'reuse=false'
             else
@@ -221,7 +247,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        include: ${{ fromJSON((github.event_name == 'push' || inputs.scenarios == 'matched') && '[{"scenario":"matched","treatment":"cold"},{"scenario":"matched","treatment":"hot"}]' || '[{"scenario":"matched","treatment":"cold"},{"scenario":"matched","treatment":"hot"},{"scenario":"changed-input","treatment":"hot"},{"scenario":"changed-input","treatment":"cold"},{"scenario":"unprofiled-file","treatment":"cold"},{"scenario":"unprofiled-file","treatment":"hot"}]') }}
+        include: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -480,21 +506,22 @@ jobs:
         run: |
           root="$RUNNER_TEMP/darwin-hotpack-reader"
           jq -n --arg scenario "${{ matrix.scenario }}" --arg treatment "${{ matrix.treatment }}" \
+            --argjson pair "${{ matrix.pair }}" \
             --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
             --arg baseRelease "$BASE_RELEASE_ID" --arg baseManifestSha "$BASE_MANIFEST_SHA" \
             --arg hotRelease "${{ steps.source.outputs.release-id }}" \
             --arg hotManifestSha "${{ steps.source.outputs.manifest-sha }}" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
-            '{scenario:$scenario,treatment:$treatment,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:true,performanceEligible:($scenario != "unprofiled-file")}' \
+            '{scenario:$scenario,treatment:$treatment,pair:$pair,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:true,performanceEligible:($scenario != "unprofiled-file")}' \
             > "$root/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: darwin-hotpack-${{ matrix.scenario }}-${{ matrix.treatment }}
+          name: darwin-hotpack-${{ matrix.scenario }}-pair-${{ matrix.pair }}-${{ matrix.treatment }}
           path: ${{ runner.temp }}/darwin-hotpack-reader
 
   compare:
-    needs: reader
+    needs: [validate, reader]
     if: always() && needs.reader.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -505,43 +532,47 @@ jobs:
           path: ${{ runner.temp }}/readers
       - name: Require identical cold and hot outputs
         env:
-          SCENARIOS: ${{ github.event_name == 'push' && 'matched' || inputs.scenarios }}
+          ROUNDS: ${{ needs.validate.outputs.rounds }}
+          SCENARIOS: ${{ needs.validate.outputs.scenarios }}
         run: |
           set -euo pipefail
           fixtures=(matched)
           if [ "$SCENARIOS" = all ]; then
             fixtures+=(changed-input unprofiled-file)
           fi
-          for fixture in "${fixtures[@]}"; do
-            cold="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-cold"
-            hot="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-hot"
-            test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$cold/records.json")" = \
-              "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$hot/records.json")"
-            test "$(cat "$cold/proof-path.txt")" = "$(cat "$hot/proof-path.txt")"
-            if [ "$fixture" = unprofiled-file ]; then
-              jq -e '.backingRequestsAfter > .backingRequestsBefore' "$cold/unprofiled-file.json"
-              jq -e '.backingRequestsAfter > .backingRequestsBefore' "$hot/unprofiled-file.json"
+          for pair in $(seq 1 "$ROUNDS"); do
+            for fixture in "${fixtures[@]}"; do
+              cold="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-cold"
+              hot="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-hot"
+              test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$cold/records.json")" = \
+                "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$hot/records.json")"
+              test "$(cat "$cold/proof-path.txt")" = "$(cat "$hot/proof-path.txt")"
+              if [ "$fixture" = unprofiled-file ]; then
+                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$cold/unprofiled-file.json"
+                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$hot/unprofiled-file.json"
+              fi
+            done
+            if [ "$SCENARIOS" = all ]; then
+              matched="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
+                "$RUNNER_TEMP/readers/darwin-hotpack-matched-pair-$pair-cold/records.json")"
+              changed="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
+                "$RUNNER_TEMP/readers/darwin-hotpack-changed-input-pair-$pair-cold/records.json")"
+              test "$changed" != "$matched"
             fi
           done
-          if [ "$SCENARIOS" = all ]; then
-            matched="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
-              "$RUNNER_TEMP/readers/darwin-hotpack-matched-cold/records.json")"
-            changed="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
-              "$RUNNER_TEMP/readers/darwin-hotpack-changed-input-cold/records.json")"
-            test "$changed" != "$matched"
-          fi
-          jq -n --arg scope "$SCENARIOS" --argjson pairs "${#fixtures[@]}" \
-            '{matching:true,scope:$scope,pairs:$pairs,treatments:["cold","hot"],performanceScenarios:["matched","changed-input"],robustnessOnly:["unprofiled-file"]}' \
+          pair_count=$((ROUNDS * ${#fixtures[@]}))
+          jq -n --arg scope "$SCENARIOS" --argjson rounds "$ROUNDS" --argjson pairs "$pair_count" \
+            '{matching:true,scope:$scope,rounds:$rounds,pairs:$pairs,treatments:["cold","hot"],performanceScenarios:["matched","changed-input"],robustnessOnly:["unprofiled-file"]}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo
-            echo '| Reader start (Unix seconds) | Scenario | Treatment |'
-            echo '| ---: | :--- | :--- |'
-            for start in "$RUNNER_TEMP"/readers/darwin-hotpack-*-*/setup-start.txt; do
-              reader="$(basename "$(dirname "$start")")"
-              identity="${reader#darwin-hotpack-}"
-              treatment="${identity##*-}"
-              scenario="${identity%-*}"
-              printf '%s\t| %s | %s | %s |\n' "$(cat "$start")" "$(cat "$start")" "$scenario" "$treatment"
+            echo '| Reader start (Unix seconds) | Pair | Scenario | Treatment |'
+            echo '| ---: | ---: | :--- | :--- |'
+            for start in "$RUNNER_TEMP"/readers/darwin-hotpack-*-pair-*-*/setup-start.txt; do
+              environment="$(dirname "$start")/environment.json"
+              printf '%s\t| %s | %s | %s | %s |\n' \
+                "$(cat "$start")" "$(cat "$start")" \
+                "$(jq -r .pair "$environment")" "$(jq -r .scenario "$environment")" \
+                "$(jq -r .treatment "$environment")"
             done | sort -n | cut -f2-
           } >> "$GITHUB_STEP_SUMMARY"
