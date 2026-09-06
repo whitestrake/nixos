@@ -27,6 +27,8 @@ concurrency:
 env:
   FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
   BASE_RELEASE_ID: '383622742'
+  # Release tags use the frozen master snapshot; the manifest records the harness commit.
+  RELEASE_TARGET_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
   BASE_MANIFEST_SHA: 8406fdfb37a9c2bdfe98195cf1193a02470b1d84d3a1451c78e8248a8fc6d3aa
   PROFILE_RUN_ID: '34040695733'
   PROFILE_ARTIFACT_ID: '9991707035'
@@ -152,7 +154,7 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/hotpack"
           tag="darwin-hot-pack-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          jq -n --arg tag "$tag" --arg target "$GITHUB_SHA" \
+          jq -n --arg tag "$tag" --arg target "$RELEASE_TARGET_SHA" \
             '{tag_name:$tag,target_commitish:$target,name:$tag,body:"Profile-guided Darwin Release hot pack for PR #158 research. Not selected for production CI.",draft:true,prerelease:false,make_latest:"false"}' \
             > "$root/release-request.json"
           gh api "repos/$GITHUB_REPOSITORY/releases" --method POST --input "$root/release-request.json" \
