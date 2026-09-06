@@ -1,0 +1,361 @@
+name: Darwin ASIF Actions Cache Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/darwin-asif-cache-playground.yml]
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Existing ASIF cache producer run; empty creates one from E41
+        type: string
+        default: ''
+      reader_pairs:
+        description: Number of sequential sparsebundle/ASIF reader pairs
+        type: choice
+        options: ['1', '3']
+        default: '1'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: darwin-asif-cache-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
+  ASIF_ARTIFACT_RUN: '34040765657'
+  ASIF_ARTIFACT_ID: '9991696234'
+  ASIF_ARTIFACT_DIGEST: sha256:636b91b26a6f1f08475ee8f719c962bf3b31c10c3fcc7f1ddbd163d511e326d9
+  ASIF_ARTIFACT_HEAD: 8d44ad4a341fb0188a6e857d0917568cffcff3f4
+  ASIF_ARTIFACT_BYTES: '1976832113'
+  ASIF_ARCHIVE_BYTES: '1976831975'
+  ASIF_IMAGE_BYTES: '8034189312'
+  ASIF_CACHE_MAX_BYTES: '5368709120'
+  SOURCE_CACHE_ID: '7381391064'
+  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
+  SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
+  SOURCE_CACHE_SIZE: '2051447771'
+  SOURCE_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+
+jobs:
+  produce:
+    if: github.event_name == 'push' || inputs.source_run == ''
+    runs-on: macos-26
+    timeout-minutes: 30
+    outputs:
+      cache-key: ${{ steps.prepare.outputs.cache-key }}
+    steps:
+      - name: Pin the accepted E41 ASIF artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-cache-producer"
+          mkdir -p "$evidence"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ASIF_ARTIFACT_RUN/artifacts" \
+            > "$evidence/artifacts.json"
+          jq -e --argjson id "$ASIF_ARTIFACT_ID" --arg digest "$ASIF_ARTIFACT_DIGEST" \
+            --arg head "$ASIF_ARTIFACT_HEAD" --argjson bytes "$ASIF_ARTIFACT_BYTES" '
+              [.artifacts[] | select(.id == $id)] | length == 1
+              and .[0].name == "darwin-asif-full-image" and .[0].digest == $digest
+              and .[0].size_in_bytes == $bytes and .[0].expired == false
+              and .[0].workflow_run.id == 34040765657 and .[0].workflow_run.head_sha == $head
+            ' "$evidence/artifacts.json"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ env.ASIF_ARTIFACT_ID }}
+          path: ${{ runner.temp }}/asif-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ env.ASIF_ARTIFACT_RUN }}
+      - name: Extract the accepted ASIF at its fixed cache path
+        id: prepare
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-asif-cache"
+          evidence="$RUNNER_TEMP/asif-cache-producer"
+          archive="$RUNNER_TEMP/asif-artifact/nix-root.aar"
+          image="$root/nix-root.asif"
+          mkdir -p "$root" "$evidence"
+          test "$(stat -f '%z' "$archive")" = "$ASIF_ARCHIVE_BYTES"
+          perl -e 'alarm shift; exec @ARGV' 900 aa extract -enable-holes \
+            -i "$archive" -d "$root"
+          test -f "$image"
+          test "$(stat -f '%z' "$image")" = "$ASIF_IMAGE_BYTES"
+          key="darwin-asif-cache-v1-$GITHUB_RUN_ID"
+          echo "cache-key=$key" >> "$GITHUB_OUTPUT"
+          jq -n --arg key "$key" --arg sourceRun "$ASIF_ARTIFACT_RUN" \
+            --argjson archiveBytes "$(stat -f '%z' "$archive")" \
+            --argjson imageLogicalBytes "$(stat -f '%z' "$image")" \
+            --argjson imageAllocatedBytes "$(( $(du -k "$image" | awk '{print $1}') * 1024 ))" \
+            '{key:$key,sourceArtifactRun:$sourceRun,sourceArchiveBytes:$archiveBytes,imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,conversionRepeated:false,fixedReaderPath:true}' \
+            > "$evidence/image.json"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          key: ${{ steps.prepare.outputs.cache-key }}
+      - name: Bind the saved cache size
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ steps.prepare.outputs.cache-key }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-cache-producer"
+          for _ in 1 2 3 4 5; do
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY" \
+              --limit 10 --json id,key,sizeInBytes,version > "$evidence/cache.json"
+            test "$(jq length "$evidence/cache.json")" -eq 1 && break
+            sleep 2
+          done
+          jq -e --arg key "$CACHE_KEY" --argjson max "$ASIF_CACHE_MAX_BYTES" '
+            length == 1 and .[0].key == $key
+            and .[0].sizeInBytes > 0 and .[0].sizeInBytes <= $max
+            and (.[0].version | test("^[0-9a-f]{64}$"))
+          ' "$evidence/cache.json"
+          jq -s '.[0] + {cache:.[1][0]}' "$evidence/image.json" "$evidence/cache.json" \
+            > "$evidence/result.json"
+          cat "$evidence/result.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-asif-cache-producer
+          path: ${{ runner.temp }}/asif-cache-producer
+
+  reader:
+    needs: produce
+    if: ${{ always() && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && inputs.source_run != '')) }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"treatment":"sparsebundle"},{"pair":1,"treatment":"asif"}]' || '[{"pair":1,"treatment":"sparsebundle"},{"pair":1,"treatment":"asif"},{"pair":2,"treatment":"asif"},{"pair":2,"treatment":"sparsebundle"},{"pair":3,"treatment":"sparsebundle"},{"pair":3,"treatment":"asif"}]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Start complete reader timing
+        id: source
+        env:
+          PRODUCED_KEY: ${{ needs.produce.outputs.cache-key }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          root="$RUNNER_TEMP/asif-cache-reader"
+          mkdir -p "$root" "$RUNNER_TEMP/darwin-lifecycle/compacted" "$RUNNER_TEMP/darwin-asif-cache"
+          python3 -c 'import time; print(time.time())' > "$root/setup-start.txt"
+          if [ -n "$SOURCE_RUN" ]; then
+            [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
+            key="darwin-asif-cache-v1-$SOURCE_RUN"
+          else
+            key="$PRODUCED_KEY"
+          fi
+          [[ "$key" =~ ^darwin-asif-cache-v1-[1-9][0-9]*$ ]]
+          echo "cache-key=$key" >> "$GITHUB_OUTPUT"
+      - name: Recheck selected cache identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASIF_KEY: ${{ steps.source.outputs.cache-key }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/asif-cache-reader"
+          if [ "${{ matrix.treatment }}" = sparsebundle ]; then
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" --key "$SOURCE_CACHE_KEY" \
+              --limit 10 --json id,key,sizeInBytes,version > "$root/cache.json"
+            jq -e --arg key "$SOURCE_CACHE_KEY" --arg id "$SOURCE_CACHE_ID" \
+              --arg size "$SOURCE_CACHE_SIZE" --arg version "$SOURCE_CACHE_VERSION" '
+                length == 1 and .[0].key == $key and (.[0].id | tostring) == $id
+                and (.[0].sizeInBytes | tostring) == $size and .[0].version == $version
+              ' "$root/cache.json"
+          else
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$ASIF_KEY" \
+              --limit 10 --json id,key,sizeInBytes,version > "$root/cache.json"
+            jq -e --arg key "$ASIF_KEY" --argjson max "$ASIF_CACHE_MAX_BYTES" '
+              length == 1 and .[0].key == $key
+              and .[0].sizeInBytes > 0 and .[0].sizeInBytes <= $max
+              and (.[0].version | test("^[0-9a-f]{64}$"))
+            ' "$root/cache.json"
+          fi
+          python3 -c 'import time; print(time.time())' > "$root/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: sparsebundle
+        if: matrix.treatment == 'sparsebundle'
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.SOURCE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: asif
+        if: matrix.treatment == 'asif'
+        with:
+          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          key: ${{ steps.source.outputs.cache-key }}
+          fail-on-cache-miss: true
+      - name: Finish exact cache restore
+        env:
+          ASIF_HIT: ${{ steps.asif.outputs.cache-hit }}
+          ASIF_MATCHED_KEY: ${{ steps.asif.outputs.cache-matched-key }}
+          ASIF_KEY: ${{ steps.source.outputs.cache-key }}
+          SPARSEBUNDLE_HIT: ${{ steps.sparsebundle.outputs.cache-hit }}
+          SPARSEBUNDLE_MATCHED_KEY: ${{ steps.sparsebundle.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.treatment }}" = sparsebundle ]; then
+            test "$SPARSEBUNDLE_HIT" = true
+            test "$SPARSEBUNDLE_MATCHED_KEY" = "$SOURCE_CACHE_KEY"
+            image="$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
+            test -d "$image"
+            echo "NIX_ROOT_IMAGE_BUNDLE=$image" >> "$GITHUB_ENV"
+          else
+            test "$ASIF_HIT" = true
+            test "$ASIF_MATCHED_KEY" = "$ASIF_KEY"
+            image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+            test -f "$image"
+            test "$(stat -f '%z' "$image")" = "$ASIF_IMAGE_BYTES"
+            echo "NIX_ROOT_ASIF=$image" >> "$GITHUB_ENV"
+          fi
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-cache-reader/restore-end.txt"
+      - name: Start mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-cache-reader/mount-start.txt"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        if: matrix.treatment == 'sparsebundle'
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Mount ASIF as writable Nix root
+        if: matrix.treatment == 'asif'
+        run: |
+          set -euo pipefail
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo diskutil image attach --nobrowse \
+            --mountPoint /nix "$NIX_ROOT_ASIF" \
+            > "$RUNNER_TEMP/asif-cache-reader/attach.stdout" \
+            2> "$RUNNER_TEMP/asif-cache-reader/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+      - name: Finish mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-cache-reader/mount-end.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Measure full Darwin output and proof publication
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/asif-cache-reader"
+          python3 -c 'import time; print(time.time())' > "$root/build-start.txt"
+          nfb=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build
+          test -x "$nfb"
+          "$nfb" --help >/dev/null
+          readlink /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build > "$root/nfb-path.txt"
+          python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
+            "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --cachix-cache whitestrake --retries 2 \
+            --result-file "$root/results.json" -j 50 --stream-json-lines
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq "$root/results.json" > "$root/records.json"
+          test "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
+            "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -e 'any(.results[]; .type == "CACHIX" and .success == true)' "$root/results.json"
+          jq -r '.[].storePath' "$root/records.json" | while IFS= read -r path; do
+            nix path-info --store https://whitestrake.cachix.org "$path" >/dev/null
+          done
+          jq -cnS --arg revision "$FIXTURE_SHA" --argjson records "$EXPECTED_RECORDS" \
+            '{revision:$revision,records:($records | map({attr,storePath}))}' > "$root/darwin-proof.json"
+          proof_path="$(nix store add --mode flat --name darwin-release-proof.json "$root/darwin-proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          echo "$proof_path" > "$root/proof-path.txt"
+          python3 -c 'import time; print(time.time())' > "$root/build-end.txt"
+          python3 -c 'import time; print(time.time())' > "$root/completion-end.txt"
+      - name: Detach reader image
+        if: always()
+        run: |
+          if mount | grep -Fq ' on /nix '; then
+            perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix \
+              || perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force /nix
+          fi
+      - name: Record reader environment
+        if: always()
+        env:
+          CACHE_KEY: ${{ steps.source.outputs.cache-key }}
+        run: |
+          root="$RUNNER_TEMP/asif-cache-reader"
+          jq -n --arg pair "${{ matrix.pair }}" --arg treatment "${{ matrix.treatment }}" \
+            --arg cacheKey "$CACHE_KEY" --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            '{pair:$pair,treatment:$treatment,asifCacheKey:$cacheKey,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,filesystem:"case-sensitive-jhfs-plus",cacheAction:"actions/cache v6.1.0",producerAcquisitionTimed:false,timingBoundary:"setup start through output and Cachix proof publication",postCompletionRearchive:false}' \
+            > "$root/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-asif-cache-reader-${{ matrix.pair }}-${{ matrix.treatment }}
+          path: ${{ runner.temp }}/asif-cache-reader
+
+  compare:
+    needs: reader
+    if: always() && needs.reader.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: darwin-asif-cache-reader-*
+          path: ${{ runner.temp }}/readers
+      - name: Verify paired outputs and report complete durations
+        env:
+          PAIRS: ${{ github.event_name == 'push' && '1' || inputs.reader_pairs }}
+        run: |
+          set -euo pipefail
+          printf '[]\n' > "$RUNNER_TEMP/timings.json"
+          for pair in $(seq 1 "$PAIRS"); do
+            sparsebundle="$RUNNER_TEMP/readers/darwin-asif-cache-reader-$pair-sparsebundle"
+            asif="$RUNNER_TEMP/readers/darwin-asif-cache-reader-$pair-asif"
+            canonical="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$sparsebundle/records.json")"
+            test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$asif/records.json")" = "$canonical"
+            test "$(cat "$asif/proof-path.txt")" = "$(cat "$sparsebundle/proof-path.txt")"
+            for treatment in sparsebundle asif; do
+              reader="$RUNNER_TEMP/readers/darwin-asif-cache-reader-$pair-$treatment"
+              duration="$(awk 'NR == FNR {start=$1; next} {print $1-start}' "$reader/setup-start.txt" "$reader/completion-end.txt")"
+              jq --argjson pair "$pair" --arg treatment "$treatment" --argjson seconds "$duration" \
+                '. + [{pair:$pair,treatment:$treatment,completeSeconds:$seconds}]' \
+                "$RUNNER_TEMP/timings.json" > "$RUNNER_TEMP/timings.next.json"
+              mv "$RUNNER_TEMP/timings.next.json" "$RUNNER_TEMP/timings.json"
+            done
+          done
+          jq -n --argjson pairs "$PAIRS" --slurpfile timings "$RUNNER_TEMP/timings.json" \
+            '{matching:true,pairs:$pairs,treatments:["sparsebundle","asif"],timings:$timings[0]}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"

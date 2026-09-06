@@ -1,9 +1,6 @@
 name: Darwin Release Hot-pack Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/darwin-hotpack-playground.yml]
   workflow_dispatch:
     inputs:
       scenarios:
@@ -108,7 +105,7 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ env.PROFILE_RUN_ID }}
-          name: ${{ env.PROFILE_ARTIFACT_NAME }}
+          artifact-ids: ${{ env.PROFILE_ARTIFACT_ID }}
           path: ${{ runner.temp }}/hotpack/profile
       - name: Download and authenticate the frozen base image
         env:
