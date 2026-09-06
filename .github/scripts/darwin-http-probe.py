@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import sys
 
 
 def parse_range(value, size):
@@ -135,8 +136,11 @@ def main():
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--ready", required=True, type=Path)
     args = parser.parse_args()
+    print("PROBE_START binding loopback", file=sys.stderr, flush=True)
     server = make_server(args.file, args.log)
+    print("PROBE_BOUND writing readiness", file=sys.stderr, flush=True)
     args.ready.write_text(f"http://127.0.0.1:{server.server_port}/image\n")
+    print("PROBE_READY serving", file=sys.stderr, flush=True)
     server.serve_forever()
 
 

@@ -125,8 +125,16 @@ jobs:
                 printf '%s\n' "$server_pid" > "$trial/server.pid"
                 for _ in {1..100}; do
                   [ -s "$trial/url.txt" ] && break
+                  kill -0 "$server_pid" 2>/dev/null || break
                   sleep 0.1
                 done
+                if [ ! -s "$trial/url.txt" ]; then
+                  ps -p "$server_pid" -o pid,ppid,state,etime,command > "$trial/server-process.txt" || true
+                  sample "$server_pid" 2 -file "$trial/server-sample.txt" >/dev/null 2>&1 || true
+                  cat "$trial/server.stderr"
+                  echo 'HTTP server did not signal readiness' >&2
+                  exit 1
+                fi
 
                 mark_phase beforeAttach
                 attach_args=(attach "$(cat "$trial/url.txt")" -shadow "$shadow" \
