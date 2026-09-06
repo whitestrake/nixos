@@ -1,0 +1,521 @@
+name: Darwin ASIF Lifecycle Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/darwin-asif-lifecycle-playground.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: darwin-asif-lifecycle-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_CACHE_ID: '7386597776'
+  SOURCE_CACHE_KEY: darwin-asif-cache-v1-34042173330
+  SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
+  SOURCE_CACHE_SIZE: '1884365511'
+  SOURCE_CACHE_VERSION: ba564316184991f88080c7a1639546141c15251e7e271890fbab5ffa2b3ef99e
+  SOURCE_IMAGE_BYTES: '8034189312'
+  TARGET_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  EXPECTED_NFB: /nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8"}]'
+  SUCCESSOR_CACHE_MAX_BYTES: '3221225472'
+  CACHE_QUOTA_BYTES: '50000000000'
+
+jobs:
+  maintain:
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      cache-key: ${{ steps.successor.outputs.cache-key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Bind the experimental source and cache budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = "$SOURCE_CACHE_REF"
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          mkdir -p "$evidence" "$RUNNER_TEMP/darwin-asif-cache"
+          python3 -c 'import time; print(time.time())' > "$evidence/setup-start.txt"
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" \
+            --key "$SOURCE_CACHE_KEY" --limit 10 --json id,key,sizeInBytes,version \
+            > "$evidence/source-cache.json"
+          jq -e --arg id "$SOURCE_CACHE_ID" --arg key "$SOURCE_CACHE_KEY" \
+            --arg size "$SOURCE_CACHE_SIZE" --arg version "$SOURCE_CACHE_VERSION" '
+              length == 1 and (.[0].id | tostring) == $id and .[0].key == $key
+              and (.[0].sizeInBytes | tostring) == $size and .[0].version == $version
+            ' "$evidence/source-cache.json"
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --json sizeInBytes \
+            > "$evidence/cache-inventory-before.json"
+          total="$(jq '[.[].sizeInBytes] | add // 0' "$evidence/cache-inventory-before.json")"
+          test "$((total + SUCCESSOR_CACHE_MAX_BYTES))" -le "$CACHE_QUOTA_BYTES"
+          jq -n --argjson currentCacheBytes "$total" \
+            --argjson maximumNewCacheBytes "$SUCCESSOR_CACHE_MAX_BYTES" \
+            --argjson quotaBytes "$CACHE_QUOTA_BYTES" \
+            '{currentCacheBytes:$currentCacheBytes,maximumNewCacheBytes:$maximumNewCacheBytes,quotaBytes:$quotaBytes,deletions:false,experimental:true}' \
+            > "$evidence/cache-budget.json"
+          python3 -c 'import time; print(time.time())' > "$evidence/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: source
+        with:
+          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          key: ${{ env.SOURCE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Validate the exact ASIF restore
+        env:
+          CACHE_HIT: ${{ steps.source.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.source.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
+          test -f "$image"
+          test "$(stat -f '%z' "$image")" = "$SOURCE_IMAGE_BYTES"
+          python3 -c 'import time; print(time.time())' > "$evidence/restore-end.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/mount-start.txt"
+      - name: Mount the ASIF as the writable Nix root
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo diskutil image attach --nobrowse \
+            --mountPoint /nix "$image" > "$evidence/attach.stdout" 2> "$evidence/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          test "$(diskutil info -plist /nix | plutil -extract FilesystemType raw -)" = hfs
+          python3 -c 'import time; print(time.time())' > "$evidence/mount-end.txt"
+      - name: Record source capacity and complete inventory
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          diskutil info -plist /nix > "$evidence/source-volume.plist"
+          plutil -convert json -o "$evidence/source-volume.json" "$evidence/source-volume.plist"
+          capacity="$(( $(df -kP /nix | awk 'END {print $2}') * 1024 ))"
+          free="$(( $(df -kP /nix | awk 'END {print $4}') * 1024 ))"
+          logical="$(stat -f '%z' "$image")"
+          allocated="$(( $(du -k "$image" | awk '{print $1}') * 1024 ))"
+          test "$capacity" -gt "$logical"
+          jq -n --arg phase source --argjson imageLogicalBytes "$logical" \
+            --argjson imageAllocatedBytes "$allocated" --argjson volumeCapacityBytes "$capacity" \
+            --argjson volumeFreeBytes "$free" \
+            '{phase:$phase,imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,volumeCapacityBytes:$volumeCapacityBytes,volumeFreeBytes:$volumeFreeBytes,fileLengthIsVolumeCapacity:($imageLogicalBytes == $volumeCapacityBytes)}' \
+            > "$evidence/source-capacity.json"
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          find "$root" -maxdepth 1 -type l -print | sort > "$evidence/roots-before.txt"
+          while IFS= read -r link; do printf '%s\t%s\n' "${link##*/}" "$(readlink "$link")"; done \
+            < "$evidence/roots-before.txt" > "$evidence/root-targets-before.tsv"
+          find /nix/store -mindepth 1 -maxdepth 1 -print | sort > "$evidence/store-paths-before.txt"
+      - name: Start Nix installation timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-producer/install-start.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Finish Nix installation and start refresh timing
+        run: |
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-producer/install-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-producer/refresh-start.txt"
+      - uses: ./.harness/.github/actions/nix-root-build
+        with:
+          system: aarch64-darwin
+          retain-cached-tool: true
+          builds-json: ${{ env.EXPECTED_RECORDS }}
+      - name: Bind refreshed outputs and expected roots
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          python3 -c 'import time; print(time.time())' > "$evidence/refresh-end.txt"
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
+            "$RUNNER_TEMP/cache-aarch64-darwin-results.json" > "$evidence/producer-records.json"
+          test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$evidence/producer-records.json")" = \
+            "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          test "$(readlink "$root/andred")" = "$(jq -r '.[0].storePath' <<< "$EXPECTED_RECORDS")"
+          test "$(readlink "$root/nix-fast-build")" = "$EXPECTED_NFB"
+          nix flake archive --json path:. > "$evidence/target-archive.json"
+          jq -er '[.. | objects | select(has("path")) | .path] | sort | unique[]' \
+            "$evidence/target-archive.json" > "$evidence/expected-input-paths.txt"
+          while IFS= read -r store_path; do
+            store_name="${store_path##*/}"
+            store_hash="${store_name%%-*}"
+            test "$(readlink "$root/flake-input-$store_hash")" = "$store_path"
+          done < "$evidence/expected-input-paths.txt"
+          cp flake.lock "$evidence/target-flake.lock"
+          printf '%s\n' skipped > "$evidence/store-optimise-policy.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/gc-start.txt"
+      - uses: ./.harness/.github/actions/nix-root-gc
+        with:
+          system: aarch64-darwin
+      - name: Verify the retained full HFS+ generation
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          python3 -c 'import time; print(time.time())' > "$evidence/gc-end.txt"
+          test "$(readlink "$root/andred")" = "$(jq -r '.[0].storePath' <<< "$EXPECTED_RECORDS")"
+          test "$(readlink "$root/nix-fast-build")" = "$EXPECTED_NFB"
+          while IFS= read -r store_path; do
+            store_name="${store_path##*/}"
+            store_hash="${store_name%%-*}"
+            test "$(readlink "$root/flake-input-$store_hash")" = "$store_path"
+          done < "$evidence/expected-input-paths.txt"
+          {
+            printf '%s\n' andred nix-fast-build
+            while IFS= read -r store_path; do
+              store_name="${store_path##*/}"
+              printf 'flake-input-%s\n' "${store_name%%-*}"
+            done < "$evidence/expected-input-paths.txt"
+          } | sort > "$evidence/expected-root-names.txt"
+          find "$root" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort > "$evidence/actual-root-names.txt"
+          diff -u "$evidence/expected-root-names.txt" "$evidence/actual-root-names.txt"
+          while IFS= read -r name; do
+            test -L "$root/$name"
+            test -e "$root/$name"
+            nix path-info "$(readlink "$root/$name")" >/dev/null
+          done < "$evidence/expected-root-names.txt"
+          find "$root" -maxdepth 1 -type l -print | sort > "$evidence/roots-after.txt"
+          while IFS= read -r link; do printf '%s\t%s\n' "${link##*/}" "$(readlink "$link")"; done \
+            < "$evidence/roots-after.txt" > "$evidence/root-targets-after.tsv"
+          find /nix/store -mindepth 1 -maxdepth 1 -print | sort > "$evidence/store-paths-after.txt"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          capacity="$(( $(df -kP /nix | awk 'END {print $2}') * 1024 ))"
+          free="$(( $(df -kP /nix | awk 'END {print $4}') * 1024 ))"
+          logical="$(stat -f '%z' "$image")"
+          allocated="$(( $(du -k "$image" | awk '{print $1}') * 1024 ))"
+          test "$capacity" -gt "$logical"
+          jq -n --arg phase successor-mounted --argjson imageLogicalBytes "$logical" \
+            --argjson imageAllocatedBytes "$allocated" --argjson volumeCapacityBytes "$capacity" \
+            --argjson volumeFreeBytes "$free" \
+            '{phase:$phase,imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,volumeCapacityBytes:$volumeCapacityBytes,volumeFreeBytes:$volumeFreeBytes,fileLengthIsVolumeCapacity:($imageLogicalBytes == $volumeCapacityBytes)}' \
+            > "$evidence/successor-capacity.json"
+      - name: Verify native ASIF compaction support
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          hdiutil compact -help > "$evidence/hdiutil-compact-help.txt" 2>&1
+          diskutil image --help > "$evidence/diskutil-image-help.txt" 2>&1
+          grep -Fq 'SPARSE (UDSP) or SPARSEBUNDLE (UDSB)' "$evidence/hdiutil-compact-help.txt"
+          if grep -Eq '^[[:space:]]*compact([[:space:]]|$)' "$evidence/diskutil-image-help.txt"; then
+            echo 'A native diskutil ASIF compact command now exists; inspect it before changing this experiment.' >&2
+            exit 1
+          fi
+          jq -n '{imageFormat:"ASIF",supported:false,policy:"skipped-no-supported-native-command",hdiutilCompactFormats:["UDSP","UDSB"],diskutilImageCompactSubcommand:false,storeOptimise:"skipped"}' \
+            > "$evidence/compaction.json"
+      - name: Detach and record successor image telemetry
+        id: successor
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          sync
+          python3 -c 'import time; print(time.time())' > "$evidence/detach-start.txt"
+          perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix
+          python3 -c 'import time; print(time.time())' > "$evidence/detach-end.txt"
+          logical="$(stat -f '%z' "$image")"
+          allocated="$(( $(du -k "$image" | awk '{print $1}') * 1024 ))"
+          jq -n --argjson imageLogicalBytes "$logical" --argjson imageAllocatedBytes "$allocated" \
+            --argjson sourceImageLogicalBytes "$SOURCE_IMAGE_BYTES" \
+            '{imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,sourceImageLogicalBytes:$sourceImageLogicalBytes,logicalGrowthBytes:($imageLogicalBytes-$sourceImageLogicalBytes),nativeCompaction:false}' \
+            > "$evidence/successor-image.json"
+          key="darwin-asif-lifecycle-v1-$GITHUB_RUN_ID-$TARGET_SHA"
+          echo "cache-key=$key" >> "$GITHUB_OUTPUT"
+          python3 -c 'import time; print(time.time())' > "$evidence/save-start.txt"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          key: ${{ steps.successor.outputs.cache-key }}
+      - name: Bind the sole successor archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ steps.successor.outputs.cache-key }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-producer"
+          python3 -c 'import time; print(time.time())' > "$evidence/save-end.txt"
+          for _ in 1 2 3 4 5; do
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY" \
+              --limit 10 --json id,key,sizeInBytes,version > "$evidence/successor-cache.json"
+            test "$(jq length "$evidence/successor-cache.json")" -eq 1 && break
+            sleep 2
+          done
+          jq -e --arg key "$CACHE_KEY" --argjson max "$SUCCESSOR_CACHE_MAX_BYTES" '
+            length == 1 and .[0].key == $key and .[0].sizeInBytes > 0
+            and .[0].sizeInBytes <= $max and (.[0].version | test("^[0-9a-f]{64}$"))
+          ' "$evidence/successor-cache.json"
+          jq -n --argjson sourceArchiveBytes "$SOURCE_CACHE_SIZE" \
+            --argjson successorArchiveBytes "$(jq '.[0].sizeInBytes' "$evidence/successor-cache.json")" \
+            '{sourceArchiveBytes:$sourceArchiveBytes,successorArchiveBytes:$successorArchiveBytes,archiveGrowthBytes:($successorArchiveBytes-$sourceArchiveBytes)}' \
+            > "$evidence/archive-growth.json"
+          python3 -c 'import time; print(time.time())' > "$evidence/completion-end.txt"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          jq -n \
+            --argjson completeSeconds "$(duration "$evidence/setup-start.txt" "$evidence/completion-end.txt")" \
+            --argjson restoreSeconds "$(duration "$evidence/restore-start.txt" "$evidence/restore-end.txt")" \
+            --argjson mountSeconds "$(duration "$evidence/mount-start.txt" "$evidence/mount-end.txt")" \
+            --argjson installSeconds "$(duration "$evidence/install-start.txt" "$evidence/install-end.txt")" \
+            --argjson refreshSeconds "$(duration "$evidence/refresh-start.txt" "$evidence/refresh-end.txt")" \
+            --argjson gcSeconds "$(duration "$evidence/gc-start.txt" "$evidence/gc-end.txt")" \
+            --argjson detachSeconds "$(duration "$evidence/detach-start.txt" "$evidence/detach-end.txt")" \
+            --argjson archiveSeconds "$(duration "$evidence/save-start.txt" "$evidence/save-end.txt")" \
+            '{completeSeconds:$completeSeconds,restoreSeconds:$restoreSeconds,mountSeconds:$mountSeconds,installSeconds:$installSeconds,refreshSeconds:$refreshSeconds,gcSeconds:$gcSeconds,detachSeconds:$detachSeconds,archiveSeconds:$archiveSeconds}' \
+            > "$evidence/stage-costs.json"
+          jq -s 'add' "$evidence/cache-budget.json" "$evidence/successor-image.json" \
+            "$evidence/archive-growth.json" "$evidence/compaction.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Detach producer image after failure
+        if: always()
+        run: |
+          if mount | grep -Fq ' on /nix '; then
+            perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix \
+              || perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force /nix
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-asif-lifecycle-producer
+          path: ${{ runner.temp }}/asif-lifecycle-producer
+
+  read:
+    needs: maintain
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Start fresh-reader timing and bind successor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: ${{ needs.maintain.outputs.cache-key }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          evidence="$RUNNER_TEMP/asif-lifecycle-reader"
+          mkdir -p "$evidence" "$RUNNER_TEMP/darwin-asif-cache"
+          python3 -c 'import time; print(time.time())' > "$evidence/setup-start.txt"
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY" \
+            --limit 10 --json id,key,sizeInBytes,version > "$evidence/cache.json"
+          jq -e --arg key "$CACHE_KEY" --argjson max "$SUCCESSOR_CACHE_MAX_BYTES" '
+            length == 1 and .[0].key == $key and .[0].sizeInBytes > 0
+            and .[0].sizeInBytes <= $max and (.[0].version | test("^[0-9a-f]{64}$"))
+          ' "$evidence/cache.json"
+          python3 -c 'import time; print(time.time())' > "$evidence/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: successor
+        with:
+          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          key: ${{ needs.maintain.outputs.cache-key }}
+          fail-on-cache-miss: true
+      - name: Validate exact successor restore
+        env:
+          CACHE_HIT: ${{ steps.successor.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.successor.outputs.cache-matched-key }}
+          CACHE_KEY: ${{ needs.maintain.outputs.cache-key }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$CACHE_KEY"
+          test -f "$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-reader/restore-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-reader/mount-start.txt"
+      - name: Mount the fresh-reader ASIF
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-reader"
+          image="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo diskutil image attach --nobrowse \
+            --mountPoint /nix "$image" > "$evidence/attach.stdout" 2> "$evidence/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+          test "$(diskutil info -plist /nix | plutil -extract FilesystemType raw -)" = hfs
+          capacity="$(( $(df -kP /nix | awk 'END {print $2}') * 1024 ))"
+          free="$(( $(df -kP /nix | awk 'END {print $4}') * 1024 ))"
+          logical="$(stat -f '%z' "$image")"
+          allocated="$(( $(du -k "$image" | awk '{print $1}') * 1024 ))"
+          test "$capacity" -gt "$logical"
+          jq -n --argjson imageLogicalBytes "$logical" --argjson imageAllocatedBytes "$allocated" \
+            --argjson volumeCapacityBytes "$capacity" --argjson volumeFreeBytes "$free" \
+            '{imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,volumeCapacityBytes:$volumeCapacityBytes,volumeFreeBytes:$volumeFreeBytes,fileLengthIsVolumeCapacity:($imageLogicalBytes == $volumeCapacityBytes)}' \
+            > "$evidence/capacity.json"
+          python3 -c 'import time; print(time.time())' > "$evidence/mount-end.txt"
+      - name: Start Nix installation timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-lifecycle-reader/install-start.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Measure exact old-generation output and proof
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-reader"
+          python3 -c 'import time; print(time.time())' > "$evidence/install-end.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/build-start.txt"
+          nfb_root=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build
+          test "$(readlink "$nfb_root")" = "$EXPECTED_NFB"
+          nfb="$nfb_root/bin/nix-fast-build"
+          test -x "$nfb"
+          "$nfb" --help >/dev/null
+          python3 .harness/.github/scripts/fast-ci-measure.py "$evidence" -- \
+            "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --cachix-cache whitestrake --retries 2 \
+            --result-file "$evidence/results.json" -j 50 --stream-json-lines
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
+            "$evidence/results.json" > "$evidence/records.json"
+          test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$evidence/records.json")" = \
+            "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -e 'any(.results[]; .type == "CACHIX" and .success == true)' "$evidence/results.json"
+          jq -r '.[].storePath' "$evidence/records.json" | while IFS= read -r store_path; do
+            nix path-info --store https://whitestrake.cachix.org "$store_path" >/dev/null
+          done
+          jq -cnS --arg revision "$TARGET_SHA" --argjson records "$EXPECTED_RECORDS" \
+            '{revision:$revision,records:($records | map({attr,storePath}))}' > "$evidence/darwin-proof.json"
+          proof_path="$(nix store add --mode flat --name darwin-asif-lifecycle-proof.json "$evidence/darwin-proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          echo "$proof_path" > "$evidence/proof-path.txt"
+          find /nix/var/nix/gcroots/github-ci/aarch64-darwin -maxdepth 1 -type l -print | sort \
+            > "$evidence/roots.txt"
+          nix path-info --all | sort > "$evidence/store-paths.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/build-end.txt"
+          python3 -c 'import time; print(time.time())' > "$evidence/completion-end.txt"
+      - name: Run untimed full NAR integrity verification
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/asif-lifecycle-reader"
+          python3 -c 'import time; print(time.time())' > "$evidence/nar-verify-start.txt"
+          nix store verify --all --no-trust
+          python3 -c 'import time; print(time.time())' > "$evidence/nar-verify-end.txt"
+          jq -n '{scope:"all",trustChecks:false,includedInReaderTiming:false,status:"passed"}' \
+            > "$evidence/nar-verification.json"
+      - name: Record reader environment
+        if: always()
+        env:
+          CACHE_KEY: ${{ needs.maintain.outputs.cache-key }}
+        run: |
+          evidence="$RUNNER_TEMP/asif-lifecycle-reader"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          if test -f "$evidence/completion-end.txt"; then
+            jq -n \
+              --argjson completeSeconds "$(duration "$evidence/setup-start.txt" "$evidence/completion-end.txt")" \
+              --argjson restoreSeconds "$(duration "$evidence/restore-start.txt" "$evidence/restore-end.txt")" \
+              --argjson mountSeconds "$(duration "$evidence/mount-start.txt" "$evidence/mount-end.txt")" \
+              --argjson installSeconds "$(duration "$evidence/install-start.txt" "$evidence/install-end.txt")" \
+              --argjson buildAndProofSeconds "$(duration "$evidence/build-start.txt" "$evidence/build-end.txt")" \
+              '{completeSeconds:$completeSeconds,restoreSeconds:$restoreSeconds,mountSeconds:$mountSeconds,installSeconds:$installSeconds,buildAndProofSeconds:$buildAndProofSeconds}' \
+              > "$evidence/stage-costs.json"
+          fi
+          if test -f "$evidence/nar-verify-end.txt"; then
+            jq --argjson durationSeconds "$(duration "$evidence/nar-verify-start.txt" "$evidence/nar-verify-end.txt")" \
+              '. + {durationSeconds:$durationSeconds}' "$evidence/nar-verification.json" \
+              > "$evidence/nar-verification.next.json"
+            mv "$evidence/nar-verification.next.json" "$evidence/nar-verification.json"
+          fi
+          jq -n --arg cacheKey "$CACHE_KEY" --arg fixture "$TARGET_SHA" --arg harness "$GITHUB_SHA" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            '{cacheKey:$cacheKey,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ASIF",filesystem:"case-sensitive-jhfs-plus",cacheAction:"actions/cache v6.1.0",timingBoundary:"setup start through exact output and Cachix proof publication",fullNarVerificationTimed:false,experimental:true}' \
+            > "$evidence/environment.json"
+      - name: Detach reader image
+        if: always()
+        run: |
+          if mount | grep -Fq ' on /nix '; then
+            perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix \
+              || perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force /nix
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-asif-lifecycle-reader
+          path: ${{ runner.temp }}/asif-lifecycle-reader
+
+  verify:
+    needs: [maintain, read]
+    if: always() && needs.maintain.result == 'success' && needs.read.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: darwin-asif-lifecycle-*
+          path: ${{ runner.temp }}/evidence
+      - name: Verify the maintenance and reader evidence
+        run: |
+          set -euo pipefail
+          producer="$RUNNER_TEMP/evidence/darwin-asif-lifecycle-producer"
+          reader="$RUNNER_TEMP/evidence/darwin-asif-lifecycle-reader"
+          test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$producer/producer-records.json")" = \
+            "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$reader/records.json")"
+          test "$(jq -r .revision "$reader/darwin-proof.json")" = "$TARGET_SHA"
+          test "$(jq -c '.records | sort_by(.attr)' "$reader/darwin-proof.json")" = \
+            "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$reader/records.json")"
+          jq -e '.supported == false and .policy == "skipped-no-supported-native-command" and .storeOptimise == "skipped"' \
+            "$producer/compaction.json"
+          jq -se 'all(.[]; .fileLengthIsVolumeCapacity == false and .volumeCapacityBytes > .imageLogicalBytes)' \
+            "$producer/source-capacity.json" "$producer/successor-capacity.json" "$reader/capacity.json"
+          jq -e '.successorArchiveBytes > 0 and .successorArchiveBytes <= 3221225472' \
+            "$producer/archive-growth.json"
+          jq -e '.scope == "all" and .trustChecks == false and .includedInReaderTiming == false and .status == "passed"' \
+            "$reader/nar-verification.json"
+          jq -n --arg cacheKey "${{ needs.maintain.outputs.cache-key }}" \
+            --arg proofPath "$(cat "$reader/proof-path.txt")" \
+            '{matching:true,cacheKey:$cacheKey,proofPath:$proofPath,experimental:true}' | tee -a "$GITHUB_STEP_SUMMARY"
