@@ -13,6 +13,10 @@ on:
         type: choice
         options: ['1', '3']
         default: '1'
+      sample_attach:
+        description: Sample native image processes during one matched hot attach
+        type: boolean
+        default: false
       source_hot_release:
         description: Existing immutable hot-pack release ID; requires source_hot_sha
         type: string
@@ -63,10 +67,17 @@ jobs:
           SOURCE_HOT_SHA: ${{ inputs.source_hot_sha }}
           ROUNDS: ${{ github.event_name == 'push' && '1' || inputs.rounds }}
           SCENARIOS: ${{ github.event_name == 'push' && 'matched' || inputs.scenarios }}
+          SAMPLE_ATTACH: ${{ inputs.sample_attach }}
         run: |
           set -euo pipefail
           [[ "$ROUNDS" = 1 || "$ROUNDS" = 3 ]]
           [[ "$SCENARIOS" = matched || "$SCENARIOS" = all ]]
+          if [ "$SAMPLE_ATTACH" = true ]; then
+            [ "$ROUNDS" = 1 ]
+            [ "$SCENARIOS" = matched ]
+            [ -n "$SOURCE_HOT_RELEASE" ]
+            [ -n "$SOURCE_HOT_SHA" ]
+          fi
           definitions='[{"scenario":"matched","treatments":["cold","hot"]}]'
           if [ "$SCENARIOS" = all ]; then
             definitions='[{"scenario":"matched","treatments":["cold","hot"]},{"scenario":"changed-input","treatments":["hot","cold"]},{"scenario":"unprofiled-file","treatments":["cold","hot"]}]'
@@ -355,9 +366,16 @@ jobs:
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-hotpack-reader/reader-ready.txt"
           python3 -c 'import time; print(time.monotonic_ns())' > "$RUNNER_TEMP/darwin-hotpack-reader/reader-ready-monotonic.txt"
       - name: Attach the image with default verification and a local shadow
+        env:
+          SAMPLE_ATTACH: ${{ inputs.sample_attach }}
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/darwin-hotpack-reader"
+          sample_enabled=false
+          if [ "$SAMPLE_ATTACH" = true ] && [ "${{ matrix.scenario }}" = matched ] && \
+             [ "${{ matrix.treatment }}" = hot ]; then
+            sample_enabled=true
+          fi
           python3 -c 'import time; print(time.time())' > "$root/mount-start.txt"
           python3 -c 'import time; print(time.monotonic_ns())' > "$root/mount-start-monotonic.txt"
           sudo touch /etc/synthetic.conf
@@ -371,10 +389,76 @@ jobs:
           fi
           test -d /nix
           test ! -L /nix
-          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
-            -shadow "$RUNNER_TEMP/darwin-hotpack-payload/image.shadow" \
-            -mountpoint /nix -nobrowse -noautoopen -owners on \
-            > "$root/attach.stdout" 2> "$root/attach.stderr"
+          if [ "$sample_enabled" = false ]; then
+            perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
+              -shadow "$RUNNER_TEMP/darwin-hotpack-payload/image.shadow" \
+              -mountpoint /nix -nobrowse -noautoopen -owners on \
+              > "$root/attach.stdout" 2> "$root/attach.stderr"
+          else
+            samples="$root/attach-samples"
+            baseline="$RUNNER_TEMP/attach-sample-baseline"
+            mkdir -p "$samples/seen" "$baseline"
+            : > "$samples/processes.jsonl"
+            for name in hdiutil diskimagesiod diskimages-helper fsck_hfs; do
+              pgrep -x "$name" > "$baseline/$name.pids" || true
+            done
+
+            perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
+              -shadow "$RUNNER_TEMP/darwin-hotpack-payload/image.shadow" \
+              -mountpoint /nix -nobrowse -noautoopen -owners on \
+              > "$root/attach.stdout" 2> "$root/attach.stderr" &
+            attach_job=$!
+
+            sample_process() {
+              local name="$1" pid="$2" marker
+              marker="$samples/seen/$name-$pid"
+              [ -e "$marker" ] && return
+              if [ "$name" != diskimagesiod ] && grep -qx "$pid" "$baseline/$name.pids"; then
+                return
+              fi
+              touch "$marker"
+              jq -cn --arg name "$name" --argjson pid "$pid" \
+                '{name:$name,pid:$pid}' >> "$samples/processes.jsonl"
+              (
+                sample_status=0
+                perl -e 'alarm shift; exec @ARGV' 35 sudo sample "$pid" 30 \
+                  -file "$samples/$name-$pid.txt" \
+                  > "$samples/$name-$pid.stdout" \
+                  2> "$samples/$name-$pid.stderr" || sample_status=$?
+                printf '%s\n' "$sample_status" > "$samples/$name-$pid.status"
+              ) &
+            }
+
+            for _ in {1..120}; do
+              for name in hdiutil diskimagesiod diskimages-helper fsck_hfs; do
+                while IFS= read -r pid; do
+                  [ -n "$pid" ] && sample_process "$name" "$pid"
+                done < <(pgrep -x "$name" || true)
+              done
+              kill -0 "$attach_job" 2>/dev/null || break
+              sleep 0.25
+            done
+            attach_status=0
+            wait "$attach_job" || attach_status=$?
+            wait || true
+            printf '%s\n' "$attach_status" > "$samples/attach.status"
+            if [ "$attach_status" -ne 0 ]; then
+              exit "$attach_status"
+            fi
+            test -s "$samples/processes.jsonl"
+            jq -se 'length > 0 and all(.[]; (.name == "hdiutil" or .name == "diskimagesiod" or .name == "diskimages-helper" or .name == "fsck_hfs") and (.pid | type == "number" and . > 0))' \
+              "$samples/processes.jsonl"
+            successful_sample=false
+            for sample_file in "$samples"/*.txt; do
+              [ -s "$sample_file" ] || continue
+              if [ "$(cat "${sample_file%.txt}.status")" = 0 ] && \
+                 grep -q '^Call graph:' "$sample_file"; then
+                successful_sample=true
+                break
+              fi
+            done
+            [ "$successful_sample" = true ]
+          fi
           sudo chown "$USER" /nix
           chmod u+rwx /nix
           python3 -c 'import time; print(time.time())' > "$root/mount-end.txt"
@@ -508,8 +592,18 @@ jobs:
           fi
       - name: Record reader environment
         if: always()
+        env:
+          SAMPLE_ATTACH: ${{ inputs.sample_attach }}
         run: |
           root="$RUNNER_TEMP/darwin-hotpack-reader"
+          sample_enabled=false
+          if [ "$SAMPLE_ATTACH" = true ] && [ "${{ matrix.scenario }}" = matched ] && \
+             [ "${{ matrix.treatment }}" = hot ]; then
+            sample_enabled=true
+          fi
+          jq -n --argjson requested "$SAMPLE_ATTACH" --argjson enabled "$sample_enabled" \
+            '{requested:$requested,enabled:$enabled,target:"matched hot attach",durationSeconds:30,processNames:["hdiutil","diskimagesiod","diskimages-helper","fsck_hfs"]}' \
+            > "$root/attach-sampling.json"
           jq -n --arg scenario "${{ matrix.scenario }}" --arg treatment "${{ matrix.treatment }}" \
             --argjson pair "${{ matrix.pair }}" \
             --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
@@ -517,7 +611,8 @@ jobs:
             --arg hotRelease "${{ steps.source.outputs.release-id }}" \
             --arg hotManifestSha "${{ steps.source.outputs.manifest-sha }}" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
-            '{scenario:$scenario,treatment:$treatment,pair:$pair,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:true,performanceEligible:($scenario != "unprofiled-file")}' \
+            --slurpfile attachSampling "$root/attach-sampling.json" \
+            '{scenario:$scenario,treatment:$treatment,pair:$pair,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:true,attachSampling:$attachSampling[0],performanceEligible:($scenario != "unprofiled-file" and ($attachSampling[0].requested | not))}' \
             > "$root/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
