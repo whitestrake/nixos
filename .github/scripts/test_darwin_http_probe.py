@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("darwin-http-probe.py")
@@ -20,7 +21,8 @@ class ServerTest(unittest.TestCase):
             image = root / "fixture.dmg"
             log = root / "requests.jsonl"
             image.write_bytes(b"0123456789")
-            server = PROBE.make_server(image, log)
+            with patch("socket.getfqdn", side_effect=AssertionError("unexpected DNS")):
+                server = PROBE.make_server(image, log)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:

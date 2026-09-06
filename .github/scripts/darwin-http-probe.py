@@ -5,6 +5,7 @@ import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+from socketserver import TCPServer
 import threading
 import time
 import sys
@@ -31,6 +32,11 @@ def parse_range(value, size):
 
 class ProbeServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def server_bind(self):
+        # Loopback needs no reverse DNS; HTTPServer's getfqdn can stall on runners.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address
 
     def __init__(self, address, image, log):
         self.image = Path(image)
