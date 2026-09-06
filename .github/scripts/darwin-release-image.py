@@ -656,11 +656,12 @@ class ImageServer(ThreadingHTTPServer):
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address
 
-    def record_interface(self, method, ranged, status, sent, started):
+    def record_interface(self, method, ranged, status, sent, started, client_port):
         with self.metrics_lock:
             self.interface_requests += 1
             self.interface_ranges += ranged
             self.interface_bytes += sent
+        finished = time.monotonic_ns()
         self.wire_log.write(
             {
                 "kind": 2,
@@ -668,7 +669,10 @@ class ImageServer(ThreadingHTTPServer):
                 "range": ranged,
                 "status": status,
                 "bytes": sent,
-                "elapsedNs": time.monotonic_ns() - started,
+                "clientPort": client_port,
+                "startedNs": started,
+                "finishedNs": finished,
+                "elapsedNs": finished - started,
             }
         )
 
@@ -713,7 +717,9 @@ class ImageHandler(BaseHTTPRequestHandler):
                 sent = len(data)
             except (BrokenPipeError, ConnectionResetError):
                 pass
-        self.server.record_interface(int(send_body), ranged, status, sent, started)
+        self.server.record_interface(
+            int(send_body), ranged, status, sent, started, self.client_address[1]
+        )
 
     def log_message(self, *_args):
         pass

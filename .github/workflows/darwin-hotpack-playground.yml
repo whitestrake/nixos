@@ -353,11 +353,13 @@ jobs:
           [[ "$image_url" =~ ^http://127\.0\.0\.1:[0-9]+/image$ ]]
           echo "RELEASE_IMAGE_URL=$image_url" >> "$GITHUB_ENV"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-hotpack-reader/reader-ready.txt"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$RUNNER_TEMP/darwin-hotpack-reader/reader-ready-monotonic.txt"
       - name: Attach the image with default verification and a local shadow
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/darwin-hotpack-reader"
           python3 -c 'import time; print(time.time())' > "$root/mount-start.txt"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$root/mount-start-monotonic.txt"
           sudo touch /etc/synthetic.conf
           if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
             grep -qx nix /etc/synthetic.conf
@@ -376,6 +378,7 @@ jobs:
           sudo chown "$USER" /nix
           chmod u+rwx /nix
           python3 -c 'import time; print(time.time())' > "$root/mount-end.txt"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$root/mount-end-monotonic.txt"
       - uses: ./.harness/.github/actions/install-nix
         with:
           extra-nix-conf: |
@@ -441,6 +444,7 @@ jobs:
           jq -n --arg scenario "$SCENARIO" --arg overrideInput "${fixture_args[*]-}" \
             '{scenario:$scenario,overrideInput:$overrideInput}' > "$root/workload.json"
           python3 -c 'import time; print(time.time())' > "$root/build-start.txt"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$root/build-start-monotonic.txt"
           python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
             "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
             --option builders '' --option max-jobs auto \
@@ -465,6 +469,7 @@ jobs:
           nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
           echo "$proof_path" > "$root/proof-path.txt"
           python3 -c 'import time; print(time.time())' > "$root/completion-end.txt"
+          python3 -c 'import time; print(time.monotonic_ns())' > "$root/completion-end-monotonic.txt"
       - name: Detach the image and stop the reader
         if: always()
         env:

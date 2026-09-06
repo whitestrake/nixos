@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -210,6 +211,28 @@ class ReleaseImageTest(unittest.TestCase):
                     self.assertEqual((response.status, response.read()), (206, b"def"))
                     self.assertEqual(response.getheader("Content-Range"), "bytes 3-5/8")
                     connection.close()
+                    for _ in range(100):
+                        interface = [
+                            json.loads(line)
+                            for line in (Path(directory) / "wire.jsonl")
+                            .read_text()
+                            .splitlines()
+                            if json.loads(line)["kind"] == 2
+                        ]
+                        if len(interface) == 2:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(len(interface), 2)
+                    self.assertEqual(
+                        len({record["clientPort"] for record in interface}), 1
+                    )
+                    for record in interface:
+                        self.assertGreater(record["clientPort"], 0)
+                        self.assertLessEqual(record["startedNs"], record["finishedNs"])
+                        self.assertEqual(
+                            record["elapsedNs"],
+                            record["finishedNs"] - record["startedNs"],
+                        )
                 finally:
                     server.shutdown()
                     server.server_close()
