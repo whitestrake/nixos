@@ -1,9 +1,11 @@
 name: Native Evaluator Seed Probe
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/native-seed-playground.yml]
   workflow_dispatch:
+    inputs:
+      predecessor_run:
+        description: Retain NFB from this native seed while updating locked inputs
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -24,6 +26,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Validate predecessor
+        env:
+          PREDECESSOR: ${{ inputs.predecessor_run }}
+        run: '[[ -z "$PREDECESSOR" || "$PREDECESSOR" =~ ^[0-9]+$ ]]'
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: predecessor
+        if: inputs.predecessor_run != ''
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-native-seed-v1-${{ inputs.predecessor_run }}-${{ matrix.system }}
+          fail-on-cache-miss: true
+      - name: Mount predecessor seed
+        if: inputs.predecessor_run != ''
+        env:
+          EXACT_HIT: ${{ steps.predecessor.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$EXACT_HIT" = true
+          test ! -e /nix
+          mv "$RUNNER_TEMP/fast-ci-erofs" "$RUNNER_TEMP/predecessor"
+          cd "$RUNNER_TEMP/predecessor"
+          sha256sum --check image.sha256
+          sudo modprobe erofs
+          sudo modprobe overlay
+          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
+          sudo mkdir /nix
+          sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
+          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
+          "$(cat nfb-path.txt)/bin/nix-fast-build" --help >/dev/null
       - uses: ./.github/actions/install-nix
       - name: Prepare equivalent native evaluator roots
         run: |
@@ -31,13 +62,18 @@ jobs:
           output="$RUNNER_TEMP/fast-ci-erofs"
           root=/nix/var/nix/gcroots/native-evaluator-seed
           mkdir -p "$output" "$root"
+          find "$root" -mindepth 1 -maxdepth 1 -type l -delete
           nix flake archive --json path:. > "$output/archive.json"
           jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$output/archive.json" > "$output/input-paths.txt"
           while IFS= read -r input; do
             ln -s "$input" "$root/$(basename "$input")"
           done < "$output/input-paths.txt"
-          nfb="$(nix build --no-link --print-out-paths ".#packages.$EVALUATOR_SYSTEM.nix-fast-build")"
-          ln -s "$nfb" "$root/nfb"
+          if [ -f "$RUNNER_TEMP/predecessor/nfb-path.txt" ]; then
+            nfb="$(cat "$RUNNER_TEMP/predecessor/nfb-path.txt")"
+          else
+            nfb="$(nix build --no-link --print-out-paths ".#packages.$EVALUATOR_SYSTEM.nix-fast-build")"
+          fi
+          ln -sfn "$nfb" "$root/nfb"
           "$nfb/bin/nix-fast-build" --help >/dev/null
           printf '%s\n' "$nfb" > "$output/nfb-path.txt"
           nix --version > "$output/nix-version.txt"
@@ -70,3 +106,8 @@ jobs:
             ${{ runner.temp }}/fast-ci-erofs/*.json
             ${{ runner.temp }}/fast-ci-erofs/*.txt
             ${{ runner.temp }}/fast-ci-erofs/*.sha256
+      - name: Unmount predecessor
+        if: always() && inputs.predecessor_run != ''
+        run: |
+          if mountpoint -q /nix; then sudo umount /nix; fi
+          if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
