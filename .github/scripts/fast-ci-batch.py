@@ -126,7 +126,7 @@ def main():
                 "--json",
                 args.flake + ".nixosConfigurations",
                 "--apply",
-                "hosts: builtins.mapAttrs (_: drv: { inherit (drv) drvPath outPath system; }) hosts",
+                "hosts: builtins.mapAttrs (_: drv: { inherit (drv) drvPath system; outputPath = drv.outPath; }) hosts",
                 "--drv-link",
                 temporary + "/derivations",
                 "--option",
@@ -149,7 +149,7 @@ def main():
                     dict(
                         attr="nixosConfigurations." + name,
                         drvPath=row["drvPath"],
-                        outputs={"out": row["outPath"]},
+                        outputs={"out": row["outputPath"]},
                         system=row["system"],
                     )
                     for name, row in raw.items()
