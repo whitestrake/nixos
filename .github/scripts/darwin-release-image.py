@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import socketserver
+import struct
 import subprocess
 import threading
 import time
@@ -21,6 +22,9 @@ BLOCK_SIZE = 64 * 1024
 SHARD_SIZE = 512 * 1024 * 1024
 MANIFEST_NAME = "manifest.json"
 DRAFT_NAME = "draft-manifest.json"
+HOT_SCHEMA = "darwin-hot-pack-v1"
+HOT_MAGIC = b"DRHOT1\0\0"
+MAX_HOT_HEADER = 16 * 1024 * 1024
 
 
 def sha256(data):
@@ -154,6 +158,117 @@ def validate_manifest(manifest, require_assets=True):
     assert image_offset == manifest["imageBytes"]
 
 
+def pack_hot(image, manifest_path, profile, output):
+    image = Path(image)
+    manifest = json.loads(Path(manifest_path).read_text())
+    validate_manifest(manifest)
+    assert image.stat().st_size == manifest["imageBytes"]
+    assert file_sha256(image) == manifest["imageSha256"]
+    shards = {shard["assetId"]: shard for shard in manifest["shards"]}
+    selected = set()
+    with Path(profile).open() as stream:
+        for line in stream:
+            record = json.loads(line)
+            if not (
+                record.get("kind") == 1
+                and record.get("status") == 206
+                and record.get("valid") == 1
+            ):
+                continue
+            asset_id = record.get("assetId")
+            start = record.get("start")
+            end = record.get("end")
+            assert asset_id in shards
+            shard = shards[asset_id]
+            assert isinstance(start, int) and isinstance(end, int)
+            assert 0 <= start <= end < shard["size"]
+            first = (shard["offset"] + start) // manifest["blockSize"]
+            last = (shard["offset"] + end) // manifest["blockSize"]
+            selected.update(range(first, last + 1))
+    blocks = [block for shard in manifest["shards"] for block in shard["blocks"]]
+    indices = sorted(selected)
+    assert indices and indices[-1] < len(blocks)
+    payload_bytes = sum(blocks[index]["size"] for index in indices)
+    assert 0 < payload_bytes <= manifest["imageBytes"]
+    header = json.dumps(
+        {
+            "schema": HOT_SCHEMA,
+            "imageSha256": manifest["imageSha256"],
+            "blockSize": manifest["blockSize"],
+            "blocks": indices,
+            "payloadBytes": payload_bytes,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    assert len(header) <= MAX_HOT_HEADER
+    output = Path(output)
+    assert not output.exists()
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    with image.open("rb") as source, temporary.open("xb") as target:
+        target.write(HOT_MAGIC)
+        target.write(struct.pack(">I", len(header)))
+        target.write(header)
+        for index in indices:
+            block = blocks[index]
+            source.seek(block["offset"])
+            data = source.read(block["size"])
+            assert len(data) == block["size"] and sha256(data) == block["sha256"]
+            target.write(data)
+    os.replace(temporary, output)
+    return {
+        "schema": HOT_SCHEMA,
+        "imageSha256": manifest["imageSha256"],
+        "blockSize": manifest["blockSize"],
+        "blockCount": len(indices),
+        "payloadBytes": payload_bytes,
+        "hotPackSha256": file_sha256(output),
+    }
+
+
+def import_hot_pack(path, store):
+    path = Path(path)
+    with path.open("rb") as stream:
+        assert stream.read(len(HOT_MAGIC)) == HOT_MAGIC
+        encoded_length = stream.read(4)
+        assert len(encoded_length) == 4
+        header_length = struct.unpack(">I", encoded_length)[0]
+        assert 0 < header_length <= MAX_HOT_HEADER
+        encoded_header = stream.read(header_length)
+        assert len(encoded_header) == header_length
+        header = json.loads(encoded_header)
+        assert header.get("schema") == HOT_SCHEMA
+        assert header.get("imageSha256") == store.manifest["imageSha256"]
+        assert header.get("blockSize") == store.manifest["blockSize"]
+        indices = header.get("blocks")
+        assert isinstance(indices, list) and indices
+        assert indices == sorted(set(indices))
+        assert all(
+            isinstance(index, int) and 0 <= index < len(store.blocks)
+            for index in indices
+        )
+        payload_bytes = sum(store.blocks[index][1]["size"] for index in indices)
+        assert header.get("payloadBytes") == payload_bytes
+        payload_offset = len(HOT_MAGIC) + 4 + header_length
+        assert path.stat().st_size == payload_offset + payload_bytes
+        for index in indices:
+            block = store.blocks[index][1]
+            data = stream.read(block["size"])
+            assert len(data) == block["size"] and sha256(data) == block["sha256"]
+        assert stream.read(1) == b""
+        stream.seek(payload_offset)
+        with store.lock:
+            for index in indices:
+                block = store.blocks[index][1]
+                data = stream.read(block["size"])
+                assert len(data) == block["size"] and sha256(data) == block["sha256"]
+                path = store._path(index)
+                temporary = path.with_suffix(".tmp")
+                temporary.write_bytes(data)
+                os.replace(temporary, path)
+    return len(indices), payload_bytes
+
+
 def gh_api(repo, endpoint, method="GET", payload=None):
     args = ["gh", "api", f"repos/{repo}/{endpoint}"]
     if method != "GET":
@@ -191,7 +306,7 @@ def publish(repo, tag, target, directory):
             "tag_name": tag,
             "target_commitish": target,
             "name": tag,
-            "body": "Synthetic PR #158 full-image Release range fixture. Not a system image.",
+            "body": "Complete Darwin Nix-store snapshot for PR #158 HTTP image experiments. Not selected for production CI.",
             "draft": True,
             "prerelease": False,
             "make_latest": "false",
@@ -608,10 +723,11 @@ def make_server(store, log):
     return ImageServer(store, WireLog(log))
 
 
-def serve(repo, release_id, manifest_sha, directory, ready, log):
+def serve(repo, release_id, manifest_sha, directory, ready, log, hot_pack=None):
     manifest, assets = load_manifest(repo, release_id, manifest_sha, directory)
     wire_log = WireLog(log)
     store = BlockStore(repo, release_id, manifest, assets, directory, wire_log)
+    hot_blocks, hot_bytes = import_hot_pack(hot_pack, store) if hot_pack else (0, 0)
     server = ImageServer(store, wire_log)
     url = f"http://127.0.0.1:{server.server_port}/image"
 
@@ -625,7 +741,7 @@ def serve(repo, release_id, manifest_sha, directory, ready, log):
         server.serve_forever()
     finally:
         server.server_close()
-    return {
+    result = {
         "releaseId": release_id,
         "manifestSha256": manifest_sha,
         "image": url,
@@ -636,6 +752,15 @@ def serve(repo, release_id, manifest_sha, directory, ready, log):
         "interfaceRequests": server.interface_requests,
         "interfaceRangeRequests": server.interface_ranges,
     }
+    if hot_pack:
+        result.update(
+            {
+                "hotPackBlocks": hot_blocks,
+                "hotPackBytes": hot_bytes,
+                "hotPackSha256": file_sha256(hot_pack),
+            }
+        )
+    return result
 
 
 def main():
@@ -644,6 +769,11 @@ def main():
     pack = commands.add_parser("pack")
     pack.add_argument("--image", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
+    hot = commands.add_parser("pack-hot")
+    hot.add_argument("--image", required=True, type=Path)
+    hot.add_argument("--manifest", required=True, type=Path)
+    hot.add_argument("--profile", required=True, type=Path)
+    hot.add_argument("--output", required=True, type=Path)
     publish_parser = commands.add_parser("publish")
     publish_parser.add_argument("--repo", required=True)
     publish_parser.add_argument("--tag", required=True)
@@ -658,9 +788,12 @@ def main():
         if name == "serve":
             command.add_argument("--ready", required=True, type=Path)
             command.add_argument("--log", required=True, type=Path)
+            command.add_argument("--hot-pack", type=Path)
     args = parser.parse_args()
     if args.command == "pack":
         result = pack_image(args.image, args.output)
+    elif args.command == "pack-hot":
+        result = pack_hot(args.image, args.manifest, args.profile, args.output)
     elif args.command == "publish":
         result = publish(args.repo, args.tag, args.target, args.directory)
     elif args.command == "eager":
@@ -673,6 +806,7 @@ def main():
             args.directory,
             args.ready,
             args.log,
+            args.hot_pack,
         )
     print(json.dumps(result, separators=(",", ":")))
 

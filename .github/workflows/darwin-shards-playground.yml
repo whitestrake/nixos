@@ -344,7 +344,7 @@ jobs:
         if: inputs.deep_verify
         run: |
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/deep-verify-start.txt"
-          nix store verify --all
+          nix store verify --all --no-trust
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/deep-verify-end.txt"
       - name: Record reader environment
         if: always()

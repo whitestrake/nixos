@@ -217,6 +217,28 @@ class ReleaseImageTest(unittest.TestCase):
         finally:
             origin.close()
 
+    def test_eager_reassembles_and_verifies_the_full_image(self):
+        origin = Origin(b"abcdefgh")
+        original = IMAGE.load_manifest
+        try:
+            manifest, assets = fixture(b"abcdefgh", origin.url())
+
+            def load(_repo, _release_id, _manifest_sha, directory):
+                Path(directory).mkdir(parents=True)
+                return manifest, assets
+
+            IMAGE.load_manifest = load
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "reader"
+                result = IMAGE.eager("owner/repo", 7, "0" * 64, root)
+                self.assertEqual(Path(result["image"]).read_bytes(), b"abcdefgh")
+                self.assertEqual(
+                    (result["requestCount"], result["responseBytes"]), (1, 8)
+                )
+        finally:
+            IMAGE.load_manifest = original
+            origin.close()
+
     def test_expired_redirect_refreshes_only_the_pinned_asset(self):
         origin = Origin(b"abcdefgh")
         try:
@@ -234,6 +256,101 @@ class ReleaseImageTest(unittest.TestCase):
             self.assertEqual(fetcher.summary()["requestCount"], 2)
         finally:
             origin.close()
+
+    def test_hot_pack_seeds_profiled_blocks_and_unprofiled_blocks_still_fetch(self):
+        origin = Origin(b"abcdefgh")
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                image = root / "image.dmg"
+                image.write_bytes(b"abcdefgh")
+                manifest, assets = fixture(b"abcdefgh", origin.url())
+                manifest_path = root / "manifest.json"
+                manifest_path.write_text(json.dumps(manifest))
+                profile = root / "requests.jsonl"
+                profile.write_text(
+                    json.dumps(
+                        {
+                            "kind": 1,
+                            "assetId": 9,
+                            "start": 0,
+                            "end": 3,
+                            "status": 206,
+                            "valid": 1,
+                        }
+                    )
+                    + "\n"
+                )
+                hot = root / "hot.bin"
+                result = IMAGE.pack_hot(image, manifest_path, profile, hot)
+                self.assertEqual((result["blockCount"], result["payloadBytes"]), (1, 4))
+
+                store = IMAGE.BlockStore(
+                    "owner/repo", 7, manifest, assets, root / "cache"
+                )
+                self.assertEqual(IMAGE.import_hot_pack(hot, store), (1, 4))
+                self.assertEqual(store.read(0, 1), b"a")
+                self.assertEqual(origin.ranges, [])
+                self.assertEqual(store.read(4, 1), b"e")
+                self.assertEqual(origin.ranges, [(4, 7)])
+        finally:
+            origin.close()
+
+    def test_hot_pack_rejects_wrong_image_range_corruption_and_missing_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "image.dmg"
+            image.write_bytes(b"abcdefgh")
+            manifest, assets = fixture(b"abcdefgh", "http://127.0.0.1/unused")
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            profile = root / "requests.jsonl"
+
+            image.write_bytes(b"abcdefgX")
+            profile.write_text("")
+            with self.assertRaises(AssertionError):
+                IMAGE.pack_hot(image, manifest_path, profile, root / "wrong.bin")
+
+            image.write_bytes(b"abcdefgh")
+            profile.write_text(
+                json.dumps(
+                    {
+                        "kind": 1,
+                        "assetId": 9,
+                        "start": 0,
+                        "end": 8,
+                        "status": 206,
+                        "valid": 1,
+                    }
+                )
+                + "\n"
+            )
+            with self.assertRaises(AssertionError):
+                IMAGE.pack_hot(image, manifest_path, profile, root / "range.bin")
+
+            profile.write_text(
+                json.dumps(
+                    {
+                        "kind": 1,
+                        "assetId": 9,
+                        "start": 0,
+                        "end": 3,
+                        "status": 206,
+                        "valid": 1,
+                    }
+                )
+                + "\n"
+            )
+            hot = root / "hot.bin"
+            IMAGE.pack_hot(image, manifest_path, profile, hot)
+            original = hot.read_bytes()
+            store = IMAGE.BlockStore("owner/repo", 7, manifest, assets, root / "cache")
+            hot.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+            with self.assertRaises(AssertionError):
+                IMAGE.import_hot_pack(hot, store)
+            hot.write_bytes(original[:-1])
+            with self.assertRaises(AssertionError):
+                IMAGE.import_hot_pack(hot, store)
 
 
 if __name__ == "__main__":
