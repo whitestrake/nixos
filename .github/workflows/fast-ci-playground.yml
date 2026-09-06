@@ -17,6 +17,11 @@ on:
         description: Exact experimental compacted Darwin cache key (empty uses master)
         type: string
         default: ''
+      darwin_reader:
+        description: Darwin Nix store reader
+        type: choice
+        options: [sparsebundle, release-hot]
+        default: sparsebundle
       linux_system:
         description: Native Linux evaluator architecture (all ten targets on both)
         type: choice
@@ -53,6 +58,23 @@ concurrency:
 
 env:
   SEED_SHA: c2f6bc94bb96d535467b2f20f81b2108ee0b2cb9
+  DARWIN_CONTROL_CACHE_ID: '7381391064'
+  DARWIN_CONTROL_CACHE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
+  DARWIN_CONTROL_CACHE_REF: refs/heads/feat/ci-optimisation
+  DARWIN_CONTROL_CACHE_SIZE: '2051447771'
+  DARWIN_CONTROL_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
+  DARWIN_BASE_RELEASE_ID: '383622742'
+  DARWIN_BASE_MANIFEST_SHA: 8406fdfb37a9c2bdfe98195cf1193a02470b1d84d3a1451c78e8248a8fc6d3aa
+  DARWIN_BASE_IMAGE_BYTES: '1987396353'
+  DARWIN_BASE_IMAGE_SHA: aadc061550bbb488bb8a47a8b65f60c12572da7c7e94761dbbdd90d5d2037285
+  DARWIN_HOT_RELEASE_ID: '383632588'
+  DARWIN_HOT_MANIFEST_SHA: c686235f532bd450a1bf7968fcdd42bf4ff191fc43f2a5e9572ed88e0f499a0a
+  DARWIN_FSCK_RUN_ID: '34047619836'
+  DARWIN_FSCK_RUN_ATTEMPT: '1'
+  DARWIN_FSCK_HEAD_SHA: 1ab8230b12695dadd46e12e2a9b6b37152b3a50c
+  DARWIN_FSCK_ARTIFACT_ID: '9993605220'
+  DARWIN_FSCK_ARTIFACT_DIGEST: sha256:66366fbb08c2c9d05bf4aa0df94846fed8b60ee011742f791d5532cc3306fb49
+  DARWIN_EXPECTED_NFB: /nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0
 
 jobs:
   linux-builds:
@@ -434,6 +456,7 @@ jobs:
     outputs:
       records: ${{ steps.records.outputs.records }}
     permissions:
+      actions: read
       checks: write
       contents: read
     env:
@@ -447,8 +470,73 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Start Darwin reader timing
+        env:
+          DARWIN_READER: ${{ inputs.darwin_reader }}
+          CACHE_KEY: ${{ inputs.darwin_cache_key }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-reader-evidence"
+          mkdir -p "$root/lazy" "$RUNNER_TEMP/darwin-reader-payload" \
+            "$RUNNER_TEMP/darwin-lifecycle/compacted"
+          python3 -c 'import time; print(time.time())' > "$root/setup-start.txt"
+          python3 -c 'import time; print(time.time())' > "$root/restore-start.txt"
+          [[ "$DARWIN_READER" = sparsebundle || "$DARWIN_READER" = release-hot ]]
+          if [ "$DARWIN_READER" = release-hot ]; then
+            test "$CACHE_KEY" = "$DARWIN_CONTROL_CACHE_KEY"
+          fi
+          if [ "$CACHE_KEY" = "$DARWIN_CONTROL_CACHE_KEY" ]; then
+            test "$GITHUB_REF" = "$DARWIN_CONTROL_CACHE_REF"
+          fi
+
+      - name: Authenticate the pinned filesystem gate
+        if: inputs.darwin_reader == 'release-hot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/darwin-reader-evidence/preflight"
+          payload="$RUNNER_TEMP/darwin-reader-payload/preflight"
+          mkdir -p "$evidence" "$payload"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$DARWIN_FSCK_RUN_ID" > "$payload/run.json"
+          jq -e --argjson id "$DARWIN_FSCK_RUN_ID" --argjson attempt "$DARWIN_FSCK_RUN_ATTEMPT" \
+            --arg head "$DARWIN_FSCK_HEAD_SHA" '
+              .id == $id and .run_attempt == $attempt and .head_sha == $head
+              and .path == ".github/workflows/darwin-hotpack-playground.yml"
+              and .event == "workflow_dispatch" and .status == "completed" and .conclusion == "success"
+            ' "$payload/run.json"
+          jq '{id,run_attempt,head_sha,path,event,status,conclusion}' "$payload/run.json" > "$evidence/run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DARWIN_FSCK_ARTIFACT_ID" \
+            > "$payload/artifact.json"
+          jq -e --argjson id "$DARWIN_FSCK_ARTIFACT_ID" --argjson run "$DARWIN_FSCK_RUN_ID" \
+            --arg digest "$DARWIN_FSCK_ARTIFACT_DIGEST" --arg head "$DARWIN_FSCK_HEAD_SHA" '
+              .id == $id and .name == "darwin-hotpack-filesystem-gate" and .expired == false
+              and .digest == $digest and .workflow_run.id == $run and .workflow_run.head_sha == $head
+            ' "$payload/artifact.json"
+          jq '{id,name,size_in_bytes,digest,expired,workflow_run:{id:.workflow_run.id,head_sha:.workflow_run.head_sha}}' \
+            "$payload/artifact.json" > "$evidence/artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$DARWIN_FSCK_ARTIFACT_ID/zip" \
+            > "$payload/gate.zip"
+          test "$(shasum -a 256 "$payload/gate.zip" | awk '{print $1}')" = \
+            "${DARWIN_FSCK_ARTIFACT_DIGEST#sha256:}"
+          unzip -q "$payload/gate.zip" -d "$evidence"
+          jq -e --argjson release "$DARWIN_BASE_RELEASE_ID" --arg manifest "$DARWIN_BASE_MANIFEST_SHA" \
+            --argjson bytes "$DARWIN_BASE_IMAGE_BYTES" --arg image "$DARWIN_BASE_IMAGE_SHA" '
+              .releaseId == $release and .manifestSha256 == $manifest
+              and .imageBytes == $bytes and .imageSha256 == $image
+              and .responseBytes == $bytes and .uniqueResponseBytes == $bytes
+            ' "$evidence/eager.json"
+          jq -e --arg image "$DARWIN_BASE_IMAGE_SHA" '
+              .filesystem == "case-sensitive-jhfs-plus"
+              and .attachPolicy == "readonly-nomount-noautofsck"
+              and .fsck == "fsck_hfs -fn" and .fsckStatus == 0
+              and .imageSha256Before == $image and .imageSha256After == $image
+            ' "$evidence/gate.json"
+          test "$(cat "$evidence/fsck.status")" = 0
+          grep -Eiq 'appears to be OK\.?$' "$evidence/fsck.stdout"
+
       - name: Restore sparsebundle Nix root cache
-        if: inputs.darwin_cache_key == ''
+        if: inputs.darwin_reader == 'sparsebundle' && inputs.darwin_cache_key == ''
         uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
@@ -456,30 +544,153 @@ jobs:
           system: ${{ env.NIX_ROOT_SYSTEM }}
 
       - name: Select frozen Darwin fixture
-        if: inputs.darwin_cache_key != ''
+        if: inputs.darwin_reader == 'sparsebundle' && inputs.darwin_cache_key != ''
         env:
           CACHE_KEY: ${{ inputs.darwin_cache_key }}
         run: |
           [[ "$CACHE_KEY" =~ ^darwin-lifecycle-v1-[0-9]+-[a-f0-9]{40}-compacted$ ]]
           echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - name: Authenticate the paired sparsebundle cache
+        if: inputs.darwin_reader == 'sparsebundle' && inputs.darwin_cache_key == env.DARWIN_CONTROL_CACHE_KEY
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$DARWIN_CONTROL_CACHE_REF" \
+            --key "$DARWIN_CONTROL_CACHE_KEY" --limit 10 --json id,key,sizeInBytes,version \
+            > "$RUNNER_TEMP/darwin-reader-evidence/control-cache.json"
+          jq -e --argjson id "$DARWIN_CONTROL_CACHE_ID" --arg key "$DARWIN_CONTROL_CACHE_KEY" \
+            --argjson size "$DARWIN_CONTROL_CACHE_SIZE" --arg version "$DARWIN_CONTROL_CACHE_VERSION" '
+              length == 1 and .[0].id == $id and .[0].key == $key
+              and .[0].sizeInBytes == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/darwin-reader-evidence/control-cache.json"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: frozen-darwin
-        if: inputs.darwin_cache_key != ''
+        if: inputs.darwin_reader == 'sparsebundle' && inputs.darwin_cache_key != ''
         with:
           path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
           key: ${{ inputs.darwin_cache_key }}
           fail-on-cache-miss: true
       - name: Require exact Darwin fixture
-        if: inputs.darwin_cache_key != ''
+        if: inputs.darwin_reader == 'sparsebundle' && inputs.darwin_cache_key != ''
         env:
           EXACT_HIT: ${{ steps.frozen-darwin.outputs.cache-hit }}
         run: test "$EXACT_HIT" = true
 
+      - name: Authenticate and preload the pinned hot pack
+        if: inputs.darwin_reader == 'release-hot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/darwin-reader-evidence"
+          payload="$RUNNER_TEMP/darwin-reader-payload"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DARWIN_HOT_RELEASE_ID" > "$payload/hot-release.json"
+          jq -e --argjson id "$DARWIN_HOT_RELEASE_ID" \
+            '.id == $id and .draft == false and (.assets | length == 2)' "$payload/hot-release.json"
+          manifest_url="$(jq -er --arg digest "sha256:$DARWIN_HOT_MANIFEST_SHA" '
+            [.assets[] | select(.name == "hot-manifest.json" and .digest == $digest)]
+            | select(length == 1) | .[0].browser_download_url
+          ' "$payload/hot-release.json")"
+          curl --fail --silent --show-error --location "$manifest_url" --output "$evidence/hot-manifest.json"
+          test "$(shasum -a 256 "$evidence/hot-manifest.json" | awk '{print $1}')" = \
+            "$DARWIN_HOT_MANIFEST_SHA"
+          jq -e --argjson release "$DARWIN_HOT_RELEASE_ID" --argjson source "$DARWIN_BASE_RELEASE_ID" \
+            --arg sourceManifest "$DARWIN_BASE_MANIFEST_SHA" --arg image "$DARWIN_BASE_IMAGE_SHA" '
+              .schema == "darwin-hot-pack-release-v1" and .releaseId == $release
+              and .sourceReleaseId == $source and .sourceManifestSha256 == $sourceManifest
+              and .imageSha256 == $image and .blockSize == 65536
+              and (.blockCount | type == "number" and . > 0)
+              and (.payloadBytes | type == "number" and . > 0 and . <= 536870912)
+              and (.hotPackAssetId | type == "number" and . > 0)
+              and (.hotPackBytes | type == "number" and . > 0 and . <= 536870912)
+              and (.hotPackSha256 | test("^[0-9a-f]{64}$"))
+              and (.profileRunId | type == "number" and . > 0)
+              and (.profileArtifactId | type == "number" and . > 0)
+              and (.profileArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.profileHeadSha | test("^[0-9a-f]{40}$"))
+              and (.profileSha256 | test("^[0-9a-f]{64}$"))
+              and (.producerHeadSha | test("^[0-9a-f]{40}$"))
+            ' "$evidence/hot-manifest.json"
+          hot_asset_id="$(jq -r .hotPackAssetId "$evidence/hot-manifest.json")"
+          hot_url="$(jq -er --argjson id "$hot_asset_id" \
+            --arg sha "$(jq -r .hotPackSha256 "$evidence/hot-manifest.json")" \
+            --argjson size "$(jq -r .hotPackBytes "$evidence/hot-manifest.json")" '
+              [.assets[] | select(.id == $id and .name == "hot.bin" and .size == $size
+                and .digest == ("sha256:" + $sha))]
+              | select(length == 1) | .[0].browser_download_url
+            ' "$payload/hot-release.json")"
+          curl --fail --silent --show-error --location "$hot_url" --output "$payload/hot.bin"
+          test "$(stat -f '%z' "$payload/hot.bin")" = "$(jq -r .hotPackBytes "$evidence/hot-manifest.json")"
+          test "$(shasum -a 256 "$payload/hot.bin" | awk '{print $1}')" = \
+            "$(jq -r .hotPackSha256 "$evidence/hot-manifest.json")"
+          python3 .github/scripts/darwin-release-image.py serve \
+            --repo "$GITHUB_REPOSITORY" --release-id "$DARWIN_BASE_RELEASE_ID" \
+            --manifest-sha "$DARWIN_BASE_MANIFEST_SHA" \
+            --directory "$payload/block-cache" --hot-pack "$payload/hot.bin" \
+            --ready "$payload/url.txt" --log "$evidence/lazy/requests.jsonl" \
+            > "$payload/summary.json" 2> "$evidence/lazy/server.stderr" &
+          server_pid=$!
+          echo "DARWIN_RELEASE_SERVER_PID=$server_pid" >> "$GITHUB_ENV"
+          for _ in {1..600}; do
+            [ -s "$payload/url.txt" ] && break
+            kill -0 "$server_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          test -s "$payload/url.txt"
+          image_url="$(cat "$payload/url.txt")"
+          [[ "$image_url" =~ ^http://127\.0\.0\.1:[0-9]+/image$ ]]
+          echo "DARWIN_RELEASE_IMAGE_URL=$image_url" >> "$GITHUB_ENV"
+
+      - name: Finish reader retrieval
+        run: |
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/restore-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/mount-start.txt"
+
       - name: Mount sparsebundle Nix root
+        if: inputs.darwin_reader == 'sparsebundle'
         uses: ./.github/actions/nix-sparsebundle-mount
         with:
           image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Mount the hot Release image
+        if: inputs.darwin_reader == 'release-hot'
+        run: |
+          set -euo pipefail
+          shadow="$RUNNER_TEMP/darwin-reader-payload/image.shadow"
+          test ! -e "$shadow"
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$DARWIN_RELEASE_IMAGE_URL" \
+            -shadow "$shadow" -mountpoint /nix -nobrowse -noautoopen -owners on -noautofsck \
+            > "$RUNNER_TEMP/darwin-reader-payload/attach.stdout" \
+            2> "$RUNNER_TEMP/darwin-reader-payload/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+
+      - name: Finish Darwin reader mount
+        env:
+          DARWIN_READER: ${{ inputs.darwin_reader }}
+          CACHE_KEY: ${{ inputs.darwin_cache_key }}
+        run: |
+          set -euo pipefail
+          if [ "$DARWIN_READER" = release-hot ] || [ "$CACHE_KEY" = "$DARWIN_CONTROL_CACHE_KEY" ]; then
+            nfb=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build
+            test "$(readlink "$nfb")" = "$DARWIN_EXPECTED_NFB"
+            test -x "$nfb/bin/nix-fast-build"
+            "$nfb/bin/nix-fast-build" --help >/dev/null
+          fi
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/mount-end.txt"
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -502,6 +713,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/build-start.txt"
           df -h
 
           nix_fast_build_prepare_started="$SECONDS"
@@ -568,6 +780,97 @@ jobs:
 
           records="$(jq -ce -f .github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/ci-darwin-results.json")"
           printf 'records=%s\n' "$records" >> "$GITHUB_OUTPUT"
+          jq -r '.[].storePath' <<< "$records" | while IFS= read -r store_path; do
+            nix path-info --store https://whitestrake.cachix.org "$store_path" >/dev/null
+          done
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/build-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-reader-evidence/completion-end.txt"
+
+      - name: Detach the Darwin reader and stop the helper
+        if: always()
+        env:
+          DARWIN_READER: ${{ inputs.darwin_reader }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/darwin-reader-evidence"
+          payload="$RUNNER_TEMP/darwin-reader-payload"
+          if mount | grep -Fq ' on /nix '; then
+            if ! perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix; then
+              perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force /nix
+            fi
+          fi
+          if [ "$DARWIN_READER" = release-hot ]; then
+            if [ -n "${DARWIN_RELEASE_SERVER_PID:-}" ]; then
+              if kill -0 "$DARWIN_RELEASE_SERVER_PID" 2>/dev/null; then
+                kill -TERM "$DARWIN_RELEASE_SERVER_PID"
+                for _ in {1..100}; do
+                  kill -0 "$DARWIN_RELEASE_SERVER_PID" 2>/dev/null || break
+                  sleep 0.1
+                done
+              fi
+              if kill -0 "$DARWIN_RELEASE_SERVER_PID" 2>/dev/null; then exit 1; fi
+              if [ -f "$evidence/completion-end.txt" ]; then
+                test -s "$payload/summary.json"
+                jq -e --argjson release "$DARWIN_BASE_RELEASE_ID" \
+                  --arg manifest "$DARWIN_BASE_MANIFEST_SHA" --arg image "$DARWIN_BASE_IMAGE_SHA" \
+                  --arg hot "$(jq -r .hotPackSha256 "$evidence/hot-manifest.json")" \
+                  --argjson blocks "$(jq -r .blockCount "$evidence/hot-manifest.json")" \
+                  --argjson bytes "$(jq -r .payloadBytes "$evidence/hot-manifest.json")" '
+                    .releaseId == $release and .manifestSha256 == $manifest and .imageSha256 == $image
+                    and .hotPackSha256 == $hot and .hotPackBlocks == $blocks and .hotPackBytes == $bytes
+                    and (.requestCount | type == "number" and . >= 0)
+                    and (.responseBytes | type == "number" and . >= 0)
+                    and (.uniqueResponseBytes | type == "number" and . >= 0)
+                    and (.interfaceBytes | type == "number" and . > 0)
+                    and (.interfaceRequests | type == "number" and . > 0)
+                    and (.interfaceRangeRequests | type == "number" and . > 0)
+                  ' "$payload/summary.json"
+              fi
+              if [ -s "$payload/summary.json" ]; then
+                jq 'del(.url)' "$payload/summary.json" > "$evidence/lazy/summary.json"
+              fi
+            elif [ -f "$evidence/completion-end.txt" ]; then
+              exit 1
+            fi
+          fi
+
+      - name: Record Darwin reader evidence
+        if: always()
+        env:
+          DARWIN_READER: ${{ inputs.darwin_reader }}
+          CACHE_KEY: ${{ inputs.darwin_cache_key }}
+        run: |
+          evidence="$RUNNER_TEMP/darwin-reader-evidence"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          if [ -f "$evidence/completion-end.txt" ]; then
+            jq -n \
+              --argjson completeSeconds "$(duration "$evidence/setup-start.txt" "$evidence/completion-end.txt")" \
+              --argjson restoreSeconds "$(duration "$evidence/restore-start.txt" "$evidence/restore-end.txt")" \
+              --argjson mountSeconds "$(duration "$evidence/mount-start.txt" "$evidence/mount-end.txt")" \
+              --argjson buildOutputSeconds "$(duration "$evidence/build-start.txt" "$evidence/build-end.txt")" \
+              '{completeSeconds:$completeSeconds,restoreSeconds:$restoreSeconds,mountSeconds:$mountSeconds,buildOutputSeconds:$buildOutputSeconds}' \
+              > "$evidence/stage-costs.json"
+          fi
+          jq -n --arg reader "$DARWIN_READER" --arg cacheKey "$CACHE_KEY" \
+            --arg harness "$GITHUB_SHA" --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            --arg baseRelease "$DARWIN_BASE_RELEASE_ID" --arg baseManifest "$DARWIN_BASE_MANIFEST_SHA" \
+            --arg hotRelease "$DARWIN_HOT_RELEASE_ID" --arg hotManifest "$DARWIN_HOT_MANIFEST_SHA" '
+              {reader:$reader,cacheKey:$cacheKey,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,
+               verification:"default",
+               autofsckPolicy:(if $reader == "release-hot" then "disabled-after-pinned-fsck-gate" else "default" end),
+               freshShadow:($reader == "release-hot"),actionsCacheWrites:false,
+               baseReleaseId:(if $reader == "release-hot" then $baseRelease else null end),
+               baseManifestSha256:(if $reader == "release-hot" then $baseManifest else null end),
+               hotReleaseId:(if $reader == "release-hot" then $hotRelease else null end),
+               hotManifestSha256:(if $reader == "release-hot" then $hotManifest else null end),
+               primaryEndpoint:"before reader selection and transport retrieval through successful Darwin output publication"}' \
+            > "$evidence/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-reader-evidence
+          path: ${{ runner.temp }}/darwin-reader-evidence
 
   all-builds:
     name: "All Builds"
@@ -578,6 +881,8 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    outputs:
+      proof-path: ${{ steps.proof.outputs.proof-path }}
     permissions:
       contents: read
     steps:
@@ -801,6 +1106,7 @@ jobs:
           nix path-info --store https://whitestrake.cachix.org "$probe_path"
 
       - name: Validate and publish complete build proof
+        id: proof
         shell: bash
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -811,6 +1117,7 @@ jobs:
           source modules/deployment/scripts/cachix-pin-functions.sh
 
           records="$(jq -ce '.' "$RUNNER_TEMP/ci-enriched-records.json")"
+          test "$(jq length <<< "$records")" -eq 11
           proof_file="$RUNNER_TEMP/ci-build-proof.json"
           proof_canonical_file="$RUNNER_TEMP/ci-build-proof.canonical.json"
           jq -cn \
@@ -824,8 +1131,12 @@ jobs:
           mv "$proof_canonical_file" "$proof_file"
           proof_path="$(nix store add --mode flat --name ci-build-proof.json "$proof_file")"
           cachix push whitestrake "$proof_path"
+          [[ "$proof_path" =~ ^/nix/store/[0-9a-z]{32}-ci-build-proof\.json$ ]]
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
           mapfile -t recorded_paths < <(jq -r '.[].storePath' <<< "$records")
           nix path-info --store https://whitestrake.cachix.org "${recorded_paths[@]}" >/dev/null
+          echo "$proof_path" > "$RUNNER_TEMP/ci-build-proof-path.txt"
+          echo "proof-path=$proof_path" >> "$GITHUB_OUTPUT"
           echo "Published durable CI build proof: $proof_path"
           {
             echo "### Durable CI build proof"
@@ -839,4 +1150,5 @@ jobs:
           name: complete-build-proof
           path: |
             ${{ runner.temp }}/ci-build-proof.json
+            ${{ runner.temp }}/ci-build-proof-path.txt
             ${{ runner.temp }}/ci-enriched-records.json
