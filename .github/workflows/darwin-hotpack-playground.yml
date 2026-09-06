@@ -88,13 +88,15 @@ jobs:
           fi
           if [ "$COMPARE_AUTOFSCK" = true ]; then
             [ "$SAMPLE_ATTACH" = false ]
-            [ "$SCENARIOS" = matched ]
             [ "$SOURCE_HOT_RELEASE" = "$AUTOFSCK_HOT_RELEASE_ID" ]
             [ "$SOURCE_HOT_SHA" = "$AUTOFSCK_HOT_MANIFEST_SHA" ]
           fi
           definitions='[{"scenario":"matched","treatments":["cold","hot"]}]'
           if [ "$COMPARE_AUTOFSCK" = true ]; then
             definitions='[{"scenario":"matched","treatments":["default","noautofsck"]}]'
+            if [ "$SCENARIOS" = all ]; then
+              definitions='[{"scenario":"matched","treatments":["default","noautofsck"]},{"scenario":"changed-input","treatments":["default","noautofsck"]},{"scenario":"unprofiled-file","treatments":["default","noautofsck"]}]'
+            fi
           elif [ "$SCENARIOS" = all ]; then
             definitions='[{"scenario":"matched","treatments":["cold","hot"]},{"scenario":"changed-input","treatments":["hot","cold"]},{"scenario":"unprofiled-file","treatments":["cold","hot"]}]'
           fi
@@ -341,7 +343,7 @@ jobs:
 
   reader:
     needs: [validate, produce, filesystem-gate]
-    if: ${{ always() && needs.validate.result == 'success' && (needs.filesystem-gate.result == 'success' || needs.filesystem-gate.result == 'skipped') && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
+    if: ${{ always() && needs.validate.result == 'success' && ((needs.validate.outputs.compare-autofsck == 'true' && needs.filesystem-gate.result == 'success') || (needs.validate.outputs.compare-autofsck != 'true' && needs.filesystem-gate.result == 'skipped')) && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -741,7 +743,8 @@ jobs:
           treatments=(cold hot)
           if [ "$COMPARE_AUTOFSCK" = true ]; then
             treatments=(default noautofsck)
-          elif [ "$SCENARIOS" = all ]; then
+          fi
+          if [ "$SCENARIOS" = all ]; then
             fixtures+=(changed-input unprofiled-file)
           fi
           for pair in $(seq 1 "$ROUNDS"); do
@@ -765,17 +768,18 @@ jobs:
               fi
             done
             if [ "$SCENARIOS" = all ]; then
+              baseline_treatment="${treatments[0]}"
               matched="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
-                "$RUNNER_TEMP/readers/darwin-hotpack-matched-pair-$pair-cold/records.json")"
+                "$RUNNER_TEMP/readers/darwin-hotpack-matched-pair-$pair-$baseline_treatment/records.json")"
               changed="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' \
-                "$RUNNER_TEMP/readers/darwin-hotpack-changed-input-pair-$pair-cold/records.json")"
+                "$RUNNER_TEMP/readers/darwin-hotpack-changed-input-pair-$pair-$baseline_treatment/records.json")"
               test "$changed" != "$matched"
             fi
           done
           pair_count=$((ROUNDS * ${#fixtures[@]}))
           jq -n --arg scope "$SCENARIOS" --argjson rounds "$ROUNDS" --argjson pairs "$pair_count" \
             --argjson compareAutofsck "$COMPARE_AUTOFSCK" --argjson treatments "$(printf '%s\n' "${treatments[@]}" | jq -Rsc 'split("\n")[:-1]')" \
-            '{matching:true,scope:$scope,rounds:$rounds,pairs:$pairs,treatments:$treatments,compareAutofsck:$compareAutofsck,performanceScenarios:(if $compareAutofsck then ["matched"] else ["matched","changed-input"] end),robustnessOnly:(if $compareAutofsck then [] else ["unprofiled-file"] end)}' \
+            '{matching:true,scope:$scope,rounds:$rounds,pairs:$pairs,treatments:$treatments,compareAutofsck:$compareAutofsck,performanceScenarios:(if $scope == "all" then ["matched","changed-input"] else ["matched"] end),robustnessOnly:(if $scope == "all" then ["unprofiled-file"] else [] end)}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo
