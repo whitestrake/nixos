@@ -3,6 +3,15 @@ name: "Fast CI Production Probe"
 on:
   workflow_dispatch:
     inputs:
+      linux_system:
+        description: Native Linux evaluator architecture (all ten targets on both)
+        type: choice
+        options: [x86_64-linux, aarch64-linux]
+        default: x86_64-linux
+      seed_run:
+        description: Native seed producer run ID (empty uses legacy x86 seed)
+        type: string
+        default: ''
       seed:
         description: Restore the Linux evaluator seed
         type: boolean
@@ -34,7 +43,9 @@ env:
 jobs:
   linux-builds:
     name: "Linux"
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.linux_system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    env:
+      EVALUATOR_SYSTEM: ${{ inputs.linux_system || 'x86_64-linux' }}
     timeout-minutes: 355
     outputs:
       records: ${{ steps.records.outputs.records }}
@@ -48,16 +59,21 @@ jobs:
           persist-credentials: false
 
       - name: Start Linux timing
+        env:
+          SEED_RUN: ${{ inputs.seed_run }}
+          USE_SEED: ${{ inputs.seed }}
         run: |
           mkdir -p "$RUNNER_TEMP/measurements"
           date +%s.%N > "$RUNNER_TEMP/measurements/setup-start.txt"
+          [[ -z "$SEED_RUN" || "$SEED_RUN" =~ ^[0-9]+$ ]]
+          if [[ "$USE_SEED" == true && "$EVALUATOR_SYSTEM" == aarch64-linux ]]; then test -n "$SEED_RUN"; fi
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: restore
         if: github.event_name == 'push' || inputs.seed
         continue-on-error: true
         with:
           path: ${{ runner.temp }}/fast-ci-erofs
-          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-erofs
+          key: ${{ inputs.seed_run != '' && format('fast-ci-native-seed-v1-{0}-{1}', inputs.seed_run, inputs.linux_system) || format('fast-ci-playground-v2-{0}-erofs', env.SEED_SHA) }}
       - name: Try evaluator seed
         id: mount
         if: steps.restore.outputs.cache-hit == 'true'
@@ -106,7 +122,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           FAST_CI_FORWARD_EVENTS: "1"
-          FAST_CI_SAMPLE_MEMORY: ${{ inputs.profile && '1' || '0' }}
+          FAST_CI_SAMPLE_MEMORY: "1"
           EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
         run: |
           set -euo pipefail
@@ -115,7 +131,7 @@ jobs:
             nix run \
               --option builders '' \
               --option max-jobs auto \
-              ".#packages.x86_64-linux.nix-fast-build" \
+              ".#packages.$EVALUATOR_SYSTEM.nix-fast-build" \
               --
           )
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
@@ -198,6 +214,8 @@ jobs:
         env:
           CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
           MOUNT_OUTCOME: ${{ steps.mount.outcome }}
+          SEED_RUN: ${{ inputs.seed_run }}
+          EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
         run: |
           if [ -f "$RUNNER_TEMP/ci-linux-results.json" ]; then
             cp "$RUNNER_TEMP/ci-linux-results.json" "$RUNNER_TEMP/measurements/results.json"
@@ -205,8 +223,12 @@ jobs:
           jq -n --arg hit "$CACHE_HIT" --arg mount "$MOUNT_OUTCOME" --arg harness "$GITHUB_SHA" \
             --arg cpu "$(awk -F ': ' '/model name/ { print $2; exit }' /proc/cpuinfo)" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg run "$GITHUB_RUN_ID" \
-            '{cacheHit:$hit,mountOutcome:$mount,harness:$harness,cpu:$cpu,runnerImage:$runnerImage,run:$run}' \
+            --arg architecture "$(uname -m)" --arg evaluatorSystem "$EVALUATOR_SYSTEM" \
+            --arg seedRun "$SEED_RUN" --argjson evalWorkers "$EVAL_WORKERS" --argjson cores "$(nproc)" \
+            '{cacheHit:$hit,mountOutcome:$mount,harness:$harness,cpu:$cpu,runnerImage:$runnerImage,run:$run,architecture:$architecture,evaluatorSystem:$evaluatorSystem,seedRun:$seedRun,evalWorkers:$evalWorkers,cores:$cores}' \
             > "$RUNNER_TEMP/measurements/environment.json"
+          lscpu --json > "$RUNNER_TEMP/measurements/lscpu.json"
+          nix --version > "$RUNNER_TEMP/measurements/nix-version.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -248,42 +270,6 @@ jobs:
             exit 1
           fi
           git diff -- "$target" | tee "$RUNNER_TEMP/measurements/injected-source.diff"
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        id: restore
-        if: github.event_name == 'push' || inputs.seed
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/fast-ci-erofs
-          key: fast-ci-playground-v2-${{ env.SEED_SHA }}-erofs
-      - name: Try evaluator seed
-        id: mount
-        if: steps.restore.outputs.cache-hit == 'true'
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          test ! -e /nix
-          cd "$RUNNER_TEMP/fast-ci-erofs"
-          sha256sum --check image.sha256
-          sudo modprobe erofs
-          sudo modprobe overlay
-          mkdir -p "$RUNNER_TEMP/lower" "$RUNNER_TEMP/upper" "$RUNNER_TEMP/work"
-          sudo mkdir /nix
-          touch "$RUNNER_TEMP/created-nix"
-          sudo mount -t erofs -o loop,ro image "$RUNNER_TEMP/lower"
-          sudo mount -t overlay overlay -o "lowerdir=$RUNNER_TEMP/lower,upperdir=$RUNNER_TEMP/upper,workdir=$RUNNER_TEMP/work" /nix
-          nfb="$(cat nfb-path.txt)"
-          "$nfb/bin/nix-fast-build" --help >/dev/null
-      - name: Recover rejected evaluator seed
-        if: steps.mount.outcome == 'failure'
-        run: |
-          set -euo pipefail
-          if [ -e "$RUNNER_TEMP/created-nix" ]; then
-            if mountpoint -q /nix; then sudo umount /nix; fi
-            if mountpoint -q "$RUNNER_TEMP/lower"; then sudo umount "$RUNNER_TEMP/lower"; fi
-            sudo rmdir /nix
-          fi
-          test ! -e /nix
-
       - name: Install Nix
         uses: ./.github/actions/install-nix
         with:
@@ -347,9 +333,9 @@ jobs:
       - name: Record source-check evidence
         if: always()
         env:
-          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+          CACHE_HIT: false
           FAIL_SOURCE_CHECK: ${{ inputs.fail_source_check }}
-          MOUNT_OUTCOME: ${{ steps.mount.outcome }}
+          MOUNT_OUTCOME: skipped
           SOURCE_CHECK_OUTCOME: ${{ steps.build-source-checks.outcome }}
         run: |
           if [ -f "$RUNNER_TEMP/ci-checks-results.json" ]; then
@@ -375,12 +361,6 @@ jobs:
         with:
           name: source-check-evidence
           path: ${{ runner.temp }}/measurements
-      - name: Unmount evaluator seed
-        if: always() && steps.mount.outcome == 'success'
-        run: |
-          sudo umount /nix
-          sudo umount "$RUNNER_TEMP/lower"
-
   darwin-builds:
     name: "Darwin"
     runs-on: macos-26

@@ -1,0 +1,72 @@
+name: Native Evaluator Seed Probe
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/native-seed-playground.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  seed:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      EVALUATOR_SYSTEM: ${{ matrix.system }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-nix
+      - name: Prepare equivalent native evaluator roots
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/fast-ci-erofs"
+          root=/nix/var/nix/gcroots/native-evaluator-seed
+          mkdir -p "$output" "$root"
+          nix flake archive --json path:. > "$output/archive.json"
+          jq -r '[.inputs | .. | objects | .path? // empty] | unique[]' "$output/archive.json" > "$output/input-paths.txt"
+          while IFS= read -r input; do
+            ln -s "$input" "$root/$(basename "$input")"
+          done < "$output/input-paths.txt"
+          nfb="$(nix build --no-link --print-out-paths ".#packages.$EVALUATOR_SYSTEM.nix-fast-build")"
+          ln -s "$nfb" "$root/nfb"
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+          printf '%s\n' "$nfb" > "$output/nfb-path.txt"
+          nix --version > "$output/nix-version.txt"
+          nix path-info --recursive --json "$nfb" > "$output/nfb-closure.json"
+          nix store gc
+          nix path-info --all | sort > "$output/store-paths.txt"
+          python3 - <<'PY'
+          import sqlite3
+          with sqlite3.connect('/nix/var/nix/db/db.sqlite') as db:
+              assert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+          PY
+          # Freeze before acquiring the image packer so its closure is excluded.
+          cp -a --reflink=auto /nix "$RUNNER_TEMP/seed-snapshot"
+          packer="$(nix build --inputs-from . --no-link --print-out-paths 'nixpkgs-unstable#erofs-utils^out')"
+          "$packer/bin/mkfs.erofs" --quiet --workers=1 -zzstd,level=3 -C65536 -Efragments,ztailpacking,dedupe "$output/image" "$RUNNER_TEMP/seed-snapshot"
+          (cd "$output" && sha256sum image > image.sha256)
+          lscpu --json > "$output/lscpu.json"
+          jq -n --arg system "$EVALUATOR_SYSTEM" --arg harness "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+            --argjson bytes "$(stat -c %s "$output/image")" \
+            '{system:$system,harness:$harness,run:$run,imageBytes:$bytes}' > "$output/environment.json"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/fast-ci-erofs
+          key: fast-ci-native-seed-v1-${{ github.run_id }}-${{ matrix.system }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: native-seed-${{ matrix.system }}
+          path: |
+            ${{ runner.temp }}/fast-ci-erofs/*.json
+            ${{ runner.temp }}/fast-ci-erofs/*.txt
+            ${{ runner.temp }}/fast-ci-erofs/*.sha256
