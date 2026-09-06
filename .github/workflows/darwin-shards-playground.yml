@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: darwin-shards-playground-${{ github.ref }}
+  group: darwin-shards-playground-${{ github.ref }}-${{ inputs.deep_verify }}
   cancel-in-progress: false
 
 env:
