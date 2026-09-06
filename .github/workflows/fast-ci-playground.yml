@@ -3,6 +3,15 @@ name: "Fast CI Production Probe"
 on:
   workflow_dispatch:
     inputs:
+      nfb_launch:
+        description: Use cached NFB optimistically or resolve the current flake tool
+        type: choice
+        options: [cached, flake]
+        default: cached
+      darwin_cache_key:
+        description: Exact experimental compacted Darwin cache key (empty uses master)
+        type: string
+        default: ''
       linux_system:
         description: Native Linux evaluator architecture (all ten targets on both)
         type: choice
@@ -124,17 +133,25 @@ jobs:
           FAST_CI_FORWARD_EVENTS: "1"
           FAST_CI_SAMPLE_MEMORY: "1"
           EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
+          NFB_LAUNCH: ${{ inputs.nfb_launch || 'cached' }}
+          SEED_MOUNT_OUTCOME: ${{ steps.mount.outcome }}
         run: |
           set -euo pipefail
 
-          nix_fast_build=(
-            nix run \
-              --option builders '' \
-              --option max-jobs auto \
-              ".#packages.$EVALUATOR_SYSTEM.nix-fast-build" \
-              --
-          )
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
+          if [[ "$NFB_LAUNCH" == cached && "$SEED_MOUNT_OUTCOME" == success ]]; then
+            nfb="$(cat "$RUNNER_TEMP/fast-ci-erofs/nfb-path.txt")"
+            [[ "$nfb" =~ ^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+$ ]]
+            "$nfb/bin/nix-fast-build" --help >/dev/null
+            selection=cached
+          else
+            nfb="$(nix build --no-link --print-out-paths --option builders '' --option max-jobs auto ".#packages.$EVALUATOR_SYSTEM.nix-fast-build")"
+            selection=flake
+          fi
+          nix_fast_build=("$nfb/bin/nix-fast-build")
+          date +%s.%N > "$RUNNER_TEMP/measurements/tool-ready.txt"
+          jq -n --arg requested "$NFB_LAUNCH" --arg selected "$selection" --arg path "$nfb" \
+            '{requested:$requested,selected:$selected,path:$path}' > "$RUNNER_TEMP/measurements/tool.json"
           python3 .github/scripts/nix_fast_build.py --publish-checks -- \
             python3 .github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
             "${nix_fast_build[@]}" \
@@ -142,7 +159,6 @@ jobs:
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers "$EVAL_WORKERS" \
             --store ssh-ng://eu.nixbuild.net \
-            --option builders '' \
             --option max-jobs 2 \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
@@ -382,11 +398,32 @@ jobs:
           persist-credentials: false
 
       - name: Restore sparsebundle Nix root cache
+        if: inputs.darwin_cache_key == ''
         uses: ./.github/actions/nix-sparsebundle-cache-restore
         with:
           cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
           image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
           system: ${{ env.NIX_ROOT_SYSTEM }}
+
+      - name: Select frozen Darwin fixture
+        if: inputs.darwin_cache_key != ''
+        env:
+          CACHE_KEY: ${{ inputs.darwin_cache_key }}
+        run: |
+          [[ "$CACHE_KEY" =~ ^darwin-lifecycle-v1-[0-9]+-[a-f0-9]{40}-compacted$ ]]
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: frozen-darwin
+        if: inputs.darwin_cache_key != ''
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ inputs.darwin_cache_key }}
+          fail-on-cache-miss: true
+      - name: Require exact Darwin fixture
+        if: inputs.darwin_cache_key != ''
+        env:
+          EXACT_HIT: ${{ steps.frozen-darwin.outputs.cache-hit }}
+        run: test "$EXACT_HIT" = true
 
       - name: Mount sparsebundle Nix root
         uses: ./.github/actions/nix-sparsebundle-mount

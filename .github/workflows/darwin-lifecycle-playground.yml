@@ -3,6 +3,10 @@ name: Darwin Sparsebundle Lifecycle Probe
 on:
   workflow_dispatch:
     inputs:
+      from_scratch:
+        description: Reconstruct a pinned baseline without restoring a master cache
+        type: boolean
+        default: false
       source_run:
         description: Existing producer run (empty creates both treatments)
         type: string
@@ -54,10 +58,16 @@ jobs:
     steps:
       - name: Validate source policy request
         env:
+          FROM_SCRATCH: ${{ inputs.from_scratch }}
+          BASE_KEY: ${{ inputs.base_uncompacted_key }}
           SKIP_OPTIMISE: ${{ inputs.skip_optimise }}
           SOURCE_RUN: ${{ inputs.source_run }}
         run: |
           set -euo pipefail
+          if [[ "$FROM_SCRATCH" == true && ( -n "$SOURCE_RUN" || -n "$BASE_KEY" ) ]]; then
+            echo "Scratch reconstruction cannot also select a predecessor" >&2
+            exit 1
+          fi
           if [[ -n "$SOURCE_RUN" && "$SKIP_OPTIMISE" == "true" ]]; then
             echo "skip_optimise cannot be used with source_run because the source producer policy is fixed" >&2
             exit 1
@@ -84,7 +94,7 @@ jobs:
       - name: Start frozen base restore timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        if: inputs.base_uncompacted_key == ''
+        if: inputs.base_uncompacted_key == '' && !inputs.from_scratch
         with:
           path: ${{ runner.temp }}/nix-root-ci-aarch64-darwin/nix-root.sparsebundle
           key: ${{ env.BASE_CACHE_KEY }}
@@ -171,8 +181,10 @@ jobs:
         env:
           WORKLOAD_REF: ${{ inputs.workload_ref }}
           RESOLVED_BASE_KEY: ${{ inputs.base_uncompacted_key || env.BASE_CACHE_KEY }}
+          FROM_SCRATCH: ${{ inputs.from_scratch }}
         run: |
           set -euo pipefail
+          if [[ "$FROM_SCRATCH" == true ]]; then RESOLVED_BASE_KEY=reconstructed-empty-store; fi
           optimise_policy="$(cat "$RUNNER_TEMP/measurements/optimise-policy.txt")"
           optimise_status="$(cat "$RUNNER_TEMP/measurements/optimise-status.txt")"
           optimise_seconds="$(cat "$RUNNER_TEMP/measurements/optimise-seconds.txt")"
