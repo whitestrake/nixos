@@ -7,6 +7,19 @@ on:
         description: Reconstruct a pinned baseline without restoring a master cache
         type: boolean
         default: false
+      retain_tool:
+        description: Retain the working predecessor NFB when refreshing roots
+        type: boolean
+        default: true
+      cache_revision:
+        description: Revision in an existing reader cache key (empty uses workload ref)
+        type: string
+        default: ''
+      reader_treatments:
+        description: Read only the selected compacted format or repeat both formats
+        type: choice
+        options: [compacted, both]
+        default: compacted
       source_run:
         description: Existing producer run (empty creates both treatments)
         type: string
@@ -133,10 +146,14 @@ jobs:
       - uses: ./.harness/.github/actions/nix-root-build
         with:
           system: aarch64-darwin
+          retain-cached-tool: ${{ inputs.retain_tool }}
       - name: Finish refresh timing and record outputs
         run: |
           set -euo pipefail
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/refresh-end.txt"
+          cp flake.lock "$RUNNER_TEMP/measurements/flake.lock"
+          readlink /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build > "$RUNNER_TEMP/measurements/nfb-path.txt"
+          nix path-info --recursive --json "$(cat "$RUNNER_TEMP/measurements/nfb-path.txt")" > "$RUNNER_TEMP/measurements/nfb-closure.json"
           jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq \
             "$RUNNER_TEMP/cache-aarch64-darwin-results.json" > "$RUNNER_TEMP/measurements/producer-records.json"
       - name: Freeze identical pre-treatment state
@@ -236,7 +253,7 @@ jobs:
       max-parallel: 1
       matrix:
         round: ${{ fromJSON(inputs.trace && '[1]' || (inputs.reader_rounds == '1' && '[1]' || '[1,2,3]')) }}
-        treatment: ${{ fromJSON(inputs.trace && '["compacted"]' || '["compacted","uncompacted"]') }}
+        treatment: ${{ fromJSON((inputs.trace || inputs.reader_treatments == 'compacted') && '["compacted"]' || '["compacted","uncompacted"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -248,11 +265,13 @@ jobs:
           persist-credentials: false
       - name: Validate inputs and start reader timing
         env:
+          CACHE_REVISION: ${{ inputs.cache_revision || inputs.workload_ref }}
           SOURCE_RUN: ${{ inputs.source_run }}
           WORKLOAD_REF: ${{ inputs.workload_ref }}
         run: |
           set -euo pipefail
           [[ "$WORKLOAD_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CACHE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
           mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/darwin-lifecycle/${{ matrix.treatment }}"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
@@ -260,12 +279,17 @@ jobs:
       - name: Start cache restore timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: reader-cache
         with:
           path: ${{ runner.temp }}/darwin-lifecycle/${{ matrix.treatment }}/nix-root.sparsebundle
-          key: darwin-lifecycle-v1-${{ inputs.source_run || github.run_id }}-${{ inputs.workload_ref }}-${{ matrix.treatment }}
+          key: darwin-lifecycle-v1-${{ inputs.source_run || github.run_id }}-${{ inputs.cache_revision || inputs.workload_ref }}-${{ matrix.treatment }}
           fail-on-cache-miss: true
       - name: Finish cache restore timing
-        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
+        env:
+          EXACT_HIT: ${{ steps.reader-cache.outputs.cache-hit }}
+        run: |
+          test "$EXACT_HIT" = true
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
       - name: Start native trace
         if: inputs.trace
         run: |
@@ -309,8 +333,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
+          nfb="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build"
+          "$nfb" --help >/dev/null
+          readlink /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build > "$RUNNER_TEMP/measurements/nfb-path.txt"
           python3 .harness/.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
-            nix run ".#packages.aarch64-darwin.nix-fast-build" -- \
+            "$nfb" \
             --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
             --option builders '' --option max-jobs auto --retries 2 \
             --result-file "$RUNNER_TEMP/measurements/results.json" -j 50 --stream-json-lines
@@ -341,6 +368,7 @@ jobs:
           WORKLOAD_REF: ${{ inputs.workload_ref }}
           INSTRUMENTED: ${{ inputs.trace }}
           SOURCE_RUN: ${{ inputs.source_run || github.run_id }}
+          CACHE_REVISION: ${{ inputs.cache_revision || inputs.workload_ref }}
           PRODUCER_OPTIMISE_POLICY: ${{ inputs.source_run == '' && (inputs.skip_optimise && 'skipped' || 'run') || 'unknown' }}
         run: |
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/completion-end.txt"
@@ -349,11 +377,11 @@ jobs:
               "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
           fi
           jq -n --arg treatment "$TREATMENT" --arg round "$ROUND" --arg workloadRef "$WORKLOAD_REF" \
-            --arg sourceRun "$SOURCE_RUN" --arg fixture "$FIXTURE_SHA" \
+            --arg sourceRun "$SOURCE_RUN" --arg cacheRevision "$CACHE_REVISION" --arg fixture "$FIXTURE_SHA" \
             --arg harness "$GITHUB_SHA" --arg runnerImage "${ImageVersion:-unknown}" \
             --arg producerOptimisePolicy "$PRODUCER_OPTIMISE_POLICY" \
             --arg cpu "$(sysctl -n machdep.cpu.brand_string)" --argjson instrumented "$INSTRUMENTED" \
-            '{treatment:$treatment,round:$round,workloadRef:$workloadRef,sourceRun:$sourceRun,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,instrumented:$instrumented,producerOptimisePolicy:$producerOptimisePolicy}' \
+            '{treatment:$treatment,round:$round,workloadRef:$workloadRef,cacheRevision:$cacheRevision,sourceRun:$sourceRun,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,instrumented:$instrumented,producerOptimisePolicy:$producerOptimisePolicy}' \
             > "$RUNNER_TEMP/measurements/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -373,7 +401,7 @@ jobs:
           path: ${{ runner.temp }}/readers
       - name: Verify all reader output maps match
         env:
-          EXPECTED_READERS: ${{ inputs.trace && 1 || (inputs.reader_rounds == '1' && 2 || 6) }}
+          EXPECTED_READERS: ${{ inputs.trace && 1 || (inputs.reader_treatments == 'compacted' && (inputs.reader_rounds == '1' && 1 || 3)) || (inputs.reader_rounds == '1' && 2 || 6) }}
         run: |
           set -euo pipefail
           mapfile -d '' records < <(find "$RUNNER_TEMP/readers" -name records.json -print0 | sort -z)

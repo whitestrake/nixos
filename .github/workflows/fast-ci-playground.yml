@@ -6,7 +6,7 @@ on:
       nfb_launch:
         description: Use cached NFB optimistically or resolve the current flake tool
         type: choice
-        options: [cached, flake]
+        options: [cached, flake, batch]
         default: cached
       darwin_cache_key:
         description: Exact experimental compacted Darwin cache key (empty uses master)
@@ -139,7 +139,8 @@ jobs:
           set -euo pipefail
 
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
-          if [[ "$NFB_LAUNCH" == cached && "$SEED_MOUNT_OUTCOME" == success ]]; then
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$RUNNER_TEMP/measurements/tool-rx-start.txt"
+          if [[ "$NFB_LAUNCH" != flake && "$SEED_MOUNT_OUTCOME" == success ]]; then
             nfb="$(cat "$RUNNER_TEMP/fast-ci-erofs/nfb-path.txt")"
             [[ "$nfb" =~ ^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+$ ]]
             "$nfb/bin/nix-fast-build" --help >/dev/null
@@ -149,7 +150,11 @@ jobs:
             selection=flake
           fi
           nix_fast_build=("$nfb/bin/nix-fast-build")
+          if [[ "$NFB_LAUNCH" == batch ]]; then
+            nix_fast_build=(python3 .github/scripts/fast-ci-batch.py --nfb-root "$nfb")
+          fi
           date +%s.%N > "$RUNNER_TEMP/measurements/tool-ready.txt"
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$RUNNER_TEMP/measurements/tool-rx-end.txt"
           jq -n --arg requested "$NFB_LAUNCH" --arg selected "$selection" --arg path "$nfb" \
             '{requested:$requested,selected:$selected,path:$path}' > "$RUNNER_TEMP/measurements/tool.json"
           python3 .github/scripts/nix_fast_build.py --publish-checks -- \
@@ -164,6 +169,11 @@ jobs:
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
             -j 50
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
+          mapfile -t host_derivations < <(find /nix/store -maxdepth 1 -name '*-nixos-system-*.drv' -type f)
+          test "${#host_derivations[@]}" -gt 0
+          nix derivation show "${host_derivations[@]}" \
+            | jq 'to_entries | map({drvPath:.key,storePath:.value.outputs.out.path})' \
+            > "$RUNNER_TEMP/measurements/host-derivations.json"
 
       - name: Profile Linux evaluation
         if: inputs.profile

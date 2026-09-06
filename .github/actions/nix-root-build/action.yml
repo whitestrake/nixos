@@ -2,6 +2,10 @@ name: "Build Nix root"
 description: "Realise a configuration lane with nix-fast-build and root its outputs."
 
 inputs:
+  retain-cached-tool:
+    description: Experimental refresh policy retaining a working cached NFB closure
+    required: false
+    default: "false"
   builds-json:
     description: "Optional compact JSON array of expected build records."
     required: false
@@ -31,6 +35,7 @@ runs:
     - name: Build and root Nix configurations
       shell: bash
       env:
+        GHCI_RETAIN_CACHED_TOOL: ${{ inputs.retain-cached-tool }}
         GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
         GHCI_PACKAGE_REPORT: ${{ inputs.package-report }}
@@ -254,7 +259,10 @@ runs:
           fi
         done <<< "$record_lines"
 
-        nix_fast_build_paths="$(
+        if [ "$GHCI_RETAIN_CACHED_TOOL" = true ] && [ "${nix_fast_build[0]}" = "$cached_nix_fast_build" ]; then
+          nix_fast_build_paths="${cached_nix_fast_build%/bin/nix-fast-build}"
+        else
+          nix_fast_build_paths="$(
           nix build \
             --accept-flake-config \
             --option builders '' \
@@ -262,7 +270,8 @@ runs:
             --print-out-paths \
             --no-link \
             ".#packages.${GHCI_LANE_SYSTEM}.nix-fast-build"
-        )"
+          )"
+        fi
         nix_fast_build_path="${nix_fast_build_paths##*$'\n'}"
         nix_fast_build_bin="$nix_fast_build_path/bin/nix-fast-build"
         if [ ! -x "$nix_fast_build_bin" ]; then
