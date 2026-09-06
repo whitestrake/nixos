@@ -38,21 +38,21 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
-  BASE_RELEASE_ID: '383622742'
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  BASE_RELEASE_ID: '383657769'
   # Release tags use the frozen master snapshot; the manifest records the harness commit.
   RELEASE_TARGET_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
-  BASE_MANIFEST_SHA: 8406fdfb37a9c2bdfe98195cf1193a02470b1d84d3a1451c78e8248a8fc6d3aa
-  AUTOFSCK_HOT_RELEASE_ID: '383632588'
-  AUTOFSCK_HOT_MANIFEST_SHA: c686235f532bd450a1bf7968fcdd42bf4ff191fc43f2a5e9572ed88e0f499a0a
-  PROFILE_RUN_ID: '34040695733'
-  PROFILE_ARTIFACT_ID: '9991707035'
+  BASE_MANIFEST_SHA: e5f8017da554302aea33e3c55ae7b77397a8614be6b295b0917ff0754b2beb26
+  AUTOFSCK_HOT_RELEASE_ID: '0'
+  AUTOFSCK_HOT_MANIFEST_SHA: pending-successor-hot-pack
+  PROFILE_RUN_ID: '34047556566'
+  PROFILE_ARTIFACT_ID: '9993695721'
   PROFILE_ARTIFACT_NAME: darwin-release-reader-1-lazy
-  PROFILE_ARTIFACT_DIGEST: sha256:2834d860dfe24f976e5a17c1ea6cfd98632e55c1fdb5e1a570098c16cb307fa8
-  PROFILE_HEAD_SHA: 8d44ad4a341fb0188a6e857d0917568cffcff3f4
+  PROFILE_ARTIFACT_DIGEST: sha256:bfaa236580a2fc0aad115d3be40f79a636482474a0fe84fbf2fccb9795a38606
+  PROFILE_HEAD_SHA: 6b21502040885861f412d36ccfde8ebe84015819
   CHANGED_DARWIN_NIXPKGS_REV: f6107e546a5012172d93e79f1f7950da02ad798f
   CHANGED_DARWIN_NIXPKGS_STORE_PATH: /nix/store/0vbncddzzi5lciw4zvcrw21gwdgjpk1y-source
-  EXPECTED_MATCHED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+  EXPECTED_MATCHED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8"}]'
 
 jobs:
   validate:
@@ -143,7 +143,7 @@ jobs:
         with:
           path: .harness
           persist-credentials: false
-      - name: Pin the E40 profile artefact
+      - name: Pin the generation profile artefact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -151,11 +151,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
           test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROFILE_RUN_ID/artifacts" > "$RUNNER_TEMP/profile-artifacts.json"
-          jq -e --argjson id "$PROFILE_ARTIFACT_ID" --arg name "$PROFILE_ARTIFACT_NAME" \
+          jq -e --argjson id "$PROFILE_ARTIFACT_ID" --argjson run "$PROFILE_RUN_ID" --arg name "$PROFILE_ARTIFACT_NAME" \
             --arg digest "$PROFILE_ARTIFACT_DIGEST" --arg head "$PROFILE_HEAD_SHA" '
               [.artifacts[] | select(.id == $id)] | length == 1
               and .[0].name == $name and .[0].digest == $digest and .[0].expired == false
-              and .[0].workflow_run.id == 34040695733 and .[0].workflow_run.head_sha == $head
+              and .[0].workflow_run.id == $run and .[0].workflow_run.head_sha == $head
             ' "$RUNNER_TEMP/profile-artifacts.json"
           mkdir -p "$RUNNER_TEMP/hotpack/evidence"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -183,7 +183,7 @@ jobs:
             and (.imageSha256 | test("^[0-9a-f]{64}$"))
             and (.responseBytes == .imageBytes) and (.uniqueResponseBytes == .imageBytes)
           ' "$RUNNER_TEMP/hotpack/evidence/eager.json"
-      - name: Pack the E40 demand-read working set
+      - name: Pack the generation demand-read working set
         run: |
           set -euo pipefail
           python3 .harness/.github/scripts/darwin-release-image.py pack-hot \
