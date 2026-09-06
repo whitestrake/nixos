@@ -1,0 +1,468 @@
+name: Darwin Release-backed Image Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths:
+      - .github/workflows/darwin-release-playground.yml
+  workflow_dispatch:
+    inputs:
+      reader_pairs:
+        description: Number of sequential control/eager/lazy reader sets
+        type: choice
+        options: ['1', '3']
+        default: '1'
+      source_release:
+        description: Existing immutable release ID; requires source_manifest_sha
+        type: string
+        default: ''
+      source_manifest_sha:
+        description: Trusted SHA-256 of the existing release manifest
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: darwin-release-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
+  SOURCE_CACHE_ID: '7381391064'
+  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
+  SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
+  SOURCE_CACHE_SIZE: '2051447771'
+  SOURCE_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      reuse: ${{ steps.inputs.outputs.reuse }}
+      release-id: ${{ steps.inputs.outputs.release-id }}
+      manifest-sha: ${{ steps.inputs.outputs.manifest-sha }}
+    steps:
+      - name: Validate optional source generation
+        id: inputs
+        env:
+          SOURCE_RELEASE: ${{ inputs.source_release }}
+          SOURCE_MANIFEST_SHA: ${{ inputs.source_manifest_sha }}
+        run: |
+          set -euo pipefail
+          {
+            if [ -z "$SOURCE_RELEASE" ] && [ -z "$SOURCE_MANIFEST_SHA" ]; then
+              echo 'reuse=false'
+            else
+              [[ "$SOURCE_RELEASE" =~ ^[1-9][0-9]*$ ]]
+              [[ "$SOURCE_MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]]
+              echo 'reuse=true'
+              echo "release-id=$SOURCE_RELEASE"
+              echo "manifest-sha=$SOURCE_MANIFEST_SHA"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+  produce:
+    needs: validate
+    if: needs.validate.outputs.reuse == 'false'
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      release-id: ${{ steps.publish.outputs.release-id }}
+      manifest-sha: ${{ steps.publish.outputs.manifest-sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Pin source cache identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" --key "$SOURCE_CACHE_KEY" \
+            --limit 10 --json id,key,sizeInBytes,version > "$RUNNER_TEMP/source-cache.json"
+          jq -e --arg key "$SOURCE_CACHE_KEY" --arg id "$SOURCE_CACHE_ID" \
+            --arg size "$SOURCE_CACHE_SIZE" --arg version "$SOURCE_CACHE_VERSION" '
+              length == 1 and .[0].key == $key and (.[0].id | tostring) == $id
+              and (.[0].sizeInBytes | tostring) == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/source-cache.json"
+          mkdir -p "$RUNNER_TEMP/darwin-lifecycle/compacted" "$RUNNER_TEMP/darwin-release/evidence"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: source
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.SOURCE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Convert complete sparsebundle to one ULFO image
+        env:
+          CACHE_HIT: ${{ steps.source.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.source.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
+          image="$RUNNER_TEMP/darwin-release/nix-root.dmg"
+          perl -e 'alarm shift; exec @ARGV' 1800 hdiutil convert \
+            "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" \
+            -format ULFO -o "$image" \
+            > "$RUNNER_TEMP/darwin-release/evidence/convert.stdout" \
+            2> "$RUNNER_TEMP/darwin-release/evidence/convert.stderr"
+          test -s "$image"
+          perl -e 'alarm shift; exec @ARGV' 600 hdiutil verify "$image" \
+            > "$RUNNER_TEMP/darwin-release/evidence/verify.stdout" \
+            2> "$RUNNER_TEMP/darwin-release/evidence/verify.stderr"
+          hdiutil imageinfo -plist "$image" > "$RUNNER_TEMP/darwin-release/evidence/image-info.plist"
+          shasum -a 256 "$image" > "$RUNNER_TEMP/darwin-release/evidence/image.sha256"
+          stat -f '%z' "$image" > "$RUNNER_TEMP/darwin-release/evidence/image.bytes"
+      - name: Pack fixed release shards
+        run: |
+          set -euo pipefail
+          python3 .harness/.github/scripts/darwin-release-image.py pack \
+            --image "$RUNNER_TEMP/darwin-release/nix-root.dmg" \
+            --output "$RUNNER_TEMP/darwin-release/assets" \
+            > "$RUNNER_TEMP/darwin-release/evidence/pack.json"
+          jq -e '
+            .schema == "darwin-release-image-v1"
+            and .blockSize == 65536
+            and .shardSize == 536870912
+            and (.shardCount | type == "number" and . > 0)
+            and (.imageBytes | type == "number" and . > 0)
+            and (.imageSha256 | test("^[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/darwin-release/evidence/pack.json"
+      - name: Publish pinned non-latest generation
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="darwin-release-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 .harness/.github/scripts/darwin-release-image.py publish \
+            --repo "$GITHUB_REPOSITORY" --tag "$tag" --target "$GITHUB_SHA" \
+            --directory "$RUNNER_TEMP/darwin-release/assets" \
+            > "$RUNNER_TEMP/darwin-release/evidence/publish.json"
+          jq -e --arg tag "$tag" '
+            (.releaseId | type == "number" and . > 0)
+            and .tag == $tag
+            and (.manifestAssetId | type == "number" and . > 0)
+            and (.manifestSha256 | test("^[0-9a-f]{64}$"))
+            and (.assetCount | type == "number" and . > 1)
+            and (.imageBytes | type == "number" and . > 0)
+            and (.imageSha256 | test("^[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/darwin-release/evidence/publish.json"
+          release_id="$(jq -r .releaseId "$RUNNER_TEMP/darwin-release/evidence/publish.json")"
+          manifest_sha="$(jq -r .manifestSha256 "$RUNNER_TEMP/darwin-release/evidence/publish.json")"
+          echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "manifest-sha=$manifest_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-release-producer
+          path: ${{ runner.temp }}/darwin-release/evidence
+
+  reader:
+    needs: [validate, produce]
+    if: ${{ always() && needs.validate.result == 'success' && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"treatment":"control"},{"pair":1,"treatment":"eager"},{"pair":1,"treatment":"lazy"}]' || '[{"pair":1,"treatment":"control"},{"pair":1,"treatment":"eager"},{"pair":1,"treatment":"lazy"},{"pair":2,"treatment":"lazy"},{"pair":2,"treatment":"control"},{"pair":2,"treatment":"eager"},{"pair":3,"treatment":"eager"},{"pair":3,"treatment":"lazy"},{"pair":3,"treatment":"control"}]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Start complete reader timing and select pinned release
+        id: source
+        env:
+          CREATED_RELEASE: ${{ needs.produce.outputs.release-id }}
+          CREATED_MANIFEST_SHA: ${{ needs.produce.outputs.manifest-sha }}
+          REUSED_RELEASE: ${{ needs.validate.outputs.release-id }}
+          REUSED_MANIFEST_SHA: ${{ needs.validate.outputs.manifest-sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          root="$RUNNER_TEMP/darwin-release-reader"
+          mkdir -p "$root" "$RUNNER_TEMP/darwin-lifecycle/compacted"
+          python3 -c 'import time; print(time.time())' > "$root/setup-start.txt"
+          release_id="${CREATED_RELEASE:-$REUSED_RELEASE}"
+          manifest_sha="${CREATED_MANIFEST_SHA:-$REUSED_MANIFEST_SHA}"
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]]
+          echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "manifest-sha=$manifest_sha" >> "$GITHUB_OUTPUT"
+      - name: Recheck frozen control identity
+        if: matrix.treatment == 'control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" --key "$SOURCE_CACHE_KEY" \
+            --limit 10 --json id,key,sizeInBytes,version > "$RUNNER_TEMP/source-cache.json"
+          jq -e --arg key "$SOURCE_CACHE_KEY" --arg id "$SOURCE_CACHE_ID" \
+            --arg size "$SOURCE_CACHE_SIZE" --arg version "$SOURCE_CACHE_VERSION" '
+              length == 1 and .[0].key == $key and (.[0].id | tostring) == $id
+              and (.[0].sizeInBytes | tostring) == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/source-cache.json"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: control
+        if: matrix.treatment == 'control'
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.SOURCE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Finish exact control restore
+        if: matrix.treatment == 'control'
+        env:
+          CACHE_HIT: ${{ steps.control.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.control.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-end.txt"
+      - name: Eagerly restore exact release image
+        if: matrix.treatment == 'eager'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.source.outputs.release-id }}
+          MANIFEST_SHA: ${{ steps.source.outputs.manifest-sha }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-start.txt"
+          python3 .harness/.github/scripts/darwin-release-image.py eager \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --manifest-sha "$MANIFEST_SHA" \
+            --directory "$RUNNER_TEMP/darwin-release-payload/eager" \
+            > "$RUNNER_TEMP/darwin-release-reader/eager.json"
+          jq -e --argjson release "$RELEASE_ID" --arg sha "$MANIFEST_SHA" '
+            .releaseId == $release and .manifestSha256 == $sha
+            and (.imageBytes | type == "number" and . > 0)
+            and (.imageSha256 | test("^[0-9a-f]{64}$"))
+            and (.requestCount | type == "number" and . > 0)
+            and (.responseBytes | type == "number" and . > 0)
+            and (.uniqueResponseBytes | type == "number" and . > 0)
+          ' "$RUNNER_TEMP/darwin-release-reader/eager.json"
+          image="$(jq -r .image "$RUNNER_TEMP/darwin-release-reader/eager.json")"
+          test "$image" = "$RUNNER_TEMP/darwin-release-payload/eager/image.dmg"
+          test -s "$image"
+          echo "RELEASE_IMAGE=$image" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-end.txt"
+      - name: Start trusted lazy release reader
+        if: matrix.treatment == 'lazy'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.source.outputs.release-id }}
+          MANIFEST_SHA: ${{ steps.source.outputs.manifest-sha }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-release-reader/lazy"
+          mkdir -p "$root"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-start.txt"
+          python3 .harness/.github/scripts/darwin-release-image.py serve \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --manifest-sha "$MANIFEST_SHA" \
+            --directory "$RUNNER_TEMP/darwin-release-payload/lazy-cache" \
+            --ready "$root/url.txt" --log "$root/requests.jsonl" \
+            > "$root/summary.json" 2> "$root/server.stderr" &
+          server_pid=$!
+          echo "RELEASE_SERVER_PID=$server_pid" >> "$GITHUB_ENV"
+          for _ in {1..600}; do
+            [ -s "$root/url.txt" ] && break
+            kill -0 "$server_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          test -s "$root/url.txt"
+          url="$(cat "$root/url.txt")"
+          [[ "$url" =~ ^http://127\.0\.0\.1:[0-9]+/image$ ]]
+          echo "RELEASE_IMAGE_URL=$url" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/restore-end.txt"
+      - name: Start mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/mount-start.txt"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        if: matrix.treatment == 'control'
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Attach eager or lazy release image with local shadow
+        if: matrix.treatment != 'control'
+        run: |
+          set -euo pipefail
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          if [ "${{ matrix.treatment }}" = eager ]; then
+            image_source="$RELEASE_IMAGE"
+          else
+            image_source="$RELEASE_IMAGE_URL"
+          fi
+          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$image_source" \
+            -shadow "$RUNNER_TEMP/darwin-release-payload/image.shadow" \
+            -mountpoint /nix -nobrowse -noautoopen -owners on \
+            > "$RUNNER_TEMP/darwin-release-reader/attach.stdout" \
+            2> "$RUNNER_TEMP/darwin-release-reader/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+      - name: Finish mount timing
+        run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-release-reader/mount-end.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Measure full Darwin output and publication
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-release-reader"
+          python3 -c 'import time; print(time.time())' > "$root/build-start.txt"
+          nfb=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build
+          test -x "$nfb"
+          "$nfb" --help >/dev/null
+          readlink /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build > "$root/nfb-path.txt"
+          python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
+            "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --cachix-cache whitestrake --retries 2 \
+            --result-file "$root/results.json" -j 50 --stream-json-lines
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq "$root/results.json" > "$root/records.json"
+          test "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
+            "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -e 'any(.results[]; .type == "CACHIX" and .success == true)' "$root/results.json"
+          jq -r '.[].storePath' "$root/records.json" | while IFS= read -r path; do
+            nix path-info --store https://whitestrake.cachix.org "$path" >/dev/null
+          done
+          jq -cnS --arg revision "$FIXTURE_SHA" --argjson records "$EXPECTED_RECORDS" \
+            '{revision:$revision,records:($records | map({attr,storePath}))}' > "$root/darwin-proof.json"
+          proof_path="$(nix store add --mode flat --name darwin-release-proof.json "$root/darwin-proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          echo "$proof_path" > "$root/proof-path.txt"
+          python3 -c 'import time; print(time.time())' > "$root/build-end.txt"
+          python3 -c 'import time; print(time.time())' > "$root/completion-end.txt"
+      - name: Detach release image and stop lazy reader
+        if: always() && matrix.treatment != 'control'
+        env:
+          RELEASE_ID: ${{ steps.source.outputs.release-id }}
+          MANIFEST_SHA: ${{ steps.source.outputs.manifest-sha }}
+        run: |
+          set -euo pipefail
+          if mount | grep -Fq ' on /nix '; then
+            perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix
+          fi
+          if [ "${{ matrix.treatment }}" = lazy ]; then
+            test -n "${RELEASE_SERVER_PID:-}"
+            kill -TERM "$RELEASE_SERVER_PID" 2>/dev/null
+            for _ in {1..100}; do
+              kill -0 "$RELEASE_SERVER_PID" 2>/dev/null || break
+              sleep 0.1
+            done
+            if kill -0 "$RELEASE_SERVER_PID" 2>/dev/null; then exit 1; fi
+            jq -e --argjson release "$RELEASE_ID" --arg sha "$MANIFEST_SHA" '
+              .releaseId == $release and .manifestSha256 == $sha
+              and (.imageBytes | type == "number" and . > 0)
+              and (.imageSha256 | test("^[0-9a-f]{64}$"))
+              and (.requestCount | type == "number" and . > 0)
+              and (.responseBytes | type == "number" and . > 0)
+              and (.uniqueResponseBytes | type == "number" and . > 0)
+              and (.interfaceBytes | type == "number" and . > 0)
+              and (.interfaceRequests | type == "number" and . > 0)
+              and (.interfaceRangeRequests | type == "number" and . > 0)
+            ' "$RUNNER_TEMP/darwin-release-reader/lazy/summary.json"
+          fi
+      - name: Record reader environment
+        if: always()
+        env:
+          RELEASE_ID: ${{ steps.source.outputs.release-id }}
+          MANIFEST_SHA: ${{ steps.source.outputs.manifest-sha }}
+        run: |
+          root="$RUNNER_TEMP/darwin-release-reader"
+          jq -n --arg pair "${{ matrix.pair }}" --arg treatment "${{ matrix.treatment }}" \
+            --arg release "$RELEASE_ID" --arg manifestSha "$MANIFEST_SHA" \
+            --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            '{pair:$pair,treatment:$treatment,releaseId:$release,manifestSha256:$manifestSha,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:($treatment != "control"),timingBoundary:"setup start through output and Cachix proof publication"}' \
+            > "$root/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-release-reader-${{ matrix.pair }}-${{ matrix.treatment }}
+          path: ${{ runner.temp }}/darwin-release-reader
+
+  compare:
+    needs: reader
+    if: always() && needs.reader.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: darwin-release-reader-*
+          path: ${{ runner.temp }}/readers
+      - name: Verify all arms produced the same published output
+        env:
+          PAIRS: ${{ github.event_name == 'push' && '1' || inputs.reader_pairs }}
+        run: |
+          set -euo pipefail
+          for pair in $(seq 1 "$PAIRS"); do
+            control="$RUNNER_TEMP/readers/darwin-release-reader-$pair-control"
+            canonical="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$control/records.json")"
+            proof="$(cat "$control/proof-path.txt")"
+            for treatment in eager lazy; do
+              reader="$RUNNER_TEMP/readers/darwin-release-reader-$pair-$treatment"
+              test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$reader/records.json")" = "$canonical"
+              test "$(cat "$reader/proof-path.txt")" = "$proof"
+            done
+          done
+          jq -n --argjson pairs "$PAIRS" '{matching:true,pairs:$pairs,treatments:["control","eager","lazy"]}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo
+            echo '| Pair | Reader start (Unix seconds) | Treatment |'
+            echo '| ---: | ---: | :--- |'
+            for start in "$RUNNER_TEMP"/readers/darwin-release-reader-*/setup-start.txt; do
+              reader="$(basename "$(dirname "$start")")"
+              pair="${reader#darwin-release-reader-}"
+              treatment="${pair#*-}"
+              pair="${pair%%-*}"
+              printf '%s\t| %s | %s | %s |\n' "$(cat "$start")" "$pair" "$(cat "$start")" "$treatment"
+            done | sort -n | cut -f2-
+          } >> "$GITHUB_STEP_SUMMARY"
