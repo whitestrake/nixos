@@ -171,9 +171,7 @@ jobs:
           date +%s.%N > "$RUNNER_TEMP/measurements/build-end.txt"
           mapfile -t host_derivations < <(find /nix/store -maxdepth 1 -name '*-nixos-system-*.drv' -type f)
           test "${#host_derivations[@]}" -gt 0
-          nix derivation show "${host_derivations[@]}" \
-            | jq 'to_entries | map({drvPath:.key,storePath:.value.outputs.out.path})' \
-            > "$RUNNER_TEMP/measurements/host-derivations.json"
+          nix derivation show "${host_derivations[@]}" > "$RUNNER_TEMP/measurements/host-derivations.json"
 
       - name: Profile Linux evaluation
         if: inputs.profile
