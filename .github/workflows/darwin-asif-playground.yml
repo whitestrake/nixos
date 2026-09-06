@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       full_workload:
-        description: Convert the frozen full APFS image and run the Darwin output
+        description: Convert the frozen image without changing its filesystem and run the Darwin output
         type: boolean
         default: false
 
@@ -35,7 +35,7 @@ jobs:
     outputs:
       supported: ${{ steps.probe.outputs.supported }}
     steps:
-      - name: Convert a bounded APFS fixture to ASIF
+      - name: Convert a bounded case-sensitive HFS+ fixture to ASIF
         id: probe
         run: |
           set -euo pipefail
@@ -43,16 +43,18 @@ jobs:
           source="$root/source.sparseimage"
           candidate="$root/candidate.asif"
           mount="$root/source-mount"
+          source_device=
           mkdir -p "$root/evidence" "$mount"
           bounded() { perl -e 'alarm shift; exec @ARGV' 180 "$@"; }
           cleanup() {
             for path in "$root/source-mount" "$root/candidate-mount"; do
               mount | grep -Fq " on $path " && hdiutil detach -force "$path" >/dev/null || true
             done
+            [ -z "$source_device" ] || hdiutil detach -force "$source_device" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
 
-          bounded hdiutil create -size 256m -type SPARSE -fs APFS \
+          bounded hdiutil create -size 256m -type SPARSE -fs 'Case-sensitive Journaled HFS+' \
             -volname ASIFProbe "$source" \
             > "$root/evidence/create.stdout" 2> "$root/evidence/create.stderr"
           bounded hdiutil attach -mountpoint "$mount" -nobrowse "$source" \
@@ -66,9 +68,20 @@ jobs:
           bounded hdiutil detach "$mount" \
             > "$root/evidence/source-detach.stdout" 2> "$root/evidence/source-detach.stderr"
 
+          bounded hdiutil attach -readonly -nomount -plist "$source" \
+            > "$root/evidence/source-device.plist" 2> "$root/evidence/source-device.stderr"
+          plutil -convert json -o "$root/evidence/source-device.json" "$root/evidence/source-device.plist"
+          source_device="$(jq -r '.["system-entities"][] | select(.["content-hint"] == "GUID_partition_scheme") | .["dev-entry"]' "$root/evidence/source-device.json")"
+          test -b "$source_device"
+          printf '%s\n' "$source_device" > "$root/evidence/source-device.txt"
+
           status=0
-          bounded diskutil image create from --format ASIF --plist "$source" "$candidate" \
+          bounded diskutil image create from --format ASIF --plist "$source_device" "$candidate" \
             > "$root/evidence/convert.plist" 2> "$root/evidence/convert.stderr" || status=$?
+          bounded hdiutil detach "$source_device" \
+            > "$root/evidence/source-device-detach.stdout" \
+            2> "$root/evidence/source-device-detach.stderr"
+          source_device=
           printf '%s\n' "$status" > "$root/evidence/convert.status"
           if [ "$status" -ne 0 ] || [ ! -f "$candidate" ]; then
             echo supported=false >> "$GITHUB_OUTPUT"
@@ -87,6 +100,7 @@ jobs:
           test "$(awk 'NR == 2 {print $1}' "$root/evidence/content.sha256")" = \
             "$(shasum -a 256 "$root/candidate-mount/sentinel" | awk '{print $1}')"
           test "$("$root/candidate-mount/sentinel" sentinel-ok)" = sentinel-ok
+          test "$(diskutil info -plist "$root/candidate-mount" | plutil -extract FilesystemType raw -)" = hfs
           bounded hdiutil detach "$root/candidate-mount" \
             > "$root/evidence/candidate-detach.stdout" 2> "$root/evidence/candidate-detach.stderr"
           bounded aa archive -enable-holes -i "$candidate" -o "$root/candidate.aar"
@@ -94,7 +108,7 @@ jobs:
             --argjson imageAllocatedBytes "$(( $(du -k "$candidate" | awk '{print $1}') * 1024 ))" \
             --argjson archiveLogicalBytes "$(stat -f '%z' "$root/candidate.aar")" \
             --argjson archiveAllocatedBytes "$(( $(du -k "$root/candidate.aar" | awk '{print $1}') * 1024 ))" \
-            '{supported:true,filesystem:"APFS",sourceFormat:"UDSP",candidateFormat:"ASIF",imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,archiveLogicalBytes:$archiveLogicalBytes,archiveAllocatedBytes:$archiveAllocatedBytes,archive:"Apple Archive lzfse with hole detection"}' \
+            '{supported:true,filesystem:"case-sensitive HFS+",sourceFormat:"UDSP",candidateFormat:"ASIF",conversionSource:"attached whole block device",imageLogicalBytes:$imageLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,archiveLogicalBytes:$archiveLogicalBytes,archiveAllocatedBytes:$archiveAllocatedBytes,archive:"Apple Archive lzfse with hole detection"}' \
             > "$root/evidence/result.json"
 
       - name: Report capability gate
@@ -196,7 +210,7 @@ jobs:
           path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
           key: ${{ env.SOURCE_CACHE_KEY }}
           fail-on-cache-miss: true
-      - name: Require APFS before changing only the container
+      - name: Convert the attached whole device without changing its filesystem
         id: source
         env:
           CACHE_HIT: ${{ steps.frozen.outputs.cache-hit }}
@@ -207,8 +221,16 @@ jobs:
           test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
           source="$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
           mount="$RUNNER_TEMP/full/source-mount"
+          candidate_mount="$RUNNER_TEMP/full/candidate-mount"
+          source_device=
           mkdir -p "$mount"
-          trap 'mount | grep -Fq " on $mount " && hdiutil detach -force "$mount" >/dev/null || true' EXIT
+          cleanup() {
+            for path in "$mount" "$candidate_mount"; do
+              mount | grep -Fq " on $path " && hdiutil detach -force "$path" >/dev/null || true
+            done
+            [ -z "$source_device" ] || hdiutil detach -force "$source_device" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
           perl -e 'alarm shift; exec @ARGV' 180 hdiutil attach -readonly -nobrowse \
             -mountpoint "$mount" "$source" \
             > "$RUNNER_TEMP/full/evidence/source-attach.stdout" \
@@ -216,21 +238,45 @@ jobs:
           filesystem="$(diskutil info -plist "$mount" | plutil -extract FilesystemType raw -)"
           printf '%s\n' "$filesystem" > "$RUNNER_TEMP/full/evidence/source-filesystem.txt"
           perl -e 'alarm shift; exec @ARGV' 180 hdiutil detach "$mount"
-          normalised_filesystem="$(printf '%s' "$filesystem" | tr '[:upper:]' '[:lower:]')"
-          if [ "$normalised_filesystem" != apfs ]; then
+
+          perl -e 'alarm shift; exec @ARGV' 180 hdiutil attach -readonly -nomount -plist "$source" \
+            > "$RUNNER_TEMP/full/evidence/source-device.plist" \
+            2> "$RUNNER_TEMP/full/evidence/source-device.stderr"
+          plutil -convert json -o "$RUNNER_TEMP/full/evidence/source-device.json" \
+            "$RUNNER_TEMP/full/evidence/source-device.plist"
+          source_device="$(jq -r '.["system-entities"][] | select(.["content-hint"] == "GUID_partition_scheme") | .["dev-entry"]' "$RUNNER_TEMP/full/evidence/source-device.json")"
+          test -b "$source_device"
+          printf '%s\n' "$source_device" > "$RUNNER_TEMP/full/evidence/source-device.txt"
+
+          candidate="$RUNNER_TEMP/full/nix-root.asif"
+          conversion_status=0
+          perl -e 'alarm shift; exec @ARGV' 900 diskutil image create from --format ASIF \
+            --plist "$source_device" "$candidate" \
+            > "$RUNNER_TEMP/full/evidence/convert.plist" \
+            2> "$RUNNER_TEMP/full/evidence/convert.stderr" || conversion_status=$?
+          printf '%s\n' "$conversion_status" > "$RUNNER_TEMP/full/evidence/convert.status"
+          perl -e 'alarm shift; exec @ARGV' 180 hdiutil detach "$source_device" \
+            > "$RUNNER_TEMP/full/evidence/source-device-detach.stdout" \
+            2> "$RUNNER_TEMP/full/evidence/source-device-detach.stderr"
+          source_device=
+          if [ "$conversion_status" -ne 0 ] || [ ! -f "$candidate" ]; then
             echo ready=false >> "$GITHUB_OUTPUT"
-            jq -n --arg filesystem "$filesystem" \
-              '{ready:false,reason:"frozen source is not APFS; refusing simultaneous filesystem and container change",sourceFilesystem:$filesystem}' \
+            jq -n --arg filesystem "$filesystem" --argjson status "$conversion_status" \
+              '{ready:false,reason:"whole-device ASIF conversion failed",sourceFilesystem:$filesystem,conversionStatus:$status}' \
               > "$RUNNER_TEMP/full/evidence/result.json"
             exit 0
           fi
 
-          echo ready=true >> "$GITHUB_OUTPUT"
-          candidate="$RUNNER_TEMP/full/nix-root.asif"
-          perl -e 'alarm shift; exec @ARGV' 900 diskutil image create from --format ASIF \
-            --plist "$source" "$candidate" \
-            > "$RUNNER_TEMP/full/evidence/convert.plist" \
-            2> "$RUNNER_TEMP/full/evidence/convert.stderr"
+          mkdir "$candidate_mount"
+          perl -e 'alarm shift; exec @ARGV' 180 diskutil image attach --readOnly --nobrowse \
+            --mountPoint "$candidate_mount" "$candidate" \
+            > "$RUNNER_TEMP/full/evidence/candidate-attach.stdout" \
+            2> "$RUNNER_TEMP/full/evidence/candidate-attach.stderr"
+          candidate_filesystem="$(diskutil info -plist "$candidate_mount" | plutil -extract FilesystemType raw -)"
+          printf '%s\n' "$candidate_filesystem" > "$RUNNER_TEMP/full/evidence/candidate-filesystem.txt"
+          test "$candidate_filesystem" = "$filesystem"
+          test -L "$candidate_mount/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build"
+          perl -e 'alarm shift; exec @ARGV' 180 hdiutil detach "$candidate_mount"
           perl -e 'alarm shift; exec @ARGV' 900 aa archive -enable-holes \
             -i "$candidate" -o "$RUNNER_TEMP/full/nix-root.aar"
           source_allocated="$(( $(du -sk "$source" | awk '{print $1}') * 1024 ))"
@@ -241,8 +287,10 @@ jobs:
             --argjson imageLogicalBytes "$(stat -f '%z' "$candidate")" \
             --argjson archiveAllocatedBytes "$(( $(du -k "$RUNNER_TEMP/full/nix-root.aar" | awk '{print $1}') * 1024 ))" \
             --argjson archiveLogicalBytes "$(stat -f '%z' "$RUNNER_TEMP/full/nix-root.aar")" \
-            '{ready:true,sourceFilesystem:"APFS",sourceContainer:"UDSB",candidateContainer:"ASIF",sourceAllocatedBytes:$sourceAllocatedBytes,sourceLogicalBytes:$sourceLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,imageLogicalBytes:$imageLogicalBytes,archiveAllocatedBytes:$archiveAllocatedBytes,archiveLogicalBytes:$archiveLogicalBytes}' \
+            --arg sourceFilesystem "$filesystem" \
+            '{ready:true,sourceFilesystem:$sourceFilesystem,candidateFilesystem:$sourceFilesystem,sourceContainer:"UDSB",candidateContainer:"ASIF",conversionSource:"attached whole block device",sourceAllocatedBytes:$sourceAllocatedBytes,sourceLogicalBytes:$sourceLogicalBytes,imageAllocatedBytes:$imageAllocatedBytes,imageLogicalBytes:$imageLogicalBytes,archiveAllocatedBytes:$archiveAllocatedBytes,archiveLogicalBytes:$archiveLogicalBytes}' \
             > "$RUNNER_TEMP/full/evidence/result.json"
+          echo ready=true >> "$GITHUB_OUTPUT"
       - name: Report full-image gate
         if: always()
         run: cat "$RUNNER_TEMP/full/evidence/result.json" >> "$GITHUB_STEP_SUMMARY"
