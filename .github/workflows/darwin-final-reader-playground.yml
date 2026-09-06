@@ -1,0 +1,655 @@
+name: Darwin Final Reader Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/darwin-final-reader-playground.yml]
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Number of serial three-arm rounds
+        type: choice
+        options: ['1', '3']
+        default: '1'
+      hot_release_id:
+        description: Immutable compatible successor hot-pack release ID
+        type: string
+        required: true
+      hot_manifest_sha:
+        description: Trusted SHA-256 of the successor hot-pack manifest
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: darwin-final-reader-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  SOURCE_CACHE_ID: '7381028169'
+  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34025982604-14a8d7657900a917560ddbe77577c0d5a1b77638-compacted
+  SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
+  SOURCE_CACHE_SIZE: '1928801888'
+  SOURCE_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
+  ASIF_CACHE_ID: '7388442461'
+  ASIF_CACHE_KEY: darwin-asif-fresh-export-v1-34047412458-14a8d7657900a917560ddbe77577c0d5a1b77638
+  ASIF_CACHE_REF: refs/heads/feat/ci-optimisation
+  ASIF_CACHE_SIZE: '1858238814'
+  ASIF_CACHE_VERSION: 29b710e96b03d461d358fed653724914d414d2f7844b236c914e0e22db6182d5
+  ASIF_DEVICE_CAPACITY: '68719476736'
+  ASIF_FILESYSTEM_CAPACITY: '68375502848'
+  ASIF_ROOTS_COUNT: '23'
+  ASIF_ROOTS_SHA256: 26540c5ec3392c6c79c32a85e7f4f78516823c3e518004386ec06d4d262ab4c2
+  E47_RUN_ID: '34047412458'
+  E47_HEAD_SHA: 738e20cee1423292029d644375b2cc5d00e4ca55
+  E47_ARTIFACT_ID: '9993617987'
+  E47_ARTIFACT_DIGEST: sha256:34ea4a12e9aee118b215fec473cf605f33ea699955a6e8758c7864c555683306
+  RELEASE_ACCEPTANCE_RUN_ID: '34047556566'
+  RELEASE_ACCEPTANCE_HEAD_SHA: 6b21502040885861f412d36ccfde8ebe84015819
+  RELEASE_ID: '383657769'
+  RELEASE_TAG: darwin-release-v1-34047556566-1
+  RELEASE_TARGET_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
+  RELEASE_MANIFEST_ASSET_ID: '547449792'
+  RELEASE_MANIFEST_SHA: e5f8017da554302aea33e3c55ae7b77397a8614be6b295b0917ff0754b2beb26
+  RELEASE_IMAGE_BYTES: '1964070817'
+  RELEASE_IMAGE_SHA: f073ff161fd42f6d38da6a76cad0ebb58bd853f495c76ee96bbac69b8a481572
+  EXPECTED_NFB: /nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8"}]'
+
+jobs:
+  validate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.inputs.outputs.matrix }}
+      rounds: ${{ steps.inputs.outputs.rounds }}
+      hot-release-id: ${{ steps.inputs.outputs.hot-release-id }}
+      hot-manifest-sha: ${{ steps.inputs.outputs.hot-manifest-sha }}
+    steps:
+      - name: Validate immutable inputs and corrected E47 evidence
+        id: inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROUNDS: ${{ inputs.rounds }}
+          HOT_RELEASE_ID: ${{ inputs.hot_release_id }}
+          HOT_MANIFEST_SHA: ${{ inputs.hot_manifest_sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "$SOURCE_CACHE_REF"
+          [[ "$ROUNDS" = 1 || "$ROUNDS" = 3 ]]
+          [[ "$HOT_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$HOT_MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]]
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$E47_RUN_ID" > "$RUNNER_TEMP/e47-run.json"
+          jq -e --argjson id "$E47_RUN_ID" --arg head "$E47_HEAD_SHA" '
+            .id == $id and .head_sha == $head and .status == "completed" and .conclusion == "success"
+          ' "$RUNNER_TEMP/e47-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ACCEPTANCE_RUN_ID" \
+            > "$RUNNER_TEMP/release-acceptance-run.json"
+          jq -e --argjson id "$RELEASE_ACCEPTANCE_RUN_ID" --arg head "$RELEASE_ACCEPTANCE_HEAD_SHA" '
+            .id == $id and .head_sha == $head and .status == "completed" and .conclusion == "success"
+          ' "$RUNNER_TEMP/release-acceptance-run.json"
+
+          evidence="$RUNNER_TEMP/e47-producer"
+          mkdir -p "$evidence"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$E47_ARTIFACT_ID" > "$RUNNER_TEMP/e47-artifact.json"
+          jq -e --argjson id "$E47_ARTIFACT_ID" --argjson run "$E47_RUN_ID" \
+            --arg digest "$E47_ARTIFACT_DIGEST" --arg head "$E47_HEAD_SHA" '
+              .id == $id and .name == "darwin-asif-fresh-export-producer"
+              and .expired == false and .digest == $digest
+              and .workflow_run.id == $run and .workflow_run.head_sha == $head
+            ' "$RUNNER_TEMP/e47-artifact.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$E47_ARTIFACT_ID/zip" > "$RUNNER_TEMP/e47-producer.zip"
+          test "$(sha256sum "$RUNNER_TEMP/e47-producer.zip" | awk '{print $1}')" = \
+            "${E47_ARTIFACT_DIGEST#sha256:}"
+          unzip -q "$RUNNER_TEMP/e47-producer.zip" -d "$evidence"
+          jq -e --argjson archive "$ASIF_CACHE_SIZE" --argjson device "$ASIF_DEVICE_CAPACITY" \
+            --argjson filesystem "$ASIF_FILESYSTEM_CAPACITY" '
+              .supported and .freshExport and .persistentJournal and .sourceCacheUntouched
+              and .cacheSaved and .sourceMaintenanceFormat == "UDSB" and .readerFormat == "ASIF"
+              and .storeOptimise == "skipped" and .exportedArchiveBytes == $archive
+              and .deviceCapacityBytes == $device and .filesystemCapacityBytes == $filesystem
+              and .rootCount == 23
+            ' "$evidence/result.json"
+          jq -se 'length == 2 and all(.[];
+            (.signature == 18475 or .signature == 18520) and .journaled == true)' \
+            "$evidence/source-journal-header.json" "$evidence/candidate-journal-header.json"
+          diff -u "$evidence/source-journal-header.json" "$evidence/candidate-journal-header.json"
+          diff -u "$evidence/source-root-targets.tsv" "$evidence/candidate-root-targets.tsv"
+          test "$(sha256sum "$evidence/candidate-root-targets.tsv" | awk '{print $1}')" = \
+            "$ASIF_ROOTS_SHA256"
+          jq -e --argjson id "$ASIF_CACHE_ID" --arg key "$ASIF_CACHE_KEY" \
+            --argjson size "$ASIF_CACHE_SIZE" --arg version "$ASIF_CACHE_VERSION" '
+              length == 1 and .[0].id == $id and .[0].key == $key
+              and .[0].sizeInBytes == $size and .[0].version == $version
+            ' "$evidence/exported-cache.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > "$RUNNER_TEMP/successor-release.json"
+          jq -e --argjson id "$RELEASE_ID" --argjson manifestId "$RELEASE_MANIFEST_ASSET_ID" \
+            --arg digest "sha256:$RELEASE_MANIFEST_SHA" --arg tag "$RELEASE_TAG" \
+            --arg target "$RELEASE_TARGET_SHA" '
+              .id == $id and .tag_name == $tag and .target_commitish == $target and .draft == false
+              and ([.assets[] | select(.id == $manifestId and .name == "manifest.json"
+                and .digest == $digest)] | length == 1)
+            ' "$RUNNER_TEMP/successor-release.json"
+
+          definitions='["udsb","asif","release-hot"]'
+          matrix="$(jq -cn --argjson rounds "$ROUNDS" --argjson definitions "$definitions" '
+            [range(1; $rounds + 1) as $pair
+             | (($pair - 1) % 3) as $offset
+             | ($definitions[$offset:] + $definitions[:$offset])[]
+             | {pair:$pair, arm:.}]
+          ')"
+          {
+            echo "matrix=$matrix"
+            echo "rounds=$ROUNDS"
+            echo "hot-release-id=$HOT_RELEASE_ID"
+            echo "hot-manifest-sha=$HOT_MANIFEST_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  filesystem-gate:
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Authenticate, hash, and fsck the full successor image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SHA: ${{ env.RELEASE_MANIFEST_SHA }}
+          IMAGE_SHA: ${{ env.RELEASE_IMAGE_SHA }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader-fsck"
+          mkdir -p "$root/evidence"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 .github/scripts/darwin-release-image.py eager \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --manifest-sha "$MANIFEST_SHA" --directory "$root/full" \
+            > "$root/evidence/eager.json"
+          jq -e --argjson release "$RELEASE_ID" --arg manifest "$MANIFEST_SHA" --arg image "$IMAGE_SHA" \
+            --argjson bytes "$RELEASE_IMAGE_BYTES" '
+            .releaseId == $release and .manifestSha256 == $manifest and .imageSha256 == $image
+            and .imageBytes == $bytes and .responseBytes == .imageBytes
+            and .uniqueResponseBytes == .imageBytes
+          ' "$root/evidence/eager.json"
+          image="$root/full/image.dmg"
+          before_sha="$(shasum -a 256 "$image" | awk '{print $1}')"
+          test "$before_sha" = "$IMAGE_SHA"
+
+          whole_device=
+          cleanup() {
+            if [ -n "$whole_device" ]; then
+              perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach "$whole_device" \
+                >> "$root/evidence/detach.stdout" 2>> "$root/evidence/detach.stderr" || true
+            fi
+          }
+          trap cleanup EXIT
+          perl -e 'alarm shift; exec @ARGV' 300 sudo hdiutil attach -readonly -nomount -noautofsck \
+            -plist "$image" > "$root/evidence/attach.plist" 2> "$root/evidence/attach.stderr"
+          plutil -convert json -o "$root/evidence/attach.json" "$root/evidence/attach.plist"
+          whole_device="$(jq -er '
+            [."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | ."dev-entry"]
+            | select(length == 1) | .[0]
+          ' "$root/evidence/attach.json")"
+          hfs_device="$(jq -er '
+            [."system-entities"[] | select(."content-hint" == "Apple_HFS") | ."dev-entry"]
+            | select(length == 1) | .[0]
+          ' "$root/evidence/attach.json")"
+          [[ "$whole_device" =~ ^/dev/disk[0-9]+$ ]]
+          [[ "$hfs_device" =~ ^/dev/disk[0-9]+s[0-9]+$ ]]
+          fsck_status=0
+          perl -e 'alarm shift; exec @ARGV' 900 sudo /sbin/fsck_hfs -fn "$hfs_device" \
+            > "$root/evidence/fsck.stdout" 2> "$root/evidence/fsck.stderr" || fsck_status=$?
+          printf '%s\n' "$fsck_status" > "$root/evidence/fsck.status"
+          test "$fsck_status" -eq 0
+          grep -Eiq 'appears to be OK\.?$' "$root/evidence/fsck.stdout"
+          perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach "$whole_device" \
+            > "$root/evidence/detach.stdout" 2> "$root/evidence/detach.stderr"
+          whole_device=
+          after_sha="$(shasum -a 256 "$image" | awk '{print $1}')"
+          test "$after_sha" = "$before_sha"
+          jq -n --arg image "$IMAGE_SHA" --arg before "$before_sha" --arg after "$after_sha" \
+            '{releaseImageSha256:$image,imageSha256Before:$before,imageSha256After:$after,attachPolicy:"readonly-nomount-noautofsck",fsck:"fsck_hfs -fn",fsckStatus:0}' \
+            > "$root/evidence/gate.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-final-reader-filesystem-gate
+          path: ${{ runner.temp }}/darwin-final-reader-fsck/evidence
+
+  reader:
+    needs: [validate, filesystem-gate]
+    if: ${{ always() && needs.validate.result == 'success' && needs.filesystem-gate.result == 'success' }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Start the common setup interval
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader"
+          mkdir -p "$root" "$RUNNER_TEMP/darwin-final-reader-payload" \
+            "$RUNNER_TEMP/darwin-lifecycle/compacted" "$RUNNER_TEMP/darwin-asif-reclaim-cache"
+          test "$(git rev-parse HEAD)" = "$FIXTURE_SHA"
+          test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -c 'import time; print(time.time())' > "$root/setup-start.txt"
+          python3 -c 'import time; print(time.time())' > "$root/restore-start.txt"
+      - name: Recheck the exact old sparsebundle cache
+        if: matrix.arm == 'udsb'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" --key "$SOURCE_CACHE_KEY" \
+            --limit 10 --json id,key,sizeInBytes,version > "$RUNNER_TEMP/darwin-final-reader/cache.json"
+          jq -e --argjson id "$SOURCE_CACHE_ID" --arg key "$SOURCE_CACHE_KEY" \
+            --argjson size "$SOURCE_CACHE_SIZE" --arg version "$SOURCE_CACHE_VERSION" '
+              length == 1 and .[0].id == $id and .[0].key == $key
+              and .[0].sizeInBytes == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/darwin-final-reader/cache.json"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: udsb
+        if: matrix.arm == 'udsb'
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.SOURCE_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Finish the exact sparsebundle restore
+        if: matrix.arm == 'udsb'
+        env:
+          CACHE_HIT: ${{ steps.udsb.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.udsb.outputs.cache-matched-key }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
+          test -d "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - name: Recheck the corrected ASIF cache
+        if: matrix.arm == 'asif'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_ID: ${{ env.ASIF_CACHE_ID }}
+          CACHE_KEY: ${{ env.ASIF_CACHE_KEY }}
+          CACHE_REF: ${{ env.ASIF_CACHE_REF }}
+          CACHE_SIZE: ${{ env.ASIF_CACHE_SIZE }}
+          CACHE_VERSION: ${{ env.ASIF_CACHE_VERSION }}
+        run: |
+          set -euo pipefail
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$CACHE_REF" --key "$CACHE_KEY" \
+            --limit 10 --json id,key,sizeInBytes,version > "$RUNNER_TEMP/darwin-final-reader/cache.json"
+          jq -e --argjson id "$CACHE_ID" --arg key "$CACHE_KEY" \
+            --argjson size "$CACHE_SIZE" --arg version "$CACHE_VERSION" '
+              length == 1 and .[0].id == $id and .[0].key == $key
+              and .[0].sizeInBytes == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/darwin-final-reader/cache.json"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: asif
+        if: matrix.arm == 'asif'
+        with:
+          path: ${{ runner.temp }}/darwin-asif-reclaim-cache/nix-root.asif
+          key: ${{ env.ASIF_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Finish the exact ASIF restore
+        if: matrix.arm == 'asif'
+        env:
+          CACHE_HIT: ${{ steps.asif.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.asif.outputs.cache-matched-key }}
+          CACHE_KEY: ${{ env.ASIF_CACHE_KEY }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "$CACHE_KEY"
+          test -f "$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif"
+      - name: Authenticate and preload the compatible hot pack
+        if: matrix.arm == 'release-hot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_SHA: ${{ env.RELEASE_IMAGE_SHA }}
+          HOT_RELEASE_ID: ${{ needs.validate.outputs.hot-release-id }}
+          HOT_MANIFEST_SHA: ${{ needs.validate.outputs.hot-manifest-sha }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader"
+          payload="$RUNNER_TEMP/darwin-final-reader-payload"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$HOT_RELEASE_ID" > "$root/hot-release.json"
+          jq -e --argjson id "$HOT_RELEASE_ID" '.id == $id and .draft == false and (.assets | length == 2)' \
+            "$root/hot-release.json"
+          manifest_url="$(jq -er --arg digest "sha256:$HOT_MANIFEST_SHA" '
+            [.assets[] | select(.name == "hot-manifest.json" and .digest == $digest)]
+            | select(length == 1) | .[0].browser_download_url
+          ' "$root/hot-release.json")"
+          curl --fail --silent --show-error --location "$manifest_url" --output "$root/hot-manifest.json"
+          test "$(shasum -a 256 "$root/hot-manifest.json" | awk '{print $1}')" = "$HOT_MANIFEST_SHA"
+          jq -e --argjson release "$HOT_RELEASE_ID" --argjson source "$RELEASE_ID" \
+            --arg sourceSha "$RELEASE_MANIFEST_SHA" --arg image "$IMAGE_SHA" '
+              .schema == "darwin-hot-pack-release-v1" and .releaseId == $release
+              and .sourceReleaseId == $source and .sourceManifestSha256 == $sourceSha
+              and .imageSha256 == $image and .blockSize == 65536
+              and (.blockCount | type == "number" and . > 0)
+              and (.payloadBytes | type == "number" and . > 0 and . <= 536870912)
+              and (.hotPackAssetId | type == "number" and . > 0)
+              and (.hotPackBytes | type == "number" and . > 0 and . <= 536870912)
+              and (.hotPackSha256 | test("^[0-9a-f]{64}$"))
+              and (.profileRunId | type == "number" and . > 0)
+              and (.profileArtifactId | type == "number" and . > 0)
+              and (.profileArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.profileHeadSha | test("^[0-9a-f]{40}$"))
+              and (.profileSha256 | test("^[0-9a-f]{64}$"))
+            ' "$root/hot-manifest.json"
+          hot_asset_id="$(jq -r .hotPackAssetId "$root/hot-manifest.json")"
+          hot_url="$(jq -er --argjson id "$hot_asset_id" \
+            --arg sha "$(jq -r .hotPackSha256 "$root/hot-manifest.json")" \
+            --argjson size "$(jq -r .hotPackBytes "$root/hot-manifest.json")" '
+              [.assets[] | select(.id == $id and .name == "hot.bin" and .size == $size
+                and .digest == ("sha256:" + $sha))]
+              | select(length == 1) | .[0].browser_download_url
+            ' "$root/hot-release.json")"
+          curl --fail --silent --show-error --location "$hot_url" --output "$payload/hot.bin"
+          test "$(stat -f '%z' "$payload/hot.bin")" = "$(jq -r .hotPackBytes "$root/hot-manifest.json")"
+          test "$(shasum -a 256 "$payload/hot.bin" | awk '{print $1}')" = \
+            "$(jq -r .hotPackSha256 "$root/hot-manifest.json")"
+      - name: Start the trusted hot release reader
+        if: matrix.arm == 'release-hot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SHA: ${{ env.RELEASE_MANIFEST_SHA }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader/lazy"
+          mkdir -p "$root"
+          python3 .harness/.github/scripts/darwin-release-image.py serve \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --manifest-sha "$MANIFEST_SHA" \
+            --directory "$RUNNER_TEMP/darwin-final-reader-payload/block-cache" \
+            --hot-pack "$RUNNER_TEMP/darwin-final-reader-payload/hot.bin" \
+            --ready "$root/url.txt" --log "$root/requests.jsonl" \
+            > "$root/summary.json" 2> "$root/server.stderr" &
+          server_pid=$!
+          echo "RELEASE_SERVER_PID=$server_pid" >> "$GITHUB_ENV"
+          for _ in {1..600}; do
+            [ -s "$root/url.txt" ] && break
+            kill -0 "$server_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          test -s "$root/url.txt"
+          image_url="$(cat "$root/url.txt")"
+          [[ "$image_url" =~ ^http://127\.0\.0\.1:[0-9]+/image$ ]]
+          echo "RELEASE_IMAGE_URL=$image_url" >> "$GITHUB_ENV"
+      - name: Finish retrieval and start mount timing
+        run: |
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-final-reader/restore-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-final-reader/mount-start.txt"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        if: matrix.arm == 'udsb'
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - name: Mount the corrected ASIF
+        if: matrix.arm == 'asif'
+        run: |
+          set -euo pipefail
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo diskutil image attach --nobrowse \
+            --mountPoint /nix --plist "$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif" \
+            > "$RUNNER_TEMP/darwin-final-reader/attach.plist" \
+            2> "$RUNNER_TEMP/darwin-final-reader/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+      - name: Mount the hot release with default verification
+        if: matrix.arm == 'release-hot'
+        run: |
+          set -euo pipefail
+          sudo touch /etc/synthetic.conf
+          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
+            grep -qx nix /etc/synthetic.conf
+          else
+            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
+          fi
+          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
+            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
+          fi
+          test -d /nix
+          test ! -L /nix
+          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
+            -shadow "$RUNNER_TEMP/darwin-final-reader-payload/image.shadow" \
+            -mountpoint /nix -nobrowse -noautoopen -owners on -noautofsck \
+            > "$RUNNER_TEMP/darwin-final-reader/attach.stdout" \
+            2> "$RUNNER_TEMP/darwin-final-reader/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+      - name: Check the common mounted store identity
+        env:
+          DEVICE_CAPACITY: ${{ env.ASIF_DEVICE_CAPACITY }}
+          FILESYSTEM_CAPACITY: ${{ env.ASIF_FILESYSTEM_CAPACITY }}
+          ROOTS_COUNT: ${{ env.ASIF_ROOTS_COUNT }}
+          ROOTS_SHA256: ${{ env.ASIF_ROOTS_SHA256 }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader"
+          diskutil info -plist /nix > "$root/filesystem.plist"
+          plutil -convert json -o "$root/filesystem.json" "$root/filesystem.plist"
+          whole="$(jq -er .ParentWholeDisk "$root/filesystem.json")"
+          test "$(diskutil info -plist "/dev/$whole" | plutil -extract TotalSize raw -o - -- -)" = "$DEVICE_CAPACITY"
+          test "$(jq -r .FilesystemType "$root/filesystem.json")" = hfs
+          test "$(jq -r .FilesystemName "$root/filesystem.json")" = 'Case-sensitive Journaled HFS+'
+          test "$(jq -r .TotalSize "$root/filesystem.json")" = "$FILESYSTEM_CAPACITY"
+          roots=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          find "$roots" -mindepth 1 -maxdepth 1 -print | sort > "$root/roots.txt"
+          test "$(wc -l < "$root/roots.txt" | tr -d ' ')" = "$ROOTS_COUNT"
+          while IFS= read -r link; do
+            test -L "$link"
+            target="$(readlink "$link")"
+            test -e "$target"
+            printf '%s\t%s\n' "${link##*/}" "$target"
+          done < "$root/roots.txt" > "$root/root-targets.tsv"
+          test "$(shasum -a 256 "$root/root-targets.tsv" | awk '{print $1}')" = "$ROOTS_SHA256"
+          test "$(readlink "$roots/nix-fast-build")" = "$EXPECTED_NFB"
+          test "$(readlink "$roots/andred")" = "$(jq -r '.[0].storePath' <<< "$EXPECTED_RECORDS")"
+          python3 -c 'import time; print(time.time())' > "$root/mount-end.txt"
+          python3 -c 'import time; print(time.time())' > "$root/install-start.txt"
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Run the common read-only output and proof gate
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-final-reader"
+          python3 -c 'import time; print(time.time())' > "$root/install-end.txt"
+          python3 -c 'import time; print(time.time())' > "$root/build-start.txt"
+          nfb=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build
+          test -x "$nfb"
+          "$nfb" --help >/dev/null
+          python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
+            "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
+            --option builders '' --option max-jobs auto --retries 2 \
+            --result-file "$root/results.json" -j 50 --stream-json-lines
+          jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq "$root/results.json" > "$root/records.json"
+          test "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
+            "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -r '.[].storePath' "$root/records.json" | while IFS= read -r store_path; do
+            nix path-info --store https://whitestrake.cachix.org "$store_path" >/dev/null
+          done
+          jq -cnS --arg revision "$FIXTURE_SHA" --slurpfile records "$root/records.json" \
+            '{revision:$revision,records:($records[0] | map({attr,storePath}) | sort_by(.attr))}' \
+            > "$root/darwin-proof.json"
+          shasum -a 256 "$root/darwin-proof.json" | awk '{print $1}' > "$root/proof-sha256.txt"
+          python3 -c 'import time; print(time.time())' > "$root/build-end.txt"
+          python3 -c 'import time; print(time.time())' > "$root/completion-end.txt"
+      - name: Detach the image and stop the reader
+        if: always()
+        env:
+          MANIFEST_SHA: ${{ env.RELEASE_MANIFEST_SHA }}
+          IMAGE_SHA: ${{ env.RELEASE_IMAGE_SHA }}
+        run: |
+          set -euo pipefail
+          if mount | grep -Fq ' on /nix '; then
+            perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach /nix \
+              || perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach -force /nix
+          fi
+          if [ "${{ matrix.arm }}" = release-hot ]; then
+            if [ -n "${RELEASE_SERVER_PID:-}" ]; then
+              kill -TERM "$RELEASE_SERVER_PID" 2>/dev/null
+              for _ in {1..100}; do
+                kill -0 "$RELEASE_SERVER_PID" 2>/dev/null || break
+                sleep 0.1
+              done
+              if kill -0 "$RELEASE_SERVER_PID" 2>/dev/null; then exit 1; fi
+              if [ -f "$RUNNER_TEMP/darwin-final-reader/completion-end.txt" ]; then
+                summary="$RUNNER_TEMP/darwin-final-reader/lazy/summary.json"
+                jq -e --argjson release "$RELEASE_ID" --arg manifest "$MANIFEST_SHA" --arg image "$IMAGE_SHA" \
+                  --arg hot "$(jq -r .hotPackSha256 "$RUNNER_TEMP/darwin-final-reader/hot-manifest.json")" \
+                  --argjson blocks "$(jq -r .blockCount "$RUNNER_TEMP/darwin-final-reader/hot-manifest.json")" \
+                  --argjson bytes "$(jq -r .payloadBytes "$RUNNER_TEMP/darwin-final-reader/hot-manifest.json")" '
+                    .releaseId == $release and .manifestSha256 == $manifest and .imageSha256 == $image
+                    and .hotPackSha256 == $hot and .hotPackBlocks == $blocks and .hotPackBytes == $bytes
+                    and (.requestCount | type == "number" and . >= 0)
+                    and (.responseBytes | type == "number" and . >= 0)
+                    and (.uniqueResponseBytes | type == "number" and . >= 0)
+                    and (.interfaceBytes | type == "number" and . > 0)
+                    and (.interfaceRequests | type == "number" and . > 0)
+                    and (.interfaceRangeRequests | type == "number" and . > 0)
+                  ' "$summary"
+              fi
+            elif [ -f "$RUNNER_TEMP/darwin-final-reader/completion-end.txt" ]; then
+              exit 1
+            fi
+          fi
+      - name: Record timing and environment
+        if: always()
+        env:
+          MANIFEST_SHA: ${{ env.RELEASE_MANIFEST_SHA }}
+          HOT_RELEASE_ID: ${{ needs.validate.outputs.hot-release-id }}
+          HOT_MANIFEST_SHA: ${{ needs.validate.outputs.hot-manifest-sha }}
+        run: |
+          root="$RUNNER_TEMP/darwin-final-reader"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          if test -f "$root/completion-end.txt"; then
+            jq -n \
+              --argjson completeSeconds "$(duration "$root/setup-start.txt" "$root/completion-end.txt")" \
+              --argjson restoreSeconds "$(duration "$root/restore-start.txt" "$root/restore-end.txt")" \
+              --argjson mountSeconds "$(duration "$root/mount-start.txt" "$root/mount-end.txt")" \
+              --argjson installSeconds "$(duration "$root/install-start.txt" "$root/install-end.txt")" \
+              --argjson buildProofSeconds "$(duration "$root/build-start.txt" "$root/build-end.txt")" \
+              '{completeSeconds:$completeSeconds,restoreSeconds:$restoreSeconds,mountSeconds:$mountSeconds,installSeconds:$installSeconds,buildProofSeconds:$buildProofSeconds}' \
+              > "$root/stage-costs.json"
+          fi
+          jq -n --argjson pair "${{ matrix.pair }}" --arg arm "${{ matrix.arm }}" \
+            --arg fixture "$FIXTURE_SHA" --arg harness "$GITHUB_SHA" \
+            --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            --arg release "$RELEASE_ID" --arg manifest "$MANIFEST_SHA" \
+            --arg hotRelease "$HOT_RELEASE_ID" --arg hotManifest "$HOT_MANIFEST_SHA" \
+            --arg autofsck "${{ matrix.arm == 'release-hot' && 'disabled-after-fsck-gate' || 'default' }}" '
+              {pair:$pair,arm:$arm,fixture:$fixture,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,
+               expectedNixFastBuild:env.EXPECTED_NFB,verification:"default",autofsckPolicy:$autofsck,
+               releaseId:(if $arm == "release-hot" then $release else null end),
+               releaseManifestSha256:(if $arm == "release-hot" then $manifest else null end),
+               hotReleaseId:(if $arm == "release-hot" then $hotRelease else null end),
+               hotManifestSha256:(if $arm == "release-hot" then $hotManifest else null end),
+               timingBoundary:"before cache or manifest retrieval through successful output and local proof",
+               cacheWrites:false}' > "$root/environment.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-final-reader-pair-${{ matrix.pair }}-${{ matrix.arm }}
+          path: ${{ runner.temp }}/darwin-final-reader
+
+  compare:
+    needs: [validate, reader]
+    if: ${{ always() && needs.validate.result == 'success' && needs.reader.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: darwin-final-reader-pair-*
+          path: ${{ runner.temp }}/readers
+      - name: Require identical outputs and report complete timings
+        env:
+          ROUNDS: ${{ needs.validate.outputs.rounds }}
+        run: |
+          set -euo pipefail
+          arms=(udsb asif release-hot)
+          reference_records=
+          reference_proof=
+          : > "$RUNNER_TEMP/timings.jsonl"
+          for pair in $(seq 1 "$ROUNDS"); do
+            for arm in "${arms[@]}"; do
+              root="$RUNNER_TEMP/readers/darwin-final-reader-pair-$pair-$arm"
+              records="$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")"
+              proof="$(cat "$root/proof-sha256.txt")"
+              if [ -z "$reference_records" ]; then
+                reference_records="$records"
+                reference_proof="$proof"
+              else
+                test "$records" = "$reference_records"
+                test "$proof" = "$reference_proof"
+              fi
+              jq -e --argjson pair "$pair" --arg arm "$arm" '
+                .pair == $pair and .arm == $arm and .fixture == "14a8d7657900a917560ddbe77577c0d5a1b77638"
+                and .expectedNixFastBuild == "/nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0"
+                and .verification == "default" and .cacheWrites == false
+                and ($arm != "release-hot" or .autofsckPolicy == "disabled-after-fsck-gate")
+              ' "$root/environment.json"
+              jq -cn --argjson pair "$pair" --arg arm "$arm" \
+                --argjson complete "$(jq -r .completeSeconds "$root/stage-costs.json")" \
+                '{pair:$pair,arm:$arm,completeSeconds:$complete}' >> "$RUNNER_TEMP/timings.jsonl"
+            done
+          done
+          jq -s --argjson rounds "$ROUNDS" --arg proof "$reference_proof" '
+            def median: sort | if length % 2 == 1 then .[length/2 | floor]
+              else (.[length/2-1] + .[length/2]) / 2 end;
+            {matching:true,rounds:$rounds,arms:["udsb","asif","release-hot"],proofSha256:$proof,
+             primaryEndpoint:"setup start through successful output and local proof",
+             medians:(group_by(.arm) | map({key:.[0].arm,value:(map(.completeSeconds) | median)}) | from_entries),
+             cacheWrites:false,experimental:true}
+          ' "$RUNNER_TEMP/timings.jsonl" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo
+            echo '| Reader start (Unix seconds) | Pair | Arm | Complete seconds | Runner image |'
+            echo '| ---: | ---: | :--- | ---: | :--- |'
+            for start in "$RUNNER_TEMP"/readers/darwin-final-reader-pair-*-*/setup-start.txt; do
+              root="$(dirname "$start")"
+              printf '%s\t| %s | %s | %s | %s | %s |\n' \
+                "$(cat "$start")" "$(cat "$start")" "$(jq -r .pair "$root/environment.json")" \
+                "$(jq -r .arm "$root/environment.json")" "$(jq -r .completeSeconds "$root/stage-costs.json")" \
+                "$(jq -r .runnerImage "$root/environment.json")"
+            done | sort -n | cut -f2-
+          } >> "$GITHUB_STEP_SUMMARY"
