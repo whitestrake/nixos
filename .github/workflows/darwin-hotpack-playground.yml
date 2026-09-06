@@ -280,7 +280,7 @@ jobs:
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/darwin-hotpack-filesystem-gate"
-          mkdir -p "$root/base" "$root/evidence"
+          mkdir -p "$root/evidence"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 .github/scripts/darwin-release-image.py eager \
             --repo "$GITHUB_REPOSITORY" --release-id "$BASE_RELEASE_ID" \
