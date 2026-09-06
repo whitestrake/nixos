@@ -17,6 +17,10 @@ on:
         description: Sample native image processes during one matched hot attach
         type: boolean
         default: false
+      compare_autofsck:
+        description: Compare default attach with -noautofsck using the existing hot pack
+        type: boolean
+        default: false
       source_hot_release:
         description: Existing immutable hot-pack release ID; requires source_hot_sha
         type: string
@@ -39,6 +43,8 @@ env:
   # Release tags use the frozen master snapshot; the manifest records the harness commit.
   RELEASE_TARGET_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
   BASE_MANIFEST_SHA: 8406fdfb37a9c2bdfe98195cf1193a02470b1d84d3a1451c78e8248a8fc6d3aa
+  AUTOFSCK_HOT_RELEASE_ID: '383632588'
+  AUTOFSCK_HOT_MANIFEST_SHA: c686235f532bd450a1bf7968fcdd42bf4ff191fc43f2a5e9572ed88e0f499a0a
   PROFILE_RUN_ID: '34040695733'
   PROFILE_ARTIFACT_ID: '9991707035'
   PROFILE_ARTIFACT_NAME: darwin-release-reader-1-lazy
@@ -59,6 +65,7 @@ jobs:
       matrix: ${{ steps.inputs.outputs.matrix }}
       rounds: ${{ steps.inputs.outputs.rounds }}
       scenarios: ${{ steps.inputs.outputs.scenarios }}
+      compare-autofsck: ${{ steps.inputs.outputs.compare-autofsck }}
     steps:
       - name: Validate optional hot-pack generation
         id: inputs
@@ -68,6 +75,7 @@ jobs:
           ROUNDS: ${{ github.event_name == 'push' && '1' || inputs.rounds }}
           SCENARIOS: ${{ github.event_name == 'push' && 'matched' || inputs.scenarios }}
           SAMPLE_ATTACH: ${{ inputs.sample_attach }}
+          COMPARE_AUTOFSCK: ${{ inputs.compare_autofsck }}
         run: |
           set -euo pipefail
           [[ "$ROUNDS" = 1 || "$ROUNDS" = 3 ]]
@@ -78,8 +86,16 @@ jobs:
             [ -n "$SOURCE_HOT_RELEASE" ]
             [ -n "$SOURCE_HOT_SHA" ]
           fi
+          if [ "$COMPARE_AUTOFSCK" = true ]; then
+            [ "$SAMPLE_ATTACH" = false ]
+            [ "$SCENARIOS" = matched ]
+            [ "$SOURCE_HOT_RELEASE" = "$AUTOFSCK_HOT_RELEASE_ID" ]
+            [ "$SOURCE_HOT_SHA" = "$AUTOFSCK_HOT_MANIFEST_SHA" ]
+          fi
           definitions='[{"scenario":"matched","treatments":["cold","hot"]}]'
-          if [ "$SCENARIOS" = all ]; then
+          if [ "$COMPARE_AUTOFSCK" = true ]; then
+            definitions='[{"scenario":"matched","treatments":["default","noautofsck"]}]'
+          elif [ "$SCENARIOS" = all ]; then
             definitions='[{"scenario":"matched","treatments":["cold","hot"]},{"scenario":"changed-input","treatments":["hot","cold"]},{"scenario":"unprofiled-file","treatments":["cold","hot"]}]'
           fi
           matrix="$(jq -cn --argjson rounds "$ROUNDS" --argjson definitions "$definitions" '
@@ -93,6 +109,7 @@ jobs:
             echo "matrix=$matrix"
             echo "rounds=$ROUNDS"
             echo "scenarios=$SCENARIOS"
+            echo "compare-autofsck=$COMPARE_AUTOFSCK"
             if [ -z "$SOURCE_HOT_RELEASE" ] && [ -z "$SOURCE_HOT_SHA" ]; then
               echo 'reuse=false'
             else
@@ -246,9 +263,85 @@ jobs:
           name: darwin-hotpack-producer
           path: ${{ runner.temp }}/hotpack/evidence
 
+  filesystem-gate:
+    needs: validate
+    if: needs.validate.outputs.compare-autofsck == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Eagerly authenticate and check the frozen HFS+ image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/darwin-hotpack-filesystem-gate"
+          mkdir -p "$root/base" "$root/evidence"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 .github/scripts/darwin-release-image.py eager \
+            --repo "$GITHUB_REPOSITORY" --release-id "$BASE_RELEASE_ID" \
+            --manifest-sha "$BASE_MANIFEST_SHA" --directory "$root/base" \
+            > "$root/evidence/eager.json"
+          jq -e --argjson release "$BASE_RELEASE_ID" --arg manifestSha "$BASE_MANIFEST_SHA" '
+            .releaseId == $release and .manifestSha256 == $manifestSha
+            and .responseBytes == .imageBytes and .uniqueResponseBytes == .imageBytes
+            and (.imageSha256 | test("^[0-9a-f]{64}$"))
+          ' "$root/evidence/eager.json"
+          image="$root/base/image.dmg"
+          expected_sha="$(jq -r .imageSha256 "$root/evidence/eager.json")"
+          [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]]
+          before_sha="$(shasum -a 256 "$image" | awk '{print $1}')"
+          test "$before_sha" = "$expected_sha"
+
+          whole_device=
+          cleanup() {
+            if [ -n "$whole_device" ]; then
+              perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach "$whole_device" \
+                >> "$root/evidence/detach.stdout" 2>> "$root/evidence/detach.stderr" || true
+            fi
+          }
+          trap cleanup EXIT
+          perl -e 'alarm shift; exec @ARGV' 300 sudo hdiutil attach -readonly -nomount -noautofsck -plist "$image" \
+            > "$root/evidence/attach.plist" 2> "$root/evidence/attach.stderr"
+          plutil -convert json -o "$root/evidence/attach.json" "$root/evidence/attach.plist"
+          whole_device="$(jq -er '
+            [."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | ."dev-entry"]
+            | select(length == 1) | .[0]
+          ' "$root/evidence/attach.json")"
+          hfs_device="$(jq -er '
+            [."system-entities"[] | select(."content-hint" == "Apple_HFS") | ."dev-entry"]
+            | select(length == 1) | .[0]
+          ' "$root/evidence/attach.json")"
+          [[ "$whole_device" =~ ^/dev/disk[0-9]+$ ]]
+          [[ "$hfs_device" =~ ^/dev/disk[0-9]+s[0-9]+$ ]]
+          fsck_status=0
+          perl -e 'alarm shift; exec @ARGV' 900 sudo /sbin/fsck_hfs -fn "$hfs_device" \
+            > "$root/evidence/fsck.stdout" 2> "$root/evidence/fsck.stderr" || fsck_status=$?
+          printf '%s\n' "$fsck_status" > "$root/evidence/fsck.status"
+          test "$fsck_status" -eq 0
+          grep -Eiq 'appears to be OK\.?$' "$root/evidence/fsck.stdout"
+          perl -e 'alarm shift; exec @ARGV' 120 sudo hdiutil detach "$whole_device" \
+            > "$root/evidence/detach.stdout" 2> "$root/evidence/detach.stderr"
+          whole_device=
+          after_sha="$(shasum -a 256 "$image" | awk '{print $1}')"
+          test "$after_sha" = "$before_sha"
+          jq -n --arg before "$before_sha" --arg after "$after_sha" \
+            --arg hfsDevice "$hfs_device" \
+            '{filesystem:"case-sensitive-jhfs-plus",attachPolicy:"readonly-nomount-noautofsck",fsck:"fsck_hfs -fn",fsckStatus:0,imageSha256Before:$before,imageSha256After:$after,hfsDevice:$hfsDevice}' \
+            > "$root/evidence/gate.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: darwin-hotpack-filesystem-gate
+          path: ${{ runner.temp }}/darwin-hotpack-filesystem-gate/evidence
+
   reader:
-    needs: [validate, produce]
-    if: ${{ always() && needs.validate.result == 'success' && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
+    needs: [validate, produce, filesystem-gate]
+    if: ${{ always() && needs.validate.result == 'success' && (needs.filesystem-gate.result == 'success' || needs.filesystem-gate.result == 'skipped') && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -291,7 +384,7 @@ jobs:
             echo "manifest-sha=$manifest_sha"
           } >> "$GITHUB_OUTPUT"
       - name: Download and authenticate the hot pack
-        if: matrix.treatment == 'hot'
+        if: matrix.treatment != 'cold'
         env:
           GH_TOKEN: ${{ github.token }}
           HOT_RELEASE_ID: ${{ steps.source.outputs.release-id }}
@@ -343,7 +436,7 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/darwin-hotpack-reader/lazy"
           args=()
-          if [ "${{ matrix.treatment }}" = hot ]; then
+          if [ "${{ matrix.treatment }}" != cold ]; then
             args+=(--hot-pack "$HOT_PACK")
           fi
           python3 .harness/.github/scripts/darwin-release-image.py serve \
@@ -376,6 +469,10 @@ jobs:
              [ "${{ matrix.treatment }}" = hot ]; then
             sample_enabled=true
           fi
+          autofsck_args=()
+          if [ "${{ matrix.treatment }}" = noautofsck ]; then
+            autofsck_args+=(-noautofsck)
+          fi
           python3 -c 'import time; print(time.time())' > "$root/mount-start.txt"
           python3 -c 'import time; print(time.monotonic_ns())' > "$root/mount-start-monotonic.txt"
           sudo touch /etc/synthetic.conf
@@ -393,6 +490,7 @@ jobs:
             perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
               -shadow "$RUNNER_TEMP/darwin-hotpack-payload/image.shadow" \
               -mountpoint /nix -nobrowse -noautoopen -owners on \
+              ${autofsck_args[@]+"${autofsck_args[@]}"} \
               > "$root/attach.stdout" 2> "$root/attach.stderr"
           else
             samples="$root/attach-samples"
@@ -406,6 +504,7 @@ jobs:
             perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
               -shadow "$RUNNER_TEMP/darwin-hotpack-payload/image.shadow" \
               -mountpoint /nix -nobrowse -noautoopen -owners on \
+              ${autofsck_args[@]+"${autofsck_args[@]}"} \
               > "$root/attach.stdout" 2> "$root/attach.stderr" &
             attach_job=$!
 
@@ -581,7 +680,7 @@ jobs:
           if [ "${{ matrix.treatment }}" = cold ] || [ "${{ matrix.scenario }}" = unprofiled-file ]; then
             jq -e '.requestCount > 0 and .responseBytes > 0 and .uniqueResponseBytes > 0' "$summary"
           fi
-          if [ "${{ matrix.treatment }}" = hot ]; then
+          if [ "${{ matrix.treatment }}" != cold ]; then
             jq -e --arg sha "$(jq -r .hotPackSha256 "$RUNNER_TEMP/darwin-hotpack-reader/hot-manifest.json")" \
               --argjson blocks "$(jq -r .blockCount "$RUNNER_TEMP/darwin-hotpack-reader/hot-manifest.json")" \
               --argjson bytes "$(jq -r .payloadBytes "$RUNNER_TEMP/darwin-hotpack-reader/hot-manifest.json")" '
@@ -611,8 +710,9 @@ jobs:
             --arg hotRelease "${{ steps.source.outputs.release-id }}" \
             --arg hotManifestSha "${{ steps.source.outputs.manifest-sha }}" \
             --arg runnerImage "${ImageVersion:-unknown}" --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            --arg autofsckPolicy "${{ matrix.treatment == 'noautofsck' && 'disabled' || 'default' }}" \
             --slurpfile attachSampling "$root/attach-sampling.json" \
-            '{scenario:$scenario,treatment:$treatment,pair:$pair,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",writableShadow:true,attachSampling:$attachSampling[0],performanceEligible:($scenario != "unprofiled-file" and ($attachSampling[0].requested | not))}' \
+            '{scenario:$scenario,treatment:$treatment,pair:$pair,fixture:$fixture,harness:$harness,baseReleaseId:$baseRelease,baseManifestSha256:$baseManifestSha,hotReleaseId:$hotRelease,hotManifestSha256:$hotManifestSha,runnerImage:$runnerImage,cpu:$cpu,imageFormat:"ULFO",filesystem:"case-sensitive-jhfs-plus",verification:"default",autofsckPolicy:$autofsckPolicy,writableShadow:true,attachSampling:$attachSampling[0],performanceEligible:($scenario != "unprofiled-file" and ($attachSampling[0].requested | not))}' \
             > "$root/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
@@ -630,26 +730,38 @@ jobs:
         with:
           pattern: darwin-hotpack-*
           path: ${{ runner.temp }}/readers
-      - name: Require identical cold and hot outputs
+      - name: Require identical paired outputs
         env:
           ROUNDS: ${{ needs.validate.outputs.rounds }}
           SCENARIOS: ${{ needs.validate.outputs.scenarios }}
+          COMPARE_AUTOFSCK: ${{ needs.validate.outputs.compare-autofsck }}
         run: |
           set -euo pipefail
           fixtures=(matched)
-          if [ "$SCENARIOS" = all ]; then
+          treatments=(cold hot)
+          if [ "$COMPARE_AUTOFSCK" = true ]; then
+            treatments=(default noautofsck)
+          elif [ "$SCENARIOS" = all ]; then
             fixtures+=(changed-input unprofiled-file)
           fi
           for pair in $(seq 1 "$ROUNDS"); do
             for fixture in "${fixtures[@]}"; do
-              cold="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-cold"
-              hot="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-hot"
-              test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$cold/records.json")" = \
-                "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$hot/records.json")"
-              test "$(cat "$cold/proof-path.txt")" = "$(cat "$hot/proof-path.txt")"
+              left="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-${treatments[0]}"
+              right="$RUNNER_TEMP/readers/darwin-hotpack-$fixture-pair-$pair-${treatments[1]}"
+              test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$left/records.json")" = \
+                "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$right/records.json")"
+              test "$(cat "$left/proof-path.txt")" = "$(cat "$right/proof-path.txt")"
+              test "$(jq -c '{baseReleaseId,baseManifestSha256,hotReleaseId,hotManifestSha256,verification}' "$left/environment.json")" = \
+                "$(jq -c '{baseReleaseId,baseManifestSha256,hotReleaseId,hotManifestSha256,verification}' "$right/environment.json")"
+              if [ "$COMPARE_AUTOFSCK" = true ]; then
+                jq -e '.treatment == "default" and .autofsckPolicy == "default" and .verification == "default"' \
+                  "$left/environment.json"
+                jq -e '.treatment == "noautofsck" and .autofsckPolicy == "disabled" and .verification == "default"' \
+                  "$right/environment.json"
+              fi
               if [ "$fixture" = unprofiled-file ]; then
-                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$cold/unprofiled-file.json"
-                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$hot/unprofiled-file.json"
+                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$left/unprofiled-file.json"
+                jq -e '.backingRequestsAfter > .backingRequestsBefore' "$right/unprofiled-file.json"
               fi
             done
             if [ "$SCENARIOS" = all ]; then
@@ -662,7 +774,8 @@ jobs:
           done
           pair_count=$((ROUNDS * ${#fixtures[@]}))
           jq -n --arg scope "$SCENARIOS" --argjson rounds "$ROUNDS" --argjson pairs "$pair_count" \
-            '{matching:true,scope:$scope,rounds:$rounds,pairs:$pairs,treatments:["cold","hot"],performanceScenarios:["matched","changed-input"],robustnessOnly:["unprofiled-file"]}' \
+            --argjson compareAutofsck "$COMPARE_AUTOFSCK" --argjson treatments "$(printf '%s\n' "${treatments[@]}" | jq -Rsc 'split("\n")[:-1]')" \
+            '{matching:true,scope:$scope,rounds:$rounds,pairs:$pairs,treatments:$treatments,compareAutofsck:$compareAutofsck,performanceScenarios:(if $compareAutofsck then ["matched"] else ["matched","changed-input"] end),robustnessOnly:(if $compareAutofsck then [] else ["unprofiled-file"] end)}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo
