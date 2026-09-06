@@ -1,0 +1,336 @@
+name: Determinate Lazy Trees Playground
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/determinate-lazy-trees-playground.yml]
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Paired reader rounds
+        type: choice
+        options: ['1', '3']
+        default: '1'
+      source_run:
+        description: Existing successful producer run (empty builds one candidate)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: determinate-lazy-trees-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURE_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
+  DARWIN_BASE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
+  DETERMINATE_NEJ_COMMIT: 3fc5e3950f6d96726df656dbb12df2bffcae70c4
+  CHANGED_DARWIN_NIXPKGS_REV: f6107e546a5012172d93e79f1f7950da02ad798f
+  EXPECTED_BASELINE_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+
+jobs:
+  producer:
+    if: inputs.source_run == ''
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Restore frozen Darwin snapshot
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
+          key: ${{ env.DARWIN_BASE_KEY }}
+          fail-on-cache-miss: true
+      - name: Select candidate snapshot
+        run: |
+          mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/determinate-nejs"
+          mv "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" \
+            "$RUNNER_TEMP/determinate-nejs/nix-root.sparsebundle"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/determinate-nejs/nix-root.sparsebundle" >> "$GITHUB_ENV"
+      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - uses: ./.harness/.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Build and retain the pinned Determinate evaluator
+        run: |
+          set -euo pipefail
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          nfb="$root/nix-fast-build/bin/nix-fast-build"
+          test -x "$nfb"
+          real_nfb="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$root/nix-fast-build")"
+          [[ "$(basename "$real_nfb")" == *-nix-fast-build-1.6.0 ]]
+          "$nfb" --help | grep -q -- '--nix-eval-jobs'
+
+          ref="github:DeterminateSystems/nix-eval-jobs/$DETERMINATE_NEJ_COMMIT"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/producer-build-start.txt"
+          nej="$(nix build --no-link --print-out-paths "$ref#packages.aarch64-darwin.default")"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/producer-build-end.txt"
+          test -x "$nej/bin/nix-eval-jobs"
+          "$nej/bin/nix-eval-jobs" --help >/dev/null
+          ln -sfn "$nej" "$root/determinate-nix-eval-jobs"
+          printf '%s\n' "$real_nfb" > "$RUNNER_TEMP/measurements/nfb-store-path.txt"
+          printf '%s\n' "$nej" > "$RUNNER_TEMP/measurements/determinate-nej-store-path.txt"
+          nix flake metadata --json "$ref" > "$RUNNER_TEMP/measurements/determinate-nej-flake.json"
+          nix path-info --recursive --json "$nej" > "$RUNNER_TEMP/measurements/determinate-nej-closure.json"
+          otool -L "$nej/bin/nix-eval-jobs" > "$RUNNER_TEMP/measurements/determinate-nej-linkage.txt"
+          jq -n \
+            --arg ref "$ref" \
+            --arg harness "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" \
+            --argjson started "$(cat "$RUNNER_TEMP/measurements/producer-build-start.txt")" \
+            --argjson finished "$(cat "$RUNNER_TEMP/measurements/producer-build-end.txt")" \
+            --argjson closureNarBytes "$(jq '[to_entries[].value.narSize] | add' "$RUNNER_TEMP/measurements/determinate-nej-closure.json")" \
+            '{ref:$ref,harness:$harness,run:$run,buildSeconds:($finished-$started),closureNarBytes:$closureNarBytes}' \
+            > "$RUNNER_TEMP/measurements/producer.json"
+      - name: Compact the reusable candidate
+        run: |
+          set -euo pipefail
+          nix store gc
+          test -x /nix/var/nix/gcroots/github-ci/aarch64-darwin/determinate-nix-eval-jobs/bin/nix-eval-jobs
+          sync
+          sudo hdiutil detach /nix
+          hdiutil compact "$NIX_ROOT_IMAGE_BUNDLE"
+          du -sk "$NIX_ROOT_IMAGE_BUNDLE" | awk '{print $1 * 1024}' > "$RUNNER_TEMP/measurements/candidate-allocated-bytes.txt"
+      - name: Start candidate cache save timing
+        run: echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/determinate-nejs/nix-root.sparsebundle
+          key: determinate-nej-darwin-v1-${{ github.run_id }}-${{ env.DETERMINATE_NEJ_COMMIT }}
+      - uses: ./.harness/.github/actions/github-cache-save-report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          cache-key: determinate-nej-darwin-v1-${{ github.run_id }}-${{ env.DETERMINATE_NEJ_COMMIT }}
+          system: aarch64-darwin
+      - name: Enforce candidate archive budget
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          key="determinate-nej-darwin-v1-$GITHUB_RUN_ID-$DETERMINATE_NEJ_COMMIT"
+          bytes="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$key" --limit 1 --json sizeInBytes --jq '.[0].sizeInBytes')"
+          test "$bytes" -le $((5 * 1024 * 1024 * 1024))
+          jq -n --arg key "$key" --argjson bytes "$bytes" '{key:$key,archiveBytes:$bytes}' \
+            > "$RUNNER_TEMP/measurements/cache-archive.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: determinate-nej-producer
+          path: ${{ runner.temp }}/measurements
+
+  reader:
+    needs: producer
+    if: ${{ always() && (needs.producer.result == 'success' || (inputs.source_run != '' && needs.producer.result == 'skipped')) }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      checks: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        round: ${{ fromJSON(inputs.rounds == '3' && '[1,2,3]' || '[1]') }}
+        fixture: [baseline, changed-input]
+        lazy_trees: ['true', 'false']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.FIXTURE_SHA }}
+          path: fixture
+          persist-credentials: false
+      - name: Start reader setup
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+        run: |
+          [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/measurements" "$RUNNER_TEMP/determinate-nejs"
+          echo "NIX_ROOT_IMAGE_BUNDLE=$RUNNER_TEMP/determinate-nejs/nix-root.sparsebundle" >> "$GITHUB_ENV"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/setup-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/determinate-nejs/nix-root.sparsebundle
+          key: determinate-nej-darwin-v1-${{ inputs.source_run || github.run_id }}-${{ env.DETERMINATE_NEJ_COMMIT }}
+          fail-on-cache-miss: true
+      - uses: ./.github/actions/nix-sparsebundle-mount
+        with:
+          image-size: 64g
+          system: aarch64-darwin
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Preflight cached streaming stack
+        working-directory: fixture
+        run: |
+          set -euo pipefail
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          nfb="$root/nix-fast-build/bin/nix-fast-build"
+          nej="$root/determinate-nix-eval-jobs/bin/nix-eval-jobs"
+          test -x "$nfb" -a -x "$nej"
+          real_nfb="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$root/nix-fast-build")"
+          [[ "$(basename "$real_nfb")" == *-nix-fast-build-1.6.0 ]]
+          "$nfb" --help | grep -q -- '--nix-eval-jobs'
+          "$nfb" --help | grep -q -- '--override-input'
+          "$nej" --help >/dev/null
+          baseline_rev="$(jq -r '.nodes[.nodes.root.inputs["nixpkgs-darwin"]].locked.rev' flake.lock)"
+          test "$baseline_rev" != "$CHANGED_DARWIN_NIXPKGS_REV"
+          printf '%s\n' "$baseline_rev" > "$RUNNER_TEMP/measurements/baseline-darwin-nixpkgs-rev.txt"
+          printf '%s\n' "$real_nfb" > "$RUNNER_TEMP/measurements/nfb-store-path.txt"
+          python3 -c 'import os; print(os.path.realpath("/nix/var/nix/gcroots/github-ci/aarch64-darwin/determinate-nix-eval-jobs"))' \
+            > "$RUNNER_TEMP/measurements/determinate-nej-store-path.txt"
+      - name: Measure streaming Darwin build
+        id: build
+        working-directory: fixture
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          FAST_CI_FORWARD_EVENTS: "1"
+          FIXTURE: ${{ matrix.fixture }}
+          GITHUB_TOKEN: ${{ github.token }}
+          LAZY_TREES: ${{ matrix.lazy_trees }}
+        run: |
+          set -euo pipefail
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin
+          nfb="$root/nix-fast-build/bin/nix-fast-build"
+          nej="$root/determinate-nix-eval-jobs/bin/nix-eval-jobs"
+          fixture_args=()
+          if [ "$FIXTURE" = changed-input ]; then
+            fixture_args=(--override-input nixpkgs-darwin "github:NixOS/nixpkgs/$CHANGED_DARWIN_NIXPKGS_REV")
+          fi
+          jq -n \
+            --arg evaluator "$nej" \
+            --arg fixture "$FIXTURE" \
+            --arg lazyTrees "$LAZY_TREES" \
+            --arg overrideInput "${fixture_args[*]-}" \
+            '{evaluator:$evaluator,fixture:$fixture,lazyTrees:$lazyTrees,overrideInput:$overrideInput}' \
+            > "$RUNNER_TEMP/measurements/evaluator-request.json"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
+          python3 ../.github/scripts/nix_fast_build.py --publish-checks -- \
+            python3 ../.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/measurements" -- \
+              "$nfb" \
+              --nix-eval-jobs "$nej --option lazy-trees $LAZY_TREES" \
+              --flake .#ci.darwin \
+              --systems aarch64-darwin \
+              --eval-workers 1 \
+              ${fixture_args[@]+"${fixture_args[@]}"} \
+              --cachix-cache whitestrake \
+              --retries 2 \
+              --result-file "$RUNNER_TEMP/measurements/results.json" \
+              -j 50
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-end.txt"
+          jq -ce -f ../.github/scripts/nix-fast-build-records.jq \
+            "$RUNNER_TEMP/measurements/results.json" > "$RUNNER_TEMP/measurements/records.json"
+          while IFS=$'\t' read -r attr output; do
+            drv="$(nix-store --query --deriver "$output")"
+            [[ "$drv" =~ ^/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+\.drv$ ]]
+            jq -cn --arg attr "$attr" --arg drvPath "$drv" '{attr:$attr,drvPath:$drvPath}'
+          done < <(jq -r '.[] | [.attr, .storePath] | @tsv' "$RUNNER_TEMP/measurements/records.json") \
+            | jq -sc 'sort_by(.attr)' > "$RUNNER_TEMP/measurements/drv-records.json"
+          jq -e 'length > 0' "$RUNNER_TEMP/measurements/drv-records.json" >/dev/null
+      - name: Record reader evidence
+        if: always()
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+          LAZY_TREES: ${{ matrix.lazy_trees }}
+          ROUND: ${{ matrix.round }}
+          SOURCE_RUN: ${{ inputs.source_run || github.run_id }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          if [ ! -s "$RUNNER_TEMP/measurements/records.json" ] || [ ! -s "$RUNNER_TEMP/measurements/drv-records.json" ] || [ ! -s "$RUNNER_TEMP/measurements/build-end.txt" ]; then
+            jq -n \
+              --arg fixture "$FIXTURE" \
+              --arg lazyTrees "$LAZY_TREES" \
+              --arg round "$ROUND" \
+              --arg outcome "$BUILD_OUTCOME" \
+              '{fixture:$fixture,lazyTrees:$lazyTrees,round:$round,outcome:$outcome}' \
+              > "$RUNNER_TEMP/measurements/summary.json"
+            exit 0
+          fi
+          jq -n \
+            --arg fixture "$FIXTURE" \
+            --arg lazyTrees "$LAZY_TREES" \
+            --arg round "$ROUND" \
+            --arg sourceRun "$SOURCE_RUN" \
+            --arg fixtureRevision "$FIXTURE_SHA" \
+            --arg changedDarwinNixpkgsRevision "$CHANGED_DARWIN_NIXPKGS_REV" \
+            --arg harness "$GITHUB_SHA" \
+            --arg runnerImage "${ImageVersion:-unknown}" \
+            --arg cpu "$(sysctl -n machdep.cpu.brand_string)" \
+            --argjson buildStarted "$(cat "$RUNNER_TEMP/measurements/build-start.txt")" \
+            --argjson buildFinished "$(cat "$RUNNER_TEMP/measurements/build-end.txt")" \
+            --slurpfile records "$RUNNER_TEMP/measurements/records.json" \
+            --slurpfile drvRecords "$RUNNER_TEMP/measurements/drv-records.json" \
+            '{fixture:$fixture,lazyTrees:$lazyTrees,round:$round,sourceRun:$sourceRun,fixtureRevision:$fixtureRevision,changedDarwinNixpkgsRevision:$changedDarwinNixpkgsRevision,harness:$harness,runnerImage:$runnerImage,cpu:$cpu,buildSeconds:($buildFinished-$buildStarted),records:$records[0],drvRecords:$drvRecords[0]}' \
+            > "$RUNNER_TEMP/measurements/summary.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: determinate-lazy-${{ matrix.fixture }}-${{ matrix.lazy_trees }}-${{ matrix.round }}
+          path: ${{ runner.temp }}/measurements
+      - name: Detach snapshot
+        if: always()
+        run: sudo hdiutil detach /nix
+
+  compare:
+    needs: reader
+    if: always() && needs.reader.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: determinate-lazy-*
+          path: ${{ runner.temp }}/evidence
+      - name: Require anchored outputs, matched derivations and complete pairs
+        env:
+          EXPECTED_BASELINE_RECORDS: ${{ env.EXPECTED_BASELINE_RECORDS }}
+          ROUNDS: ${{ inputs.rounds || '1' }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' summaries < <(find "$RUNNER_TEMP/evidence" -name summary.json -print0 | sort -z)
+          test "${#summaries[@]}" -eq $((ROUNDS * 4))
+          jq -se --argjson rounds "$ROUNDS" --argjson expectedBaseline "$EXPECTED_BASELINE_RECORDS" '
+            sort_by(.fixture, .lazyTrees, .round) as $rows
+            | ($rows | map(select(.fixture == "baseline")) | .[0].records) as $baseline
+            | ($rows | map(select(.fixture == "changed-input")) | .[0].records) as $changed
+            | ($rows | group_by(.fixture)) as $fixtures
+            | $fixtures | length == 2
+              and all(.[];
+                length == ($rounds * 2)
+                and (map(.lazyTrees) | unique) == ["false", "true"]
+                and (group_by(.lazyTrees) | all(.[]; length == $rounds))
+                and (map(.records) | unique | length) == 1
+                and (map(.drvRecords) | unique | length) == 1
+              )
+              and $baseline == $expectedBaseline
+              and $changed != $baseline
+          ' "${summaries[@]}" >/dev/null
