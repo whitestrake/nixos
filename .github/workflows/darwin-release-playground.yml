@@ -29,13 +29,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FIXTURE_SHA: 33c5637ef5d9508786481530a5909a19c59d836f
-  SOURCE_CACHE_ID: '7381391064'
-  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
+  FIXTURE_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
+  RELEASE_TARGET_SHA: aed47803728f84ad1076f48223f143ecb3ccc012
+  SOURCE_CACHE_ID: '7381028169'
+  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34025982604-14a8d7657900a917560ddbe77577c0d5a1b77638-compacted
   SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
-  SOURCE_CACHE_SIZE: '2051447771'
+  SOURCE_CACHE_SIZE: '1928801888'
   SOURCE_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
-  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+  EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8"}]'
 
 jobs:
   validate:
@@ -150,7 +151,7 @@ jobs:
           set -euo pipefail
           tag="darwin-release-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           python3 .harness/.github/scripts/darwin-release-image.py publish \
-            --repo "$GITHUB_REPOSITORY" --tag "$tag" --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --tag "$tag" --target "$RELEASE_TARGET_SHA" \
             --directory "$RUNNER_TEMP/darwin-release/assets" \
             > "$RUNNER_TEMP/darwin-release/evidence/publish.json"
           jq -e --arg tag "$tag" '
