@@ -1,9 +1,6 @@
 name: Determinate Lazy Trees Playground
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/determinate-lazy-trees-playground.yml]
   workflow_dispatch:
     inputs:
       rounds:
@@ -28,7 +25,7 @@ env:
   DARWIN_BASE_KEY: darwin-lifecycle-v1-34026984404-aed47803728f84ad1076f48223f143ecb3ccc012-compacted
   DETERMINATE_NEJ_COMMIT: 3fc5e3950f6d96726df656dbb12df2bffcae70c4
   CHANGED_DARWIN_NIXPKGS_REV: f6107e546a5012172d93e79f1f7950da02ad798f
-  EXPECTED_BASELINE_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/3qm99r4kgpcwfrgn3j6xlscblfz04qr9-darwin-system-26.05.c3e90c8"}]'
+  EXPECTED_BASELINE_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/63an4i49pd9i8fyvnhcvz4yjh3i82xji-darwin-system-26.05.c3e90c8"}]'
 
 jobs:
   producer:
