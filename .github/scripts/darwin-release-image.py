@@ -164,7 +164,6 @@ def gh_api(repo, endpoint, method="GET", payload=None):
         args,
         input=json.dumps(payload).encode() if payload is not None else None,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         check=True,
         timeout=60,
     )
@@ -175,7 +174,6 @@ def gh_upload(repo, tag, path):
     subprocess.run(
         ["gh", "release", "upload", tag, str(path), "--repo", repo],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         check=True,
         timeout=600,
     )
