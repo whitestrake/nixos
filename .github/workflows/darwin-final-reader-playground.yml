@@ -404,13 +404,7 @@ jobs:
         run: |
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-final-reader/restore-end.txt"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/darwin-final-reader/mount-start.txt"
-      - uses: ./.harness/.github/actions/nix-sparsebundle-mount
-        if: matrix.arm == 'udsb'
-        with:
-          image-size: 64g
-          system: aarch64-darwin
-      - name: Mount the corrected ASIF
-        if: matrix.arm == 'asif'
+      - name: Prepare the common synthetic mount point
         run: |
           set -euo pipefail
           sudo touch /etc/synthetic.conf
@@ -424,6 +418,20 @@ jobs:
           fi
           test -d /nix
           test ! -L /nix
+      - name: Mount the frozen sparsebundle without resizing
+        if: matrix.arm == 'udsb'
+        run: |
+          set -euo pipefail
+          perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$NIX_ROOT_IMAGE_BUNDLE" \
+            -mountpoint /nix -nobrowse -noautoopen -owners on \
+            > "$RUNNER_TEMP/darwin-final-reader/attach.stdout" \
+            2> "$RUNNER_TEMP/darwin-final-reader/attach.stderr"
+          sudo chown "$USER" /nix
+          chmod u+rwx /nix
+      - name: Mount the corrected ASIF
+        if: matrix.arm == 'asif'
+        run: |
+          set -euo pipefail
           perl -e 'alarm shift; exec @ARGV' 600 sudo diskutil image attach --nobrowse \
             --mountPoint /nix --plist "$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif" \
             > "$RUNNER_TEMP/darwin-final-reader/attach.plist" \
@@ -434,17 +442,6 @@ jobs:
         if: matrix.arm == 'release-hot'
         run: |
           set -euo pipefail
-          sudo touch /etc/synthetic.conf
-          if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
-            grep -qx nix /etc/synthetic.conf
-          else
-            echo nix | sudo tee -a /etc/synthetic.conf >/dev/null
-          fi
-          if ! sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -B >/dev/null 2>&1; then
-            sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t >/dev/null 2>&1 || true
-          fi
-          test -d /nix
-          test ! -L /nix
           perl -e 'alarm shift; exec @ARGV' 600 sudo hdiutil attach "$RELEASE_IMAGE_URL" \
             -shadow "$RUNNER_TEMP/darwin-final-reader-payload/image.shadow" \
             -mountpoint /nix -nobrowse -noautoopen -owners on -noautofsck \
