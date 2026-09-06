@@ -3,6 +3,11 @@ name: Linux Image Maintenance Lifecycle Probe
 on:
   workflow_dispatch:
     inputs:
+      publication_stop:
+        description: Inject a maintenance failure at an immutable publication boundary
+        type: choice
+        options: [none, before-save, after-save]
+        default: none
       old_ref:
         description: Exact source-generation workload revision
         type: string
@@ -574,6 +579,11 @@ jobs:
             "$CACHE_QUOTA_BYTES" "$CACHE_RESERVE_BYTES" "$RUNNER_TEMP/linux-lifecycle-$FORMAT"
           date +%s.%N > "$RUNNER_TEMP/measurements/save-start.txt"
           echo "NIX_ROOT_CACHE_SAVE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Inject interruption before publication
+        if: inputs.publication_stop == 'before-save'
+        run: |
+          echo before-save > "$RUNNER_TEMP/measurements/injected-interruption.txt"
+          exit 78
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-${{ matrix.format }}
@@ -607,6 +617,11 @@ jobs:
             --arg kernel "$(uname -sr)" \
             '{format:$format,system:$system,oldRevision:$old,targetRevision:$target,sourceRun:$sourceRun,harness:$harness,fixtureCwd:$fixtureCwd,harnessScriptsDir:$harnessScriptsDir,packWorkers:$packWorkers,erofsGlobalDedupe:false,squashfsNoI:$squashfsNoI,squashfsNoLinks:$squashfsNoLinks,squashfsDefaults:(($squashfsNoI or $squashfsNoLinks) | not),squashfsLinksPolicy:(if $format != "squashfs" then "not-applicable" elif $squashfsNoLinks then "empty-index" else "preserved" end),nixOptimisePolicy:(if $squashfsNoLinks then "skipped-squashfs-nolinks" else "explicit" end),packerClosureIncludedUniformly:true,runnerImage:$runnerImage,cpu:$cpu,kernel:$kernel}' \
             > "$RUNNER_TEMP/measurements/environment.json"
+      - name: Inject interruption after publication
+        if: inputs.publication_stop == 'after-save'
+        run: |
+          echo after-save > "$RUNNER_TEMP/measurements/injected-interruption.txt"
+          exit 78
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:

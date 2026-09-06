@@ -3,6 +3,11 @@ name: Darwin Sparsebundle Lifecycle Probe
 on:
   workflow_dispatch:
     inputs:
+      prefetch:
+        description: Prefetch the three large locked nixpkgs inputs before the reader
+        type: choice
+        options: [none, serial, parallel]
+        default: none
       from_scratch:
         description: Reconstruct a pinned baseline without restoring a master cache
         type: boolean
@@ -330,8 +335,13 @@ jobs:
       - name: Finish installer timing
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/install-end.txt"
       - name: Measure Darwin build
+        env:
+          PREFETCH: ${{ inputs.prefetch }}
         run: |
           set -euo pipefail
+          if [ "$PREFETCH" != none ]; then
+            python3 .harness/.github/scripts/fast-ci-prefetch.py "$RUNNER_TEMP/measurements/prefetch.json" "$PREFETCH"
+          fi
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/build-start.txt"
           nfb="/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build"
           "$nfb" --help >/dev/null

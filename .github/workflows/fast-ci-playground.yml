@@ -3,6 +3,11 @@ name: "Fast CI Production Probe"
 on:
   workflow_dispatch:
     inputs:
+      seed_fault:
+        description: Inject a fault into the restored disposable seed
+        type: choice
+        options: [none, corrupt-image, invalid-tool]
+        default: none
       nfb_launch:
         description: Use cached NFB optimistically or resolve the current flake tool
         type: choice
@@ -83,6 +88,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/fast-ci-erofs
           key: ${{ inputs.seed_run != '' && format('fast-ci-native-seed-v1-{0}-{1}', inputs.seed_run, inputs.linux_system) || format('fast-ci-playground-v2-{0}-erofs', env.SEED_SHA) }}
+      - name: Inject restored seed fault
+        if: inputs.seed_fault != 'none'
+        env:
+          FAULT: ${{ inputs.seed_fault }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          case "$FAULT" in
+            corrupt-image) printf 'corrupt test image\n' > "$RUNNER_TEMP/fast-ci-erofs/image" ;;
+            invalid-tool) printf '/nix/store/00000000000000000000000000000000-missing-tool\n' > "$RUNNER_TEMP/fast-ci-erofs/nfb-path.txt" ;;
+            *) exit 1 ;;
+          esac
+          printf '%s\n' "$FAULT" > "$RUNNER_TEMP/measurements/seed-fault.txt"
       - name: Try evaluator seed
         id: mount
         if: steps.restore.outputs.cache-hit == 'true'
@@ -132,6 +151,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           FAST_CI_FORWARD_EVENTS: "1"
           FAST_CI_SAMPLE_MEMORY: "1"
+          FAST_CI_SAMPLE_PROCESSES: ${{ inputs.profile && '1' || '0' }}
           EVAL_WORKERS: ${{ inputs.eval_workers || '3' }}
           NFB_LAUNCH: ${{ inputs.nfb_launch || 'cached' }}
           SEED_MOUNT_OUTCOME: ${{ steps.mount.outcome }}

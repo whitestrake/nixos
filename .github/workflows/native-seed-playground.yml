@@ -88,7 +88,7 @@ jobs:
             determinate="$(nix build --no-link --print-out-paths --max-jobs 0 \
               --option extra-substituters https://install.determinate.systems \
               --option extra-trusted-public-keys 'cache.flakehub.com-3:hJuILl5sVK4iKm86JzgdXW12Y2Hwd5G07qKtHTOcDCM=' \
-              "github:DeterminateSystems/nix-src/3ed5caa3bbde51ab87977c8a80e27c6ed0ea8534#packages.$EVALUATOR_SYSTEM.nix")"
+              "https://api.flakehub.com/f/pinned/DeterminateSystems/nix-src/3.22.3/01a063f1-9def-7051-9003-4691ca024a72/source.tar.gz#packages.$EVALUATOR_SYSTEM.nix")"
             ln -s "$determinate" "$root/determinate"
             printf '%s\n' "$determinate" > "$output/determinate-path.txt"
             "$determinate/bin/nix" --version > "$output/determinate-version.txt"

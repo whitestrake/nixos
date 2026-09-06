@@ -37,6 +37,8 @@ def main():
         def sample_memory():
             while not memory_stop.wait(1):
                 memory_samples.append(read_mem_available(meminfo))
+                if os.environ.get("FAST_CI_SAMPLE_PROCESSES") != "1":
+                    continue
                 try:
                     snapshot = subprocess.check_output(
                         ["ps", "-eo", "pid=,ppid=,rss=,etimes=,comm="], text=True
