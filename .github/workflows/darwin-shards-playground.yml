@@ -1,11 +1,6 @@
 name: Darwin Sharded Cache Restore Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths:
-      - .github/scripts/darwin-sharded-cache.mjs
-      - .github/workflows/darwin-shards-playground.yml
   workflow_dispatch:
     inputs:
       reader_pairs:
@@ -242,22 +237,27 @@ jobs:
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/toolkit-install-end.txt"
           echo "$((SECONDS - toolkit_started))" > "$RUNNER_TEMP/measurements/toolkit-install-seconds.txt"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-start.txt"
+          nohup iostat -w 1 > "$RUNNER_TEMP/measurements/restore-iostat.txt" 2>&1 &
+          echo "RESTORE_IOSTAT_PID=$!" >> "$GITHUB_ENV"
       - name: Restore and validate complete sharded image
         id: sharded
         if: matrix.treatment == 'sharded'
         continue-on-error: true
+        uses: ./.harness/.github/actions/darwin-shard-restore
         env:
           ACTIONS_CACHE_MODULE: ${{ runner.temp }}/actions-cache/node_modules/@actions/cache/lib/cache.js
+          SHARD_MANIFEST: ${{ runner.temp }}/darwin-shards/manifest/manifest.json
+          SHARD_TELEMETRY: ${{ runner.temp }}/measurements/restore-attempts.json
+      - name: Assemble validated shards
+        if: matrix.treatment == 'sharded' && steps.sharded.outcome == 'success'
         run: |
           set -euo pipefail
-          iostat -w 1 > "$RUNNER_TEMP/measurements/restore-iostat.txt" &
-          iostat_pid=$!
-          trap 'kill "$iostat_pid" 2>/dev/null || true' EXIT
-          node .harness/.github/scripts/darwin-sharded-cache.mjs restore \
-            "$RUNNER_TEMP/darwin-shards/manifest/manifest.json" "$RUNNER_TEMP/measurements/restore-attempts.json"
           node .harness/.github/scripts/darwin-sharded-cache.mjs assemble \
             "$RUNNER_TEMP/darwin-shards/manifest/manifest.json" "$RUNNER_TEMP/darwin-shards/assembled/nix-root.sparsebundle"
           python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/restore-end.txt"
+      - name: Stop shard restore I/O sampling
+        if: always() && matrix.treatment == 'sharded'
+        run: kill "${RESTORE_IOSTAT_PID:-}" 2>/dev/null || true
       - name: Start explicit monolithic fallback
         if: matrix.treatment == 'sharded' && steps.sharded.outcome != 'success'
         run: python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/measurements/fallback-start.txt"

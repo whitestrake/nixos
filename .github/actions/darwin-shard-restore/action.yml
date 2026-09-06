@@ -1,0 +1,5 @@
+name: Restore research cache shards
+description: Run the shard helper with GitHub's JavaScript-action cache runtime
+runs:
+  using: node24
+  main: ../../scripts/darwin-sharded-cache.mjs

@@ -295,7 +295,9 @@ async function selfTest() {
   if (!rejectedMissingBand) fail('self-test accepted a missing allocated band');
 }
 
-const [command, ...args] = process.argv.slice(2);
+const [command, ...args] = process.argv.length > 2
+  ? process.argv.slice(2)
+  : ['restore', process.env.SHARD_MANIFEST, process.env.SHARD_TELEMETRY];
 const commands = { assemble, finalise, preflight, restore, 'self-test': selfTest, split };
 if (!commands[command]) fail(`unknown command: ${command ?? ''}`);
 await commands[command](args);
