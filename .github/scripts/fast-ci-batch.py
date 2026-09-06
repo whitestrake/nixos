@@ -41,6 +41,8 @@ def validate_jobs(jobs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nfb-root", required=True)
+    parser.add_argument("--direct-nix")
+    parser.add_argument("--eval-cores", type=int, choices=[0, 1], default=1)
     parser.add_argument("--flake", required=True)
     parser.add_argument("--systems", required=True)
     parser.add_argument("--eval-workers", type=int, default=3)
@@ -67,9 +69,13 @@ def main():
         results.append(row)
         print(json.dumps(row), flush=True)
 
-    closure = subprocess.check_output(
-        ["nix-store", "--query", "--requisites", args.nfb_root], text=True
-    ).splitlines()
+    closure = (
+        []
+        if args.direct_nix
+        else subprocess.check_output(
+            ["nix-store", "--query", "--requisites", args.nfb_root], text=True
+        ).splitlines()
+    )
 
     def binary(name):
         paths = [
@@ -83,7 +89,8 @@ def main():
             )
         return paths[0]
 
-    evaluator, nix = binary("nix-eval-jobs"), binary("nix")
+    evaluator = args.direct_nix or binary("nix-eval-jobs")
+    nix = args.direct_nix or binary("nix")
     options = [item for pair in args.option for item in ("--option", *pair)]
     metadata = dict(
         evaluator=evaluator,
@@ -92,6 +99,8 @@ def main():
         requestedRetries=args.retries,
         retryPolicy="single batch attempt",
         requestedBuildConcurrency=args.j,
+        directEvaluation=bool(args.direct_nix),
+        evalCores=args.eval_cores if args.direct_nix else None,
     )
     (evidence / "batch-toolchain.json").write_text(
         json.dumps(metadata, indent=2) + "\n"
@@ -110,11 +119,44 @@ def main():
             "--flake",
             args.flake,
         ]
+        if args.direct_nix:
+            command = [
+                nix,
+                "eval",
+                "--json",
+                args.flake + ".nixosConfigurations",
+                "--apply",
+                "hosts: builtins.mapAttrs (_: drv: { inherit (drv) drvPath outPath system; }) hosts",
+                "--drv-link",
+                temporary + "/derivations",
+                "--option",
+                "extra-experimental-features",
+                "parallel-eval",
+                "--option",
+                "eval-cores",
+                str(args.eval_cores),
+                *options,
+            ]
+        (evidence / "batch-eval-command.json").write_text(
+            json.dumps(command, indent=2) + "\n"
+        )
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
         jobs = []
         try:
-            for line in proc.stdout:
-                job = json.loads(line)
+            if args.direct_nix:
+                raw = json.load(proc.stdout)
+                evaluated = (
+                    dict(
+                        attr="nixosConfigurations." + name,
+                        drvPath=row["drvPath"],
+                        outputs={"out": row["outPath"]},
+                        system=row["system"],
+                    )
+                    for name, row in raw.items()
+                )
+            else:
+                evaluated = (json.loads(line) for line in proc.stdout)
+            for job in evaluated:
                 validate_jobs([job])
                 if job.get("system") not in args.systems.split():
                     raise ValueError(f"unexpected system for {job['attr']}")

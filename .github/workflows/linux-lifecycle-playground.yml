@@ -3,6 +3,23 @@ name: Linux Image Maintenance Lifecycle Probe
 on:
   workflow_dispatch:
     inputs:
+      old_ref:
+        description: Exact source-generation workload revision
+        type: string
+        default: 34ae0ef228171c6f9ace59efa6c8b65ab9cad246
+      target_ref:
+        description: Exact next-generation workload revision
+        type: string
+        default: 83c56e158b04dea4da66d123fc206af2630b0501
+      source_kind:
+        description: Read the producer baseline or a previously refreshed generation
+        type: choice
+        options: [baseline, refreshed]
+        default: baseline
+      expect_change:
+        description: Require a changed output map (disable for the no-op control)
+        type: boolean
+        default: true
       source_run:
         description: Existing baseline producer run (empty creates baselines)
         type: string
@@ -39,8 +56,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OLD_SHA: 34ae0ef228171c6f9ace59efa6c8b65ab9cad246
-  TARGET_SHA: 83c56e158b04dea4da66d123fc206af2630b0501
+  OLD_SHA: ${{ inputs.old_ref }}
+  TARGET_SHA: ${{ inputs.target_ref }}
   PACK_WORKERS: 4
   SQUASHFS_NOI: ${{ inputs.squashfs_noi && 'true' || 'false' }}
   SQUASHFS_NOLINKS: ${{ inputs.squashfs_nolinks && 'true' || 'false' }}
@@ -74,6 +91,7 @@ jobs:
           TREATMENT: ${{ inputs.treatment }}
         run: |
           set -euo pipefail
+          [[ "$OLD_SHA" =~ ^[0-9a-f]{40}$ && "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
           if [ "$SQUASHFS_NOI" = true ] && [ "$SQUASHFS_NOLINKS" = true ]; then
             echo "::error ::squashfs_noi and squashfs_nolinks cannot be combined"
             exit 1
@@ -88,11 +106,11 @@ jobs:
           sudo apt-get install -y squashfs-tools sqlite3
           case "$SYSTEM" in
             x86_64-linux)
-              key=nix-root-ci-x86_64-linux-ext4-v1-fp-295d1a7e1baa51756b6bae1689885838aa037868484da517ed5e76db40e94380-33971747934-1
+              key=nix-root-ci-x86_64-linux-ext4-v1-fp-d9faad7a4514a11c7d5c50a058ad7fdd6e8c07069f479b1ef3ee21a06aa7b1c6-33980687721-1
               version=fffaadce5ddc7d9cee2663458f1b43128ef6f0f1ada923b61d130faa12c65477
               ;;
             aarch64-linux)
-              key=nix-root-ci-aarch64-linux-ext4-v1-fp-6e685cb45f32cdf94f4274f262ed282fe4576bf1272a1bfd008574d169f59d1b-33891132223-1
+              key=nix-root-ci-aarch64-linux-ext4-v1-fp-9cfff8d3ecdf16edea68b9405d60e0117666fbf666aed00479625459cd013a04-33980687721-1
               version=f89f71eb745f6f0fcbc35dbac231f88b106b1d4b5692751fefd97952aa9af60e
               ;;
           esac
@@ -374,6 +392,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -z "$SOURCE_RUN" || "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          [[ "$OLD_SHA" =~ ^[0-9a-f]{40}$ && "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           if [ "$SQUASHFS_NOI" = true ] && [ "$SQUASHFS_NOLINKS" = true ]; then
             echo "::error ::squashfs_noi and squashfs_nolinks cannot be combined"
@@ -406,15 +425,23 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/linux-lifecycle-${{ matrix.format }}
-          key: linux-lifecycle-v1-${{ steps.prepare.outputs.baseline-source }}-${{ env.OLD_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-baseline
+          key: linux-lifecycle-v1-${{ steps.prepare.outputs.baseline-source }}-${{ env.OLD_SHA }}-${{ inputs.system }}-${{ matrix.format }}${{ env.SQUASHFS_KEY_SUFFIX }}-${{ inputs.source_kind }}
           fail-on-cache-miss: true
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: inputs.source_kind == 'baseline'
         with:
           path: ${{ runner.temp }}/linux-lifecycle-metadata/old-records.json
           key: linux-lifecycle-v1-${{ steps.prepare.outputs.baseline-source }}-${{ env.OLD_SHA }}-${{ inputs.system }}-records
           fail-on-cache-miss: true
+      - name: Read predecessor output map
+        if: inputs.source_kind == 'refreshed'
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-lifecycle-metadata"
+          cp "$RUNNER_TEMP/linux-lifecycle-${{ matrix.format }}/records.json" "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json"
       - name: Finish baseline restore timing
-        run: date +%s.%N > "$RUNNER_TEMP/measurements/restore-end.txt"
+        run: |
+          cp "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json" "$RUNNER_TEMP/measurements/old-records.json"
+          date +%s.%N > "$RUNNER_TEMP/measurements/restore-end.txt"
       - name: Start baseline mount timing
         run: date +%s.%N > "$RUNNER_TEMP/measurements/mount-start.txt"
       - uses: ./.github/actions/nix-ext4-mount
@@ -458,6 +485,7 @@ jobs:
           system: ${{ inputs.system }}
       - name: Record target outputs
         env:
+          EXPECT_CHANGE: ${{ inputs.expect_change }}
           SYSTEM: ${{ inputs.system }}
         run: |
           set -euo pipefail
@@ -466,7 +494,11 @@ jobs:
             "$RUNNER_TEMP/cache-$SYSTEM-results.json" > "$RUNNER_TEMP/measurements/target-records.json"
           old="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$RUNNER_TEMP/linux-lifecycle-metadata/old-records.json")"
           target="$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$RUNNER_TEMP/measurements/target-records.json")"
-          test "$old" != "$target"
+          if [ "$EXPECT_CHANGE" = true ]; then
+            test "$old" != "$target"
+          else
+            test "$old" = "$target"
+          fi
           if [ "$SQUASHFS_NOLINKS" = true ]; then
             count="$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf '.' | wc -c)"
             printf '%s\n' "$count" > "$RUNNER_TEMP/measurements/links-after-update.txt"
@@ -532,6 +564,7 @@ jobs:
         run: |
           set -euo pipefail
           image="$RUNNER_TEMP/linux-lifecycle-$FORMAT/image"
+          cp "$RUNNER_TEMP/measurements/target-records.json" "$RUNNER_TEMP/linux-lifecycle-$FORMAT/records.json"
           jq -n --arg format "$FORMAT" --arg system "$SYSTEM" --arg generation "$TARGET_SHA" \
             --argjson bytes "$(stat -c %s "$image")" --argjson squashfsNoI "$SQUASHFS_NOI" \
             --argjson squashfsNoLinks "$SQUASHFS_NOLINKS" \

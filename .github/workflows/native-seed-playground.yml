@@ -6,6 +6,10 @@ on:
         description: Retain NFB from this native seed while updating locked inputs
         type: string
         default: ''
+      parallel_evaluator:
+        description: Include pinned Determinate Nix for matched evaluator experiments
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -57,6 +61,8 @@ jobs:
           "$(cat nfb-path.txt)/bin/nix-fast-build" --help >/dev/null
       - uses: ./.github/actions/install-nix
       - name: Prepare equivalent native evaluator roots
+        env:
+          PARALLEL_EVALUATOR: ${{ inputs.parallel_evaluator }}
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/fast-ci-erofs"
@@ -78,6 +84,16 @@ jobs:
           printf '%s\n' "$nfb" > "$output/nfb-path.txt"
           nix --version > "$output/nix-version.txt"
           nix path-info --recursive --json "$nfb" > "$output/nfb-closure.json"
+          if [ "$PARALLEL_EVALUATOR" = true ]; then
+            determinate="$(nix build --no-link --print-out-paths --max-jobs 0 \
+              --option extra-substituters https://install.determinate.systems \
+              --option extra-trusted-public-keys 'cache.flakehub.com-3:hJuILl5sVK4iKm86JzgdXW12Y2Hwd5G07qKtHTOcDCM=' \
+              "github:DeterminateSystems/nix-src/3ed5caa3bbde51ab87977c8a80e27c6ed0ea8534#packages.$EVALUATOR_SYSTEM.nix")"
+            ln -s "$determinate" "$root/determinate"
+            printf '%s\n' "$determinate" > "$output/determinate-path.txt"
+            "$determinate/bin/nix" --version > "$output/determinate-version.txt"
+            nix path-info --recursive --json "$determinate" > "$output/determinate-closure.json"
+          fi
           nix store gc
           nix path-info --all | sort > "$output/store-paths.txt"
           python3 - <<'PY'

@@ -6,7 +6,7 @@ on:
       nfb_launch:
         description: Use cached NFB optimistically or resolve the current flake tool
         type: choice
-        options: [cached, flake, batch]
+        options: [cached, flake, flake-patched, batch, batch-8, determinate-1, determinate-parallel]
         default: cached
       darwin_cache_key:
         description: Exact experimental compacted Darwin cache key (empty uses master)
@@ -140,18 +140,33 @@ jobs:
 
           date +%s.%N > "$RUNNER_TEMP/measurements/build-start.txt"
           awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$RUNNER_TEMP/measurements/tool-rx-start.txt"
-          if [[ "$NFB_LAUNCH" != flake && "$SEED_MOUNT_OUTCOME" == success ]]; then
+          if [[ "$NFB_LAUNCH" != flake* && "$SEED_MOUNT_OUTCOME" == success ]]; then
             nfb="$(cat "$RUNNER_TEMP/fast-ci-erofs/nfb-path.txt")"
             [[ "$nfb" =~ ^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+$ ]]
             "$nfb/bin/nix-fast-build" --help >/dev/null
             selection=cached
           else
-            nfb="$(nix build --no-link --print-out-paths --option builders '' --option max-jobs auto ".#packages.$EVALUATOR_SYSTEM.nix-fast-build")"
             selection=flake
+            target=(".#packages.$EVALUATOR_SYSTEM.nix-fast-build")
+            if [[ "$NFB_LAUNCH" == flake-patched ]]; then
+              target=(--impure --file .github/nfb-shutdown-control.nix --argstr system "$EVALUATOR_SYSTEM")
+              selection=flake-patched
+            fi
+            nfb="$(nix build --no-link --print-out-paths --option builders '' --option max-jobs auto "${target[@]}")"
           fi
           nix_fast_build=("$nfb/bin/nix-fast-build")
-          if [[ "$NFB_LAUNCH" == batch ]]; then
+          remote_store=ssh-ng://eu.nixbuild.net
+          if [[ "$NFB_LAUNCH" == batch-8 ]]; then remote_store+='?max-connections=8'; fi
+          if [[ "$NFB_LAUNCH" == batch* ]]; then
             nix_fast_build=(python3 .github/scripts/fast-ci-batch.py --nfb-root "$nfb")
+          elif [[ "$NFB_LAUNCH" == determinate-* ]]; then
+            test "$SEED_MOUNT_OUTCOME" = success
+            determinate="$(cat "$RUNNER_TEMP/fast-ci-erofs/determinate-path.txt")"
+            [[ "$determinate" =~ ^/nix/store/[a-z0-9]{32}-[A-Za-z0-9+._?=-]+$ ]]
+            "$determinate/bin/nix" --version > "$RUNNER_TEMP/measurements/determinate-version.txt"
+            cores=1
+            if [[ "$NFB_LAUNCH" == determinate-parallel ]]; then cores=0; fi
+            nix_fast_build=(python3 .github/scripts/fast-ci-batch.py --nfb-root "$nfb" --direct-nix "$determinate/bin/nix" --eval-cores "$cores")
           fi
           date +%s.%N > "$RUNNER_TEMP/measurements/tool-ready.txt"
           awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$RUNNER_TEMP/measurements/tool-rx-end.txt"
@@ -163,7 +178,7 @@ jobs:
             --flake .#ci.linux-hosts \
             --systems 'x86_64-linux aarch64-linux' \
             --eval-workers "$EVAL_WORKERS" \
-            --store ssh-ng://eu.nixbuild.net \
+            --store "$remote_store" \
             --option max-jobs 2 \
             --retries 2 \
             --result-file "$RUNNER_TEMP/ci-linux-results.json" \
@@ -172,6 +187,13 @@ jobs:
           mapfile -t host_derivations < <(find /nix/store -maxdepth 1 -name '*-nixos-system-*.drv' -type f)
           test "${#host_derivations[@]}" -gt 0
           nix derivation show "${host_derivations[@]}" > "$RUNNER_TEMP/measurements/host-derivations.json"
+          if [[ "${{ inputs.profile }}" == true ]]; then
+            while IFS= read -r path; do
+              if [[ -x "$path/bin/nix-eval-jobs" ]]; then
+                ldd "$path/bin/nix-eval-jobs" >> "$RUNNER_TEMP/measurements/evaluator-linkage.txt"
+              fi
+            done < <(nix-store --query --requisites "$nfb")
+          fi
 
       - name: Profile Linux evaluation
         if: inputs.profile

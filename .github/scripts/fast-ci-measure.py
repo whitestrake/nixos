@@ -27,6 +27,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     meminfo = Path("/proc/meminfo")
     memory_samples = []
+    process_samples = []
     memory_stop = None
     memory_thread = None
     if os.environ.get("FAST_CI_SAMPLE_MEMORY") == "1":
@@ -36,6 +37,19 @@ def main():
         def sample_memory():
             while not memory_stop.wait(1):
                 memory_samples.append(read_mem_available(meminfo))
+                try:
+                    snapshot = subprocess.check_output(
+                        ["ps", "-eo", "pid=,ppid=,rss=,etimes=,comm="], text=True
+                    )
+                    process_samples.append(
+                        dict(elapsedSeconds=time.monotonic() - started, ps=snapshot)
+                    )
+                except (OSError, subprocess.SubprocessError) as error:
+                    process_samples.append(
+                        dict(
+                            elapsedSeconds=time.monotonic() - started, error=str(error)
+                        )
+                    )
 
         memory_thread = threading.Thread(target=sample_memory, daemon=True)
 
@@ -90,6 +104,9 @@ def main():
             "maximumRunnerMemoryUseAboveBaselineKiB": max(0, baseline - minimum),
         }
         (output / "runner-memory.json").write_text(json.dumps(memory, indent=2) + "\n")
+        (output / "process-samples.json").write_text(
+            json.dumps(process_samples, indent=2) + "\n"
+        )
     result = dict(
         totalSeconds=time.monotonic() - started,
         firstEvalSeconds=first_eval,
