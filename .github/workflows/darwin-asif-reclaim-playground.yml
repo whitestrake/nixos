@@ -1,4 +1,4 @@
-name: Darwin ASIF Reclamation Probe
+name: Darwin ASIF Fresh Export Probe
 
 on:
   push:
@@ -11,40 +11,40 @@ permissions:
   contents: read
 
 concurrency:
-  group: darwin-asif-reclaim-playground-${{ github.ref }}
+  group: darwin-asif-fresh-export-playground-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  SOURCE_CACHE_ID: '7387234959'
-  SOURCE_CACHE_KEY: darwin-asif-lifecycle-v1-34044036395-14a8d7657900a917560ddbe77577c0d5a1b77638
+  SOURCE_CACHE_ID: '7381028169'
+  SOURCE_CACHE_KEY: darwin-lifecycle-v1-34025982604-14a8d7657900a917560ddbe77577c0d5a1b77638-compacted
   SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
-  SOURCE_CACHE_SIZE: '2195359461'
-  SOURCE_CACHE_VERSION: ba564316184991f88080c7a1639546141c15251e7e271890fbab5ffa2b3ef99e
-  SOURCE_IMAGE_BYTES: '9556303872'
+  SOURCE_CACHE_SIZE: '1928801888'
+  SOURCE_CACHE_VERSION: 99b8147302caa48cd22aa865621741139ffb01c10d47c65b4818671da4075ee8
   TARGET_SHA: 14a8d7657900a917560ddbe77577c0d5a1b77638
   EXPECTED_NFB: /nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0
   EXPECTED_RECORDS: '[{"attr":"darwinConfigurations.andred","kind":"darwinConfiguration","name":"andred","storePath":"/nix/store/0dbpqygf52idf2ahh7v7sxay66r9ifya-darwin-system-26.05.c3e90c8"}]'
-  RECLAIMED_CACHE_MAX_BYTES: '3221225472'
+  EXPORTED_CACHE_MAX_BYTES: '3221225472'
   CACHE_QUOTA_BYTES: '50000000000'
 
 jobs:
-  reclaim:
+  export:
     runs-on: macos-26
     timeout-minutes: 60
     outputs:
-      cache-key: ${{ steps.final.outputs.cache-key }}
-      device-capacity: ${{ steps.final.outputs.device-capacity }}
-      filesystem-capacity: ${{ steps.final.outputs.filesystem-capacity }}
-      roots-sha256: ${{ steps.final.outputs.roots-sha256 }}
+      cache-key: ${{ steps.candidate.outputs.cache-key }}
+      device-capacity: ${{ steps.candidate.outputs.device-capacity }}
+      filesystem-capacity: ${{ steps.candidate.outputs.filesystem-capacity }}
+      roots-count: ${{ steps.candidate.outputs.roots-count }}
+      roots-sha256: ${{ steps.candidate.outputs.roots-sha256 }}
     steps:
-      - name: Bind the immutable source and total cache budget
+      - name: Bind the frozen sparsebundle and cache budget
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = "$SOURCE_CACHE_REF"
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
-          mkdir -p "$evidence" "$RUNNER_TEMP/darwin-asif-cache" \
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
+          mkdir -p "$evidence" "$RUNNER_TEMP/darwin-lifecycle/compacted" \
             "$RUNNER_TEMP/darwin-asif-reclaim-cache"
           python3 -c 'import time; print(time.time())' > "$evidence/setup-start.txt"
           gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" \
@@ -58,9 +58,9 @@ jobs:
           gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --json sizeInBytes \
             > "$evidence/cache-inventory-before.json"
           total="$(jq '[.[].sizeInBytes] | add // 0' "$evidence/cache-inventory-before.json")"
-          test "$((total + RECLAIMED_CACHE_MAX_BYTES))" -le "$CACHE_QUOTA_BYTES"
+          test "$((total + EXPORTED_CACHE_MAX_BYTES))" -le "$CACHE_QUOTA_BYTES"
           jq -n --argjson currentCacheBytes "$total" \
-            --argjson maximumNewCacheBytes "$RECLAIMED_CACHE_MAX_BYTES" \
+            --argjson maximumNewCacheBytes "$EXPORTED_CACHE_MAX_BYTES" \
             --argjson quotaBytes "$CACHE_QUOTA_BYTES" \
             '{currentCacheBytes:$currentCacheBytes,maximumNewCacheBytes:$maximumNewCacheBytes,quotaBytes:$quotaBytes,deletions:false,sourceCacheUntouched:true,experimental:true}' \
             > "$evidence/cache-budget.json"
@@ -68,33 +68,29 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: source
         with:
-          path: ${{ runner.temp }}/darwin-asif-cache/nix-root.asif
+          path: ${{ runner.temp }}/darwin-lifecycle/compacted/nix-root.sparsebundle
           key: ${{ env.SOURCE_CACHE_KEY }}
           fail-on-cache-miss: true
-      - name: Validate the exact source restore
+      - name: Validate the exact sparsebundle restore
         env:
           CACHE_HIT: ${{ steps.source.outputs.cache-hit }}
           MATCHED_KEY: ${{ steps.source.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
-          source="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
+          source="$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
           test "$CACHE_HIT" = true
           test "$MATCHED_KEY" = "$SOURCE_CACHE_KEY"
-          test -f "$source"
-          test "$(stat -f '%z' "$source")" = "$SOURCE_IMAGE_BYTES"
-          stat -f '%z %m %c' "$source" > "$evidence/source-stat-before.txt"
-          jq -n --argjson logicalBytes "$(stat -f '%z' "$source")" \
-            --argjson allocatedBytes "$(( $(du -k "$source" | awk '{print $1}') * 1024 ))" \
-            '{logicalBytes:$logicalBytes,allocatedBytes:$allocatedBytes}' \
-            > "$evidence/source-file-before.json"
+          test -d "$source"
+          stat -f '%m %c' "$source" > "$evidence/source-stat-before.txt"
+          du -sk "$source" > "$evidence/source-du-before.txt"
           python3 -c 'import time; print(time.time())' > "$evidence/restore-end.txt"
-      - name: Inspect the source device, filesystem, and exact roots read-only
+      - name: Inspect the source filesystem and complete root manifest read-only
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
-          source="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
-          mountpoint="$RUNNER_TEMP/asif-reclaim-source-mount"
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
+          source="$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
+          mountpoint="$RUNNER_TEMP/asif-fresh-export-source-mount"
           mkdir "$mountpoint"
           perl -e 'alarm shift; exec @ARGV' 600 diskutil image attach --readOnly --nobrowse \
             --mountPoint "$mountpoint" --plist "$source" \
@@ -106,15 +102,16 @@ jobs:
           plutil -convert json -o "$evidence/source-device.json" "$evidence/source-device.plist"
           device_bytes="$(jq -er .TotalSize "$evidence/source-device.json")"
           test "$device_bytes" = "$entity_bytes"
-          printf '%s\n' "$device_bytes" > "$evidence/original-device-capacity.txt"
+          printf '%s\n' "$device_bytes" > "$evidence/source-device-capacity.txt"
           diskutil info -plist "$mountpoint" > "$evidence/source-filesystem.plist"
           plutil -convert json -o "$evidence/source-filesystem.json" "$evidence/source-filesystem.plist"
           test "$(jq -r .FilesystemType "$evidence/source-filesystem.json")" = hfs
-          jq -er .TotalSize "$evidence/source-filesystem.json" > "$evidence/original-filesystem-capacity.txt"
-          test "$device_bytes" -gt "$(cat "$evidence/original-filesystem-capacity.txt")"
+          test "$(jq -r .FilesystemName "$evidence/source-filesystem.json")" = 'Case-sensitive Journaled HFS+'
+          jq -er .TotalSize "$evidence/source-filesystem.json" > "$evidence/source-filesystem-capacity.txt"
           roots="$mountpoint/var/nix/gcroots/github-ci/aarch64-darwin"
           find "$roots" -mindepth 1 -maxdepth 1 -print | sort > "$evidence/source-roots.txt"
-          test "$(wc -l < "$evidence/source-roots.txt" | tr -d ' ')" = 23
+          root_count="$(wc -l < "$evidence/source-roots.txt" | tr -d ' ')"
+          test "$root_count" -gt 2
           while IFS= read -r link; do
             test -L "$link"
             target="$(readlink "$link")"
@@ -124,168 +121,147 @@ jobs:
           test "$(awk -F '\t' '$1 == "andred" {print $2}' "$evidence/source-root-targets.tsv")" = \
             "$(jq -r '.[0].storePath' <<< "$EXPECTED_RECORDS")"
           test "$(awk -F '\t' '$1 == "nix-fast-build" {print $2}' "$evidence/source-root-targets.tsv")" = "$EXPECTED_NFB"
+          printf '%s\n' "$root_count" > "$evidence/source-roots-count.txt"
           shasum -a 256 "$evidence/source-root-targets.tsv" | awk '{print $1}' \
             > "$evidence/source-roots.sha256"
           perl -e 'alarm shift; exec @ARGV' 120 hdiutil detach "$mountpoint" \
             > "$evidence/source-detach.stdout" 2> "$evidence/source-detach.stderr"
-      - name: Clone, shrink, and regrow the candidate
+      - name: Export the source whole GPT device directly to ASIF
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
-          source="$RUNNER_TEMP/darwin-asif-cache/nix-root.asif"
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
+          source="$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle"
           candidate="$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif"
-          original_device_bytes="$(cat "$evidence/original-device-capacity.txt")"
-          bounded() { perl -e 'alarm shift; exec @ARGV' 900 "$@"; }
-          diskutil image resize --help > "$evidence/resize-help.txt" 2>&1
-          python3 -c 'import time; print(time.time())' > "$evidence/clone-start.txt"
-          cp -c "$source" "$candidate"
-          python3 -c 'import time; print(time.time())' > "$evidence/clone-end.txt"
-          jq -n --arg phase cloned --argjson logicalBytes "$(stat -f '%z' "$candidate")" \
-            --argjson allocatedBytes "$(( $(du -k "$candidate" | awk '{print $1}') * 1024 ))" \
-            '{phase:$phase,logicalBytes:$logicalBytes,allocatedBytes:$allocatedBytes}' \
-            > "$evidence/cloned-file.json"
-          diskutil image resize --plist "$candidate" > "$evidence/limits-before.plist"
-          plutil -convert json -o "$evidence/limits-before.json" "$evidence/limits-before.plist"
-          test "$(jq -er .current "$evidence/limits-before.json")" = "$original_device_bytes"
-          jq -e '.min > 0 and .min < .current and .current < .max' "$evidence/limits-before.json"
-
-          python3 -c 'import time; print(time.time())' > "$evidence/min-resize-start.txt"
+          source_device=
+          cleanup() {
+            test -z "$source_device" || hdiutil detach -force "$source_device" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          perl -e 'alarm shift; exec @ARGV' 600 hdiutil attach -readonly -nomount -plist "$source" \
+            > "$evidence/export-source-device.plist" 2> "$evidence/export-source-device.stderr"
+          plutil -convert json -o "$evidence/export-source-device.json" "$evidence/export-source-device.plist"
+          source_device="$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | ."dev-entry"' "$evidence/export-source-device.json")"
+          test -b "$source_device"
+          test "$(diskutil info -plist "$source_device" | plutil -extract TotalSize raw -o - -- -)" = \
+            "$(cat "$evidence/source-device-capacity.txt")"
+          python3 -c 'import time; print(time.time())' > "$evidence/conversion-start.txt"
           status=0
-          bounded diskutil image resize --size min "$candidate" \
-            > "$evidence/min-resize.stdout" 2> "$evidence/min-resize.stderr" || status=$?
-          python3 -c 'import time; print(time.time())' > "$evidence/min-resize-end.txt"
-          printf '%s\n' "$status" > "$evidence/min-resize.status"
-          if [ "$status" -ne 0 ]; then
-            jq -n --argjson status "$status" \
-              '{supported:false,stage:"minimum-resize",status:$status,cacheSaved:false}' \
-              > "$evidence/result.json"
-            exit "$status"
-          fi
-          diskutil image resize --plist "$candidate" > "$evidence/limits-minimum.plist"
-          plutil -convert json -o "$evidence/limits-minimum.json" "$evidence/limits-minimum.plist"
-          test "$(jq -er .current "$evidence/limits-minimum.json")" -lt "$original_device_bytes"
-          jq -n --arg phase minimum --argjson logicalBytes "$(stat -f '%z' "$candidate")" \
+          perl -e 'alarm shift; exec @ARGV' 1800 diskutil image create from --format ASIF \
+            --plist "$source_device" "$candidate" \
+            > "$evidence/conversion.plist" 2> "$evidence/conversion.stderr" || status=$?
+          python3 -c 'import time; print(time.time())' > "$evidence/conversion-end.txt"
+          printf '%s\n' "$status" > "$evidence/conversion.status"
+          perl -e 'alarm shift; exec @ARGV' 120 hdiutil detach "$source_device" \
+            > "$evidence/export-source-detach.stdout" 2> "$evidence/export-source-detach.stderr"
+          source_device=
+          test "$status" -eq 0
+          test -f "$candidate"
+          jq -n --argjson logicalBytes "$(stat -f '%z' "$candidate")" \
             --argjson allocatedBytes "$(( $(du -k "$candidate" | awk '{print $1}') * 1024 ))" \
-            --argjson virtualDeviceBytes "$(jq -er .current "$evidence/limits-minimum.json")" \
-            '{phase:$phase,logicalBytes:$logicalBytes,allocatedBytes:$allocatedBytes,virtualDeviceBytes:$virtualDeviceBytes}' \
-            > "$evidence/minimum-file.json"
-
-          python3 -c 'import time; print(time.time())' > "$evidence/regrow-start.txt"
-          status=0
-          bounded diskutil image resize --size "$original_device_bytes" "$candidate" \
-            > "$evidence/regrow.stdout" 2> "$evidence/regrow.stderr" || status=$?
-          python3 -c 'import time; print(time.time())' > "$evidence/regrow-end.txt"
-          printf '%s\n' "$status" > "$evidence/regrow.status"
-          if [ "$status" -ne 0 ]; then
-            jq -n --argjson status "$status" \
-              '{supported:false,stage:"exact-capacity-regrow",status:$status,cacheSaved:false}' \
-              > "$evidence/result.json"
-            exit "$status"
-          fi
-          diskutil image resize --plist "$candidate" > "$evidence/limits-regrown.plist"
-          plutil -convert json -o "$evidence/limits-regrown.json" "$evidence/limits-regrown.plist"
-          test "$(jq -er .current "$evidence/limits-regrown.json")" = "$original_device_bytes"
-          logical="$(stat -f '%z' "$candidate")"
-          allocated="$(( $(du -k "$candidate" | awk '{print $1}') * 1024 ))"
-          jq -n --arg phase regrown --argjson logicalBytes "$logical" \
-            --argjson allocatedBytes "$allocated" --argjson virtualDeviceBytes "$original_device_bytes" \
-            '{phase:$phase,logicalBytes:$logicalBytes,allocatedBytes:$allocatedBytes,virtualDeviceBytes:$virtualDeviceBytes}' \
-            > "$evidence/regrown-file.json"
-      - name: Validate the regrown HFS+ image and exact E45 roots
-        id: final
+            '{logicalBytes:$logicalBytes,allocatedBytes:$allocatedBytes}' > "$evidence/candidate-file.json"
+      - name: Validate exact filesystem, capacities, and roots in the ASIF
+        id: candidate
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
           candidate="$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif"
-          mountpoint="$RUNNER_TEMP/asif-reclaim-final-mount"
+          mountpoint="$RUNNER_TEMP/asif-fresh-export-candidate-mount"
           mkdir "$mountpoint"
           perl -e 'alarm shift; exec @ARGV' 600 diskutil image attach --readOnly --nobrowse \
             --mountPoint "$mountpoint" --plist "$candidate" \
-            > "$evidence/final-attach.plist" 2> "$evidence/final-attach.stderr"
-          plutil -convert json -o "$evidence/final-attach.json" "$evidence/final-attach.plist"
-          whole="$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | ."dev-entry"' "$evidence/final-attach.json")"
-          entity_bytes="$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | .size' "$evidence/final-attach.json")"
-          diskutil info -plist "$whole" > "$evidence/final-device.plist"
-          plutil -convert json -o "$evidence/final-device.json" "$evidence/final-device.plist"
-          device_bytes="$(jq -er .TotalSize "$evidence/final-device.json")"
+            > "$evidence/candidate-attach.plist" 2> "$evidence/candidate-attach.stderr"
+          plutil -convert json -o "$evidence/candidate-attach.json" "$evidence/candidate-attach.plist"
+          whole="$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | ."dev-entry"' "$evidence/candidate-attach.json")"
+          entity_bytes="$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | .size' "$evidence/candidate-attach.json")"
+          device_bytes="$(diskutil info -plist "$whole" | plutil -extract TotalSize raw -o - -- -)"
           test "$device_bytes" = "$entity_bytes"
-          test "$device_bytes" = "$(cat "$evidence/original-device-capacity.txt")"
-          diskutil info -plist "$mountpoint" > "$evidence/final-filesystem.plist"
-          plutil -convert json -o "$evidence/final-filesystem.json" "$evidence/final-filesystem.plist"
-          test "$(jq -r .FilesystemType "$evidence/final-filesystem.json")" = hfs
-          filesystem_bytes="$(jq -er .TotalSize "$evidence/final-filesystem.json")"
-          test "$filesystem_bytes" = "$(cat "$evidence/original-filesystem-capacity.txt")"
+          test "$device_bytes" = "$(cat "$evidence/source-device-capacity.txt")"
+          diskutil info -plist "$mountpoint" > "$evidence/candidate-filesystem.plist"
+          plutil -convert json -o "$evidence/candidate-filesystem.json" "$evidence/candidate-filesystem.plist"
+          test "$(jq -r .FilesystemType "$evidence/candidate-filesystem.json")" = hfs
+          filesystem_name="$(jq -r .FilesystemName "$evidence/candidate-filesystem.json")"
+          test "$filesystem_name" = "$(jq -r .FilesystemName "$evidence/source-filesystem.json")"
+          test "$filesystem_name" = 'Case-sensitive Journaled HFS+'
+          filesystem_bytes="$(jq -er .TotalSize "$evidence/candidate-filesystem.json")"
+          test "$filesystem_bytes" = "$(cat "$evidence/source-filesystem-capacity.txt")"
           roots="$mountpoint/var/nix/gcroots/github-ci/aarch64-darwin"
-          find "$roots" -mindepth 1 -maxdepth 1 -print | sort > "$evidence/final-roots.txt"
+          find "$roots" -mindepth 1 -maxdepth 1 -print | sort > "$evidence/candidate-roots.txt"
+          root_count="$(wc -l < "$evidence/candidate-roots.txt" | tr -d ' ')"
+          test "$root_count" = "$(cat "$evidence/source-roots-count.txt")"
           while IFS= read -r link; do
             test -L "$link"
             target="$(readlink "$link")"
             test -e "$mountpoint${target#/nix}"
             printf '%s\t%s\n' "${link##*/}" "$target"
-          done < "$evidence/final-roots.txt" > "$evidence/final-root-targets.tsv"
-          diff -u "$evidence/source-root-targets.tsv" "$evidence/final-root-targets.tsv"
-          roots_sha="$(shasum -a 256 "$evidence/final-root-targets.tsv" | awk '{print $1}')"
+          done < "$evidence/candidate-roots.txt" > "$evidence/candidate-root-targets.tsv"
+          diff -u "$evidence/source-root-targets.tsv" "$evidence/candidate-root-targets.tsv"
+          roots_sha="$(shasum -a 256 "$evidence/candidate-root-targets.tsv" | awk '{print $1}')"
           test "$roots_sha" = "$(cat "$evidence/source-roots.sha256")"
+          test "$(awk -F '\t' '$1 == "andred" {print $2}' "$evidence/candidate-root-targets.tsv")" = \
+            "$(jq -r '.[0].storePath' <<< "$EXPECTED_RECORDS")"
+          test "$(awk -F '\t' '$1 == "nix-fast-build" {print $2}' "$evidence/candidate-root-targets.tsv")" = "$EXPECTED_NFB"
           perl -e 'alarm shift; exec @ARGV' 120 hdiutil detach "$mountpoint" \
-            > "$evidence/final-detach.stdout" 2> "$evidence/final-detach.stderr"
-          stat -f '%z %m %c' "$RUNNER_TEMP/darwin-asif-cache/nix-root.asif" \
+            > "$evidence/candidate-detach.stdout" 2> "$evidence/candidate-detach.stderr"
+          stat -f '%m %c' "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" \
             > "$evidence/source-stat-after.txt"
+          du -sk "$RUNNER_TEMP/darwin-lifecycle/compacted/nix-root.sparsebundle" \
+            > "$evidence/source-du-after.txt"
           diff -u "$evidence/source-stat-before.txt" "$evidence/source-stat-after.txt"
-          key="darwin-asif-reclaim-v1-$GITHUB_RUN_ID-$TARGET_SHA"
+          diff -u "$evidence/source-du-before.txt" "$evidence/source-du-after.txt"
+          key="darwin-asif-fresh-export-v1-$GITHUB_RUN_ID-$TARGET_SHA"
           {
             echo "cache-key=$key"
             echo "device-capacity=$device_bytes"
             echo "filesystem-capacity=$filesystem_bytes"
+            echo "roots-count=$root_count"
             echo "roots-sha256=$roots_sha"
           } >> "$GITHUB_OUTPUT"
           duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
-          source_allocated="$(jq -er .allocatedBytes "$evidence/source-file-before.json")"
-          candidate_logical="$(stat -f '%z' "$candidate")"
-          candidate_allocated="$(( $(du -k "$candidate" | awk '{print $1}') * 1024 ))"
-          jq -n --argjson sourceLogicalBytes "$SOURCE_IMAGE_BYTES" \
-            --argjson sourceAllocatedBytes "$source_allocated" \
-            --argjson candidateLogicalBytes "$candidate_logical" \
-            --argjson candidateAllocatedBytes "$candidate_allocated" \
-            --argjson deviceCapacityBytes "$device_bytes" --argjson filesystemCapacityBytes "$filesystem_bytes" \
-            --argjson cloneSeconds "$(duration "$evidence/clone-start.txt" "$evidence/clone-end.txt")" \
-            --argjson minimumResizeSeconds "$(duration "$evidence/min-resize-start.txt" "$evidence/min-resize-end.txt")" \
-            --argjson regrowSeconds "$(duration "$evidence/regrow-start.txt" "$evidence/regrow-end.txt")" \
-            '{supported:true,effective:null,physicalFileReduced:($candidateLogicalBytes < $sourceLogicalBytes or $candidateAllocatedBytes < $sourceAllocatedBytes),sourceLogicalBytes:$sourceLogicalBytes,candidateLogicalBytes:$candidateLogicalBytes,reclaimedLogicalBytes:($sourceLogicalBytes-$candidateLogicalBytes),sourceAllocatedBytes:$sourceAllocatedBytes,candidateAllocatedBytes:$candidateAllocatedBytes,reclaimedAllocatedBytes:($sourceAllocatedBytes-$candidateAllocatedBytes),deviceCapacityBytes:$deviceCapacityBytes,filesystemCapacityBytes:$filesystemCapacityBytes,cloneSeconds:$cloneSeconds,minimumResizeSeconds:$minimumResizeSeconds,regrowSeconds:$regrowSeconds,filesystem:"case-sensitive-jhfs-plus",container:"ASIF",sourceCacheUntouched:true,cacheSaved:false}' \
+          jq -n --argjson sourceArchiveBytes "$SOURCE_CACHE_SIZE" \
+            --argjson candidateLogicalBytes "$(jq -r .logicalBytes "$evidence/candidate-file.json")" \
+            --argjson candidateAllocatedBytes "$(jq -r .allocatedBytes "$evidence/candidate-file.json")" \
+            --argjson deviceCapacityBytes "$device_bytes" \
+            --argjson filesystemCapacityBytes "$filesystem_bytes" --argjson rootCount "$root_count" \
+            --argjson conversionSeconds "$(duration "$evidence/conversion-start.txt" "$evidence/conversion-end.txt")" \
+            '{supported:true,freshExport:true,sourceMaintenanceFormat:"UDSB",readerFormat:"ASIF",sourceArchiveBytes:$sourceArchiveBytes,candidateLogicalBytes:$candidateLogicalBytes,candidateAllocatedBytes:$candidateAllocatedBytes,deviceCapacityBytes:$deviceCapacityBytes,filesystemCapacityBytes:$filesystemCapacityBytes,rootCount:$rootCount,conversionSeconds:$conversionSeconds,filesystem:"case-sensitive-journaled-hfs-plus",sourceCacheUntouched:true,cacheSaved:false,storeOptimise:"skipped",experimental:true}' \
             > "$evidence/result.json"
           python3 -c 'import time; print(time.time())' > "$evidence/save-start.txt"
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/darwin-asif-reclaim-cache/nix-root.asif
-          key: ${{ steps.final.outputs.cache-key }}
-      - name: Bind the sole reclaimed archive
+          key: ${{ steps.candidate.outputs.cache-key }}
+      - name: Record publication cost and archive ratio
         env:
           GH_TOKEN: ${{ github.token }}
-          CACHE_KEY: ${{ steps.final.outputs.cache-key }}
+          CACHE_KEY: ${{ steps.candidate.outputs.cache-key }}
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-producer"
+          evidence="$RUNNER_TEMP/asif-fresh-export-producer"
           python3 -c 'import time; print(time.time())' > "$evidence/save-end.txt"
           for _ in 1 2 3 4 5; do
             gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY" \
-              --limit 10 --json id,key,sizeInBytes,version > "$evidence/reclaimed-cache.json"
-            test "$(jq length "$evidence/reclaimed-cache.json")" -eq 1 && break
+              --limit 10 --json id,key,sizeInBytes,version > "$evidence/exported-cache.json"
+            test "$(jq length "$evidence/exported-cache.json")" -eq 1 && break
             sleep 2
           done
-          archive_bytes="$(jq -er 'if length == 1 then .[0].sizeInBytes else error("missing reclaimed cache") end' "$evidence/reclaimed-cache.json")"
-          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
-          jq --argjson sourceArchiveBytes "$SOURCE_CACHE_SIZE" --argjson reclaimedArchiveBytes "$archive_bytes" \
-            --argjson archiveSeconds "$(duration "$evidence/save-start.txt" "$evidence/save-end.txt")" \
-            '. + {effective:($reclaimedArchiveBytes < $sourceArchiveBytes),cacheSaved:true,sourceArchiveBytes:$sourceArchiveBytes,reclaimedArchiveBytes:$reclaimedArchiveBytes,reclaimedArchiveBytesSaved:($sourceArchiveBytes-$reclaimedArchiveBytes),archiveSeconds:$archiveSeconds}' \
-            "$evidence/result.json" > "$evidence/result.next.json"
-          mv "$evidence/result.next.json" "$evidence/result.json"
+          archive_bytes="$(jq -er 'if length == 1 then .[0].sizeInBytes else error("missing exported cache") end' "$evidence/exported-cache.json")"
           test "$archive_bytes" -gt 0
-          test "$archive_bytes" -le "$RECLAIMED_CACHE_MAX_BYTES"
-          test "$archive_bytes" -lt "$SOURCE_CACHE_SIZE"
-          cat "$evidence/result.json" >> "$GITHUB_STEP_SUMMARY"
+          test "$archive_bytes" -le "$EXPORTED_CACHE_MAX_BYTES"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          jq --argjson exportedArchiveBytes "$archive_bytes" \
+            --argjson publicationSeconds "$(duration "$evidence/save-start.txt" "$evidence/save-end.txt")" '
+              . + {cacheSaved:true,exportedArchiveBytes:$exportedArchiveBytes,
+                archiveDeltaBytes:($exportedArchiveBytes-.sourceArchiveBytes),
+                archiveRatio:($exportedArchiveBytes/.sourceArchiveBytes),
+                publicationSeconds:$publicationSeconds}
+            ' "$evidence/result.json" > "$evidence/result.next.json"
+          mv "$evidence/result.next.json" "$evidence/result.json"
+          python3 -c 'import time; print(time.time())' > "$evidence/completion-end.txt"
+          jq -s 'add' "$evidence/cache-budget.json" "$evidence/result.json" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Detach owned producer images after failure
         if: always()
         run: |
-          for mountpoint in "$RUNNER_TEMP/asif-reclaim-source-mount" "$RUNNER_TEMP/asif-reclaim-final-mount"; do
+          for mountpoint in "$RUNNER_TEMP/asif-fresh-export-source-mount" "$RUNNER_TEMP/asif-fresh-export-candidate-mount"; do
             actual="$(cd "$(dirname "$mountpoint")" 2>/dev/null && pwd -P)/$(basename "$mountpoint")"
             if mount | grep -Fq " on $actual "; then
               perl -e 'alarm shift; exec @ARGV' 120 hdiutil detach "$actual" \
@@ -295,11 +271,11 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: darwin-asif-reclaim-producer
-          path: ${{ runner.temp }}/asif-reclaim-producer
+          name: darwin-asif-fresh-export-producer
+          path: ${{ runner.temp }}/asif-fresh-export-producer
 
   read:
-    needs: reclaim
+    needs: export
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -315,50 +291,51 @@ jobs:
         with:
           path: .harness
           persist-credentials: false
-      - name: Start the fresh reader and bind the reclaimed cache
+      - name: Start fresh-reader timing and bind the exported cache
         env:
           GH_TOKEN: ${{ github.token }}
-          CACHE_KEY: ${{ needs.reclaim.outputs.cache-key }}
+          CACHE_KEY: ${{ needs.export.outputs.cache-key }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           test "$(git -C .harness rev-parse HEAD)" = "$GITHUB_SHA"
-          evidence="$RUNNER_TEMP/asif-reclaim-reader"
+          evidence="$RUNNER_TEMP/asif-fresh-export-reader"
           mkdir -p "$evidence" "$RUNNER_TEMP/darwin-asif-reclaim-cache"
           python3 -c 'import time; print(time.time())' > "$evidence/setup-start.txt"
           gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY" \
             --limit 10 --json id,key,sizeInBytes,version > "$evidence/cache.json"
-          jq -e --arg key "$CACHE_KEY" --argjson max "$RECLAIMED_CACHE_MAX_BYTES" '
+          jq -e --arg key "$CACHE_KEY" --argjson max "$EXPORTED_CACHE_MAX_BYTES" '
             length == 1 and .[0].key == $key and .[0].sizeInBytes > 0
             and .[0].sizeInBytes <= $max and (.[0].version | test("^[0-9a-f]{64}$"))
           ' "$evidence/cache.json"
           python3 -c 'import time; print(time.time())' > "$evidence/restore-start.txt"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: reclaimed
+        id: exported
         with:
           path: ${{ runner.temp }}/darwin-asif-reclaim-cache/nix-root.asif
-          key: ${{ needs.reclaim.outputs.cache-key }}
+          key: ${{ needs.export.outputs.cache-key }}
           fail-on-cache-miss: true
-      - name: Validate the exact reclaimed restore
+      - name: Validate the exact exported restore
         env:
-          CACHE_HIT: ${{ steps.reclaimed.outputs.cache-hit }}
-          MATCHED_KEY: ${{ steps.reclaimed.outputs.cache-matched-key }}
-          CACHE_KEY: ${{ needs.reclaim.outputs.cache-key }}
+          CACHE_HIT: ${{ steps.exported.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.exported.outputs.cache-matched-key }}
+          CACHE_KEY: ${{ needs.export.outputs.cache-key }}
         run: |
           set -euo pipefail
           test "$CACHE_HIT" = true
           test "$MATCHED_KEY" = "$CACHE_KEY"
           test -f "$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif"
-          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-reclaim-reader/restore-end.txt"
-          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-reclaim-reader/mount-start.txt"
-      - name: Mount and validate the reclaimed ASIF
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-fresh-export-reader/restore-end.txt"
+          python3 -c 'import time; print(time.time())' > "$RUNNER_TEMP/asif-fresh-export-reader/mount-start.txt"
+      - name: Mount and validate the fresh ASIF
         env:
-          DEVICE_CAPACITY: ${{ needs.reclaim.outputs.device-capacity }}
-          FILESYSTEM_CAPACITY: ${{ needs.reclaim.outputs.filesystem-capacity }}
-          ROOTS_SHA256: ${{ needs.reclaim.outputs.roots-sha256 }}
+          DEVICE_CAPACITY: ${{ needs.export.outputs.device-capacity }}
+          FILESYSTEM_CAPACITY: ${{ needs.export.outputs.filesystem-capacity }}
+          ROOTS_COUNT: ${{ needs.export.outputs.roots-count }}
+          ROOTS_SHA256: ${{ needs.export.outputs.roots-sha256 }}
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-reader"
+          evidence="$RUNNER_TEMP/asif-fresh-export-reader"
           image="$RUNNER_TEMP/darwin-asif-reclaim-cache/nix-root.asif"
           sudo touch /etc/synthetic.conf
           if grep -qE '^nix($|[[:space:]])' /etc/synthetic.conf; then
@@ -380,10 +357,11 @@ jobs:
           test "$(jq -er '."system-entities"[] | select(."content-hint" == "GUID_partition_scheme") | .size' "$evidence/attach.json")" = "$DEVICE_CAPACITY"
           test "$(diskutil info -plist "$whole" | plutil -extract TotalSize raw -o - -- -)" = "$DEVICE_CAPACITY"
           test "$(diskutil info -plist /nix | plutil -extract FilesystemType raw -o - -- -)" = hfs
+          test "$(diskutil info -plist /nix | plutil -extract FilesystemName raw -o - -- -)" = 'Case-sensitive Journaled HFS+'
           test "$(diskutil info -plist /nix | plutil -extract TotalSize raw -o - -- -)" = "$FILESYSTEM_CAPACITY"
           roots=/nix/var/nix/gcroots/github-ci/aarch64-darwin
           find "$roots" -mindepth 1 -maxdepth 1 -print | sort > "$evidence/roots.txt"
-          test "$(wc -l < "$evidence/roots.txt" | tr -d ' ')" = 23
+          test "$(wc -l < "$evidence/roots.txt" | tr -d ' ')" = "$ROOTS_COUNT"
           while IFS= read -r link; do
             test -L "$link"
             target="$(readlink "$link")"
@@ -411,7 +389,7 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-reader"
+          evidence="$RUNNER_TEMP/asif-fresh-export-reader"
           python3 -c 'import time; print(time.time())' > "$evidence/install-end.txt"
           python3 -c 'import time; print(time.time())' > "$evidence/build-start.txt"
           nfb_root=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build
@@ -433,7 +411,7 @@ jobs:
           done
           jq -cnS --arg revision "$TARGET_SHA" --argjson records "$EXPECTED_RECORDS" \
             '{revision:$revision,records:($records | map({attr,storePath}))}' > "$evidence/darwin-proof.json"
-          proof_path="$(nix store add --mode flat --name darwin-asif-reclaim-proof.json "$evidence/darwin-proof.json")"
+          proof_path="$(nix store add --mode flat --name darwin-asif-fresh-export-proof.json "$evidence/darwin-proof.json")"
           cachix push whitestrake "$proof_path"
           nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
           echo "$proof_path" > "$evidence/proof-path.txt"
@@ -443,7 +421,7 @@ jobs:
       - name: Run untimed full NAR integrity verification
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/asif-reclaim-reader"
+          evidence="$RUNNER_TEMP/asif-fresh-export-reader"
           python3 -c 'import time; print(time.time())' > "$evidence/nar-verify-start.txt"
           nix store verify --all --no-trust
           python3 -c 'import time; print(time.time())' > "$evidence/nar-verify-end.txt"
@@ -453,7 +431,7 @@ jobs:
       - name: Record reader timings
         if: always()
         run: |
-          evidence="$RUNNER_TEMP/asif-reclaim-reader"
+          evidence="$RUNNER_TEMP/asif-fresh-export-reader"
           duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
           if test -f "$evidence/completion-end.txt"; then
             jq -n \
@@ -481,36 +459,38 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: darwin-asif-reclaim-reader
-          path: ${{ runner.temp }}/asif-reclaim-reader
+          name: darwin-asif-fresh-export-reader
+          path: ${{ runner.temp }}/asif-fresh-export-reader
 
   verify:
-    needs: [reclaim, read]
-    if: always() && needs.reclaim.result == 'success' && needs.read.result == 'success'
+    needs: [export, read]
+    if: always() && needs.export.result == 'success' && needs.read.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: darwin-asif-reclaim-*
+          pattern: darwin-asif-fresh-export-*
           path: ${{ runner.temp }}/evidence
-      - name: Verify reclamation and fresh-reader evidence
+      - name: Verify the export and fresh-reader evidence
         run: |
           set -euo pipefail
-          producer="$RUNNER_TEMP/evidence/darwin-asif-reclaim-producer"
-          reader="$RUNNER_TEMP/evidence/darwin-asif-reclaim-reader"
-          jq -e '.supported and .effective and .sourceCacheUntouched and .cacheSaved
-            and .reclaimedArchiveBytes < .sourceArchiveBytes
-            and .reclaimedArchiveBytes <= 3221225472' "$producer/result.json"
-          diff -u "$producer/source-root-targets.tsv" "$producer/final-root-targets.tsv"
-          test "$(shasum -a 256 "$reader/root-targets.tsv" | awk '{print $1}')" = \
-            "$(cat "$producer/source-roots.sha256")"
+          producer="$RUNNER_TEMP/evidence/darwin-asif-fresh-export-producer"
+          reader="$RUNNER_TEMP/evidence/darwin-asif-fresh-export-reader"
+          jq -e '.supported and .freshExport and .sourceCacheUntouched and .cacheSaved
+            and .sourceMaintenanceFormat == "UDSB" and .readerFormat == "ASIF"
+            and .storeOptimise == "skipped" and .exportedArchiveBytes > 0
+            and .exportedArchiveBytes <= 3221225472 and .archiveRatio > 0' "$producer/result.json"
+          diff -u "$producer/source-root-targets.tsv" "$producer/candidate-root-targets.tsv"
+          diff -u "$producer/source-root-targets.tsv" "$reader/root-targets.tsv"
           test "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$reader/records.json")" = \
             "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
           test "$(jq -r .revision "$reader/darwin-proof.json")" = "$TARGET_SHA"
+          test "$(jq -c '.records | sort_by(.attr)' "$reader/darwin-proof.json")" = \
+            "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$reader/records.json")"
           jq -e '.scope == "all" and .trustChecks == false and .includedInReaderTiming == false
             and .status == "passed" and .pathCount > 0' "$reader/nar-verification.json"
-          jq -n --arg cacheKey "${{ needs.reclaim.outputs.cache-key }}" \
+          jq -n --arg cacheKey "${{ needs.export.outputs.cache-key }}" \
             --arg proofPath "$(cat "$reader/proof-path.txt")" \
-            '{matching:true,reclaimed:true,cacheKey:$cacheKey,proofPath:$proofPath,experimental:true}' \
+            '{matching:true,freshExport:true,cacheKey:$cacheKey,proofPath:$proofPath,experimental:true}' \
             | tee -a "$GITHUB_STEP_SUMMARY"
