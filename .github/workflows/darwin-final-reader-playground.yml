@@ -488,7 +488,14 @@ jobs:
             max-jobs = auto
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
-      - name: Run the common read-only output and proof gate
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Run the common output and proof publication gate
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/darwin-final-reader"
@@ -499,11 +506,12 @@ jobs:
           "$nfb" --help >/dev/null
           python3 .harness/.github/scripts/fast-ci-measure.py "$root" -- \
             "$nfb" --flake .#ci.aarch64-darwin --systems aarch64-darwin --eval-workers 1 \
-            --option builders '' --option max-jobs auto --retries 2 \
+            --option builders '' --option max-jobs auto --cachix-cache whitestrake --retries 2 \
             --result-file "$root/results.json" -j 50 --stream-json-lines
           jq -ce -f .harness/.github/scripts/nix-fast-build-records.jq "$root/results.json" > "$root/records.json"
           test "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
             "$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$EXPECTED_RECORDS")"
+          jq -e 'any(.results[]; .type == "CACHIX" and .success == true)' "$root/results.json"
           jq -r '.[].storePath' "$root/records.json" | while IFS= read -r store_path; do
             nix path-info --store https://whitestrake.cachix.org "$store_path" >/dev/null
           done
@@ -511,6 +519,10 @@ jobs:
             '{revision:$revision,records:($records[0] | map({attr,storePath}) | sort_by(.attr))}' \
             > "$root/darwin-proof.json"
           shasum -a 256 "$root/darwin-proof.json" | awk '{print $1}' > "$root/proof-sha256.txt"
+          proof_path="$(nix store add --mode flat --name darwin-final-reader-proof.json "$root/darwin-proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          echo "$proof_path" > "$root/proof-path.txt"
           python3 -c 'import time; print(time.time())' > "$root/build-end.txt"
           python3 -c 'import time; print(time.time())' > "$root/completion-end.txt"
       - name: Detach the image and stop the reader
@@ -583,8 +595,8 @@ jobs:
                releaseManifestSha256:(if $arm == "release-hot" then $manifest else null end),
                hotReleaseId:(if $arm == "release-hot" then $hotRelease else null end),
                hotManifestSha256:(if $arm == "release-hot" then $hotManifest else null end),
-               timingBoundary:"before cache or manifest retrieval through successful output and local proof",
-               cacheWrites:false}' > "$root/environment.json"
+               timingBoundary:"before cache or manifest retrieval through successful output and Cachix proof publication",
+               actionsCacheWrites:false}' > "$root/environment.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -609,23 +621,27 @@ jobs:
           arms=(udsb asif release-hot)
           reference_records=
           reference_proof=
+          reference_proof_path=
           : > "$RUNNER_TEMP/timings.jsonl"
           for pair in $(seq 1 "$ROUNDS"); do
             for arm in "${arms[@]}"; do
               root="$RUNNER_TEMP/readers/darwin-final-reader-pair-$pair-$arm"
               records="$(jq -c 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")"
               proof="$(cat "$root/proof-sha256.txt")"
+              proof_path="$(cat "$root/proof-path.txt")"
               if [ -z "$reference_records" ]; then
                 reference_records="$records"
                 reference_proof="$proof"
+                reference_proof_path="$proof_path"
               else
                 test "$records" = "$reference_records"
                 test "$proof" = "$reference_proof"
+                test "$proof_path" = "$reference_proof_path"
               fi
               jq -e --argjson pair "$pair" --arg arm "$arm" '
                 .pair == $pair and .arm == $arm and .fixture == "14a8d7657900a917560ddbe77577c0d5a1b77638"
                 and .expectedNixFastBuild == "/nix/store/q27c609nry8dzwiyc92liygrqbbdy6pi-nix-fast-build-1.6.0"
-                and .verification == "default" and .cacheWrites == false
+                and .verification == "default" and .actionsCacheWrites == false
                 and ($arm != "release-hot" or .autofsckPolicy == "disabled-after-fsck-gate")
               ' "$root/environment.json"
               jq -cn --argjson pair "$pair" --arg arm "$arm" \
@@ -633,13 +649,14 @@ jobs:
                 '{pair:$pair,arm:$arm,completeSeconds:$complete}' >> "$RUNNER_TEMP/timings.jsonl"
             done
           done
-          jq -s --argjson rounds "$ROUNDS" --arg proof "$reference_proof" '
+          jq -s --argjson rounds "$ROUNDS" --arg proof "$reference_proof" \
+            --arg proofPath "$reference_proof_path" '
             def median: sort | if length % 2 == 1 then .[length/2 | floor]
               else (.[length/2-1] + .[length/2]) / 2 end;
-            {matching:true,rounds:$rounds,arms:["udsb","asif","release-hot"],proofSha256:$proof,
-             primaryEndpoint:"setup start through successful output and local proof",
+            {matching:true,rounds:$rounds,arms:["udsb","asif","release-hot"],proofSha256:$proof,proofPath:$proofPath,
+             primaryEndpoint:"setup start through successful output and Cachix proof publication",
              medians:(group_by(.arm) | map({key:.[0].arm,value:(map(.completeSeconds) | median)}) | from_entries),
-             cacheWrites:false,experimental:true}
+             actionsCacheWrites:false,experimental:true}
           ' "$RUNNER_TEMP/timings.jsonl" | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo
