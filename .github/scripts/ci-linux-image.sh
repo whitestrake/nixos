@@ -35,12 +35,25 @@ valid_component() {
   esac
 }
 
-owned_temp_path() {
-  case "$1" in
-    "$RUNNER_TEMP"/*) ;;
+canonical_temp_path() {
+  local runner path parent
+  runner="$(realpath "${RUNNER_TEMP:?RUNNER_TEMP is required}")"
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    path="$(realpath "$1")"
+  else
+    parent="$(realpath "$(dirname "$1")")" || return 1
+    path="$parent/$(basename "$1")"
+  fi
+  case "$path" in
+    "$runner"/*) printf '%s\n' "$path" ;;
     *) return 1 ;;
   esac
-  [ "$1" != "$RUNNER_TEMP" ]
+}
+
+remove_temp_path() {
+  local path
+  path="$(canonical_temp_path "$1")" || die "path must resolve beneath RUNNER_TEMP: $1"
+  rm -rf -- "$path"
 }
 
 checkpoint_complete() {
@@ -60,11 +73,12 @@ checkpoint_database() {
 }
 
 cleanup_overlay() {
-  local format="$1" root mount status=0
+  local format="$1" root mount root_pre_existing=false status=0
   valid_format "$format" || die "format must be erofs or squashfs"
   root="$(nix_dir)"
   mount="$(mount_dir "$format")"
   [ -f "$mount/owned" ] || return 0
+  [ ! -f "$mount/root-pre-existing" ] || root_pre_existing=true
 
   if mountpoint -q "$root"; then
     sudo umount "$root" || status=$?
@@ -72,10 +86,10 @@ cleanup_overlay() {
   if mountpoint -q "$mount/lower"; then
     sudo umount "$mount/lower" || status=$?
   fi
-  if [ -d "$root" ] && ! mountpoint -q "$root"; then
+  if [ "$root_pre_existing" = false ] && [ -d "$root" ] && ! mountpoint -q "$root"; then
     sudo rmdir "$root" || status=$?
   fi
-  [ "$status" -ne 0 ] || rm -f "$mount/owned" "$mount/checkpointed" "$mount/frozen"
+  [ "$status" -ne 0 ] || remove_temp_path "$mount"
   return "$status"
 }
 
@@ -136,7 +150,7 @@ restore_mount() {
   local system image result nfb
   valid_component "$component" "$format" || die "component and filesystem format do not match"
   [[ "$workers" =~ ^[1-4]$ ]] || die "workers must be 1..4"
-  owned_temp_path "$directory" || die "restore directory must be beneath RUNNER_TEMP"
+  directory="$(canonical_temp_path "$directory")" || die "restore directory must resolve beneath RUNNER_TEMP"
   [ ! -e "$directory" ] || die "restore directory already exists: $directory"
   result="$RUNNER_TEMP/ci-linux-eager-$$.json"
   rm -f "$result"
@@ -145,13 +159,13 @@ restore_mount() {
     --repo "$repo" --selection "$selection" --component "$component" \
     --directory "$directory" --workers "$workers" > "$result"; then
     rm -f "$result"
-    rm -rf "$directory"
+    remove_temp_path "$directory"
     return 1
   fi
   image="$directory/image.dmg"
   if ! mount_overlay "$format" "$image"; then
     rm -f "$result"
-    [ -f "$(mount_dir "$format")/owned" ] || rm -rf "$directory"
+    [ -f "$(mount_dir "$format")/owned" ] || remove_temp_path "$directory"
     return 1
   fi
   case "$component" in
@@ -162,13 +176,13 @@ restore_mount() {
   if ! validate_database; then
     cleanup_overlay "$format" || return
     rm -f "$result"
-    rm -rf "$directory"
+    remove_temp_path "$directory"
     return 1
   fi
   if ! nfb="$(nfb_path "$system")"; then
     cleanup_overlay "$format" || return
     rm -f "$result"
-    rm -rf "$directory"
+    remove_temp_path "$directory"
     return 1
   fi
   mv "$result" "$directory/eager.json"
@@ -194,20 +208,35 @@ validate_mounted() {
 }
 
 checkpoint_full() {
-  local format="$1" mount
+  local format="$1" root mount
   valid_format "$format" || die "format must be erofs or squashfs"
   mount="$(mount_dir "$format")"
-  [ -f "$mount/owned" ] || die "Linux image mount is not owned by this helper"
-  checkpoint_database "$(nix_dir)/var/nix/db/db.sqlite"
+  root="$(nix_dir)"
+  if [ ! -f "$mount/owned" ]; then
+    [ -d "$root" ] || die "Nix store is missing: $root"
+    [ ! -e "$mount" ] || die "unowned mount state already exists: $mount"
+    mkdir -p "$mount"
+    touch "$mount/owned" "$mount/root-pre-existing"
+    if ! sudo mount --bind "$root" "$root"; then
+      remove_temp_path "$mount"
+      return 1
+    fi
+  fi
+  checkpoint_database "$root/var/nix/db/db.sqlite"
   touch "$mount/checkpointed"
 }
 
 freeze_full() {
-  local format="$1" mount
+  local format="$1" root mount
   valid_format "$format" || die "format must be erofs or squashfs"
   mount="$(mount_dir "$format")"
+  root="$(nix_dir)"
   [ -f "$mount/checkpointed" ] || die "checkpoint must complete before freeze"
-  sudo mount -o remount,ro "$(nix_dir)"
+  if [ -f "$mount/root-pre-existing" ]; then
+    sudo mount -o remount,bind,ro "$root"
+  else
+    sudo mount -o remount,ro "$root"
+  fi
   touch "$mount/frozen"
 }
 
@@ -238,7 +267,7 @@ pack_seed() {
   local -a names=() roots=()
   valid_system "$system" || die "unsupported Linux system: $system"
   [ "$system" = x86_64-linux ] || die "the selected evaluator seed is x86_64-linux only"
-  if ! owned_temp_path "$output" || ! owned_temp_path "$store"; then
+  if ! output="$(canonical_temp_path "$output")" || ! store="$(canonical_temp_path "$store")"; then
     die "seed paths must be beneath RUNNER_TEMP"
   fi
   [ ! -e "$output" ] || die "seed output already exists: $output"
@@ -285,27 +314,77 @@ self_test() {
   checkpoint_complete '0|3|3'
   if checkpoint_complete '1|2|0'; then return 1; fi
 
-  local scratch log
+  local scratch runner outside log
   scratch="$(mktemp -d)"
+  runner="$scratch/runner"
+  outside="$scratch/outside"
   log="$scratch/commands"
-  mkdir -p "$scratch/linux-ci-mount-erofs/lower" "$scratch/nix" "$scratch/bin"
-  touch "$scratch/linux-ci-mount-erofs/owned"
+  mkdir -p "$runner" "$outside/keep" "$scratch/nix/var/nix/db" "$scratch/bin"
+  touch "$scratch/nix/var/nix/db/db.sqlite"
+  ln -s "$outside" "$runner/escape"
+  RUNNER_TEMP="$runner" canonical_temp_path "$runner/work" >/dev/null
+  if RUNNER_TEMP="$runner" canonical_temp_path "$runner" >/dev/null 2>&1; then return 1; fi
+  if RUNNER_TEMP="$runner" canonical_temp_path "$runner/../outside" >/dev/null 2>&1; then return 1; fi
+  if RUNNER_TEMP="$runner" canonical_temp_path "$runner/escape/keep" >/dev/null 2>&1; then return 1; fi
+  if (RUNNER_TEMP="$runner" remove_temp_path "$runner/escape/keep" >/dev/null 2>&1); then return 1; fi
+  [ -e "$outside/keep" ]
+
   cat > "$scratch/bin/mountpoint" <<'EOF'
 #!/usr/bin/env bash
-case "${*: -1}" in
-  */lower) exit 0 ;;
-  *) exit 1 ;;
-esac
+target="${*: -1}"
+[ "$target" = "$CI_LINUX_TEST_NIX" ] && [ -f "$CI_LINUX_TEST_ROOT_MOUNTED" ] && exit 0
+[ "$target" = "$CI_LINUX_TEST_LOWER" ] && [ -f "$CI_LINUX_TEST_LOWER_MOUNTED" ] && exit 0
+exit 1
 EOF
   cat > "$scratch/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CI_LINUX_TEST_LOG"
+case "$1" in
+  mount)
+    [ "${2:-}" != --bind ] || touch "$CI_LINUX_TEST_ROOT_MOUNTED"
+    ;;
+  rmdir) rmdir "$2" ;;
+  sqlite3) printf '%s\n' '0|0|0' ;;
+  umount)
+    [ "${CI_LINUX_TEST_FAIL_UMOUNT:-}" != "$2" ] || exit 1
+    [ "$2" != "$CI_LINUX_TEST_NIX" ] || rm -f "$CI_LINUX_TEST_ROOT_MOUNTED"
+    [ "$2" != "$CI_LINUX_TEST_LOWER" ] || rm -f "$CI_LINUX_TEST_LOWER_MOUNTED"
+    ;;
+esac
 EOF
   chmod +x "$scratch/bin/mountpoint" "$scratch/bin/sudo"
-  PATH="$scratch/bin:$PATH" RUNNER_TEMP="$scratch" CI_LINUX_NIX_DIR="$scratch/nix" \
-    CI_LINUX_TEST_LOG="$log" cleanup_overlay erofs
-  [ "$(cat "$log")" = "umount $scratch/linux-ci-mount-erofs/lower
-rmdir $scratch/nix" ]
+
+  export PATH="$scratch/bin:$PATH" RUNNER_TEMP="$runner" CI_LINUX_NIX_DIR="$scratch/nix"
+  export CI_LINUX_TEST_LOG="$log" CI_LINUX_TEST_NIX="$scratch/nix"
+  export CI_LINUX_TEST_LOWER="$runner/linux-ci-mount-squashfs/lower"
+  export CI_LINUX_TEST_ROOT_MOUNTED="$scratch/root-mounted"
+  export CI_LINUX_TEST_LOWER_MOUNTED="$scratch/lower-mounted"
+  checkpoint_full squashfs
+  freeze_full squashfs
+  [ -f "$runner/linux-ci-mount-squashfs/root-pre-existing" ]
+  cleanup_overlay squashfs
+  [ -d "$scratch/nix" ]
+  [ ! -e "$runner/linux-ci-mount-squashfs" ]
+  [ "$(sed -n '1p' "$log")" = "mount --bind $scratch/nix $scratch/nix" ]
+  grep -Fqx "mount -o remount,bind,ro $scratch/nix" "$log"
+
+  : > "$log"
+  mkdir -p "$runner/linux-ci-mount-erofs/lower" "$runner/linux-ci-mount-erofs/upper/dead" \
+    "$runner/linux-ci-mount-erofs/work" "$scratch/warm-nix"
+  touch "$runner/linux-ci-mount-erofs/owned" "$CI_LINUX_TEST_LOWER_MOUNTED"
+  CI_LINUX_NIX_DIR="$scratch/warm-nix" CI_LINUX_TEST_NIX="$scratch/warm-nix" \
+    CI_LINUX_TEST_LOWER="$runner/linux-ci-mount-erofs/lower" cleanup_overlay erofs
+  [ ! -e "$runner/linux-ci-mount-erofs" ]
+  [ ! -e "$scratch/warm-nix" ]
+  [ -e "$outside/keep" ]
+
+  mkdir -p "$runner/linux-ci-mount-erofs/upper/dead" "$scratch/failed-nix"
+  touch "$runner/linux-ci-mount-erofs/owned" "$CI_LINUX_TEST_ROOT_MOUNTED"
+  if CI_LINUX_NIX_DIR="$scratch/failed-nix" CI_LINUX_TEST_NIX="$scratch/failed-nix" \
+    CI_LINUX_TEST_FAIL_UMOUNT="$scratch/failed-nix" cleanup_overlay erofs; then
+    return 1
+  fi
+  [ -e "$runner/linux-ci-mount-erofs/upper/dead" ]
   rm -rf "$scratch"
 }
 
@@ -314,6 +393,7 @@ shift || true
 case "$command" in
   checkpoint) checkpoint_full "$@" ;;
   cleanup) cleanup_overlay "$@" ;;
+  discard-temp) remove_temp_path "$@" ;;
   freeze) freeze_full "$@" ;;
   pack-full) pack_full "$@" ;;
   pack-seed) pack_seed "$@" ;;

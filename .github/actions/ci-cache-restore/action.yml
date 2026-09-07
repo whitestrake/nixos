@@ -14,10 +14,6 @@ inputs:
   format:
     description: "Image filesystem: erofs or squashfs."
     required: true
-  directory:
-    description: "Restore directory beneath RUNNER_TEMP."
-    required: false
-    default: ""
   workers:
     description: "Concurrent eager download workers."
     required: false
@@ -46,7 +42,6 @@ runs:
       shell: bash
       env:
         CI_LINUX_COMPONENT: ${{ inputs.component }}
-        CI_LINUX_DIRECTORY: ${{ inputs.directory }}
         CI_LINUX_FORMAT: ${{ inputs.format }}
         CI_LINUX_REPOSITORY: ${{ inputs.repository }}
         CI_LINUX_SELECTION: ${{ inputs.selection }}
@@ -54,7 +49,11 @@ runs:
       run: |
         set -euo pipefail
         [ ! -e /nix ] || { echo "::error ::/nix already exists before Linux store preparation"; exit 1; }
-        directory="${CI_LINUX_DIRECTORY:-$RUNNER_TEMP/ci-linux-$CI_LINUX_COMPONENT}"
+        directory="$RUNNER_TEMP/ci-linux-$CI_LINUX_COMPONENT"
+        [ ! -e "$directory" ] && [ ! -L "$directory" ] || {
+          echo "::error ::Linux restore directory already exists: $directory"
+          exit 1
+        }
         result="$RUNNER_TEMP/ci-linux-restore-$$.json"
         if bash .github/scripts/ci-linux-image.sh restore-mount \
           "$CI_LINUX_REPOSITORY" "$CI_LINUX_SELECTION" "$CI_LINUX_COMPONENT" \
@@ -67,7 +66,6 @@ runs:
           } >> "$GITHUB_OUTPUT"
         else
           bash .github/scripts/ci-linux-image.sh cleanup "$CI_LINUX_FORMAT"
-          case "$directory" in "$RUNNER_TEMP"/*) rm -rf "$directory" ;; *) exit 1 ;; esac
           {
             echo "restored=false"
             echo "image="
@@ -112,10 +110,7 @@ runs:
       run: |
         set -euo pipefail
         bash .github/scripts/ci-linux-image.sh cleanup "$CI_LINUX_FORMAT"
-        case "$CI_LINUX_DIRECTORY" in
-          "$RUNNER_TEMP"/*) rm -rf "$CI_LINUX_DIRECTORY" ;;
-          *) echo "::error ::unsafe Linux restore directory: $CI_LINUX_DIRECTORY"; exit 1 ;;
-        esac
+        bash .github/scripts/ci-linux-image.sh discard-temp "$CI_LINUX_DIRECTORY"
 
     - name: Install Nix after rejected image
       if: >-
