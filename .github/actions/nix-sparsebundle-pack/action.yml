@@ -1,5 +1,5 @@
 name: "Pack sparsebundle Nix root"
-description: "GC, optimise, detach, compact, and validate a sparsebundle-backed Nix root."
+description: "GC, detach, compact, and validate a sparsebundle-backed Nix root."
 
 inputs:
   system:
@@ -24,14 +24,6 @@ runs:
         nix store gc
         duration="$((SECONDS - started))"
         echo "NIX_ROOT_STORE_GC_COMPLETE system=${{ inputs.system }} durationSeconds=$duration"
-
-        df -h /nix
-
-        started="$SECONDS"
-        optimise_status=0
-        nix store optimise || optimise_status=$?
-        duration="$((SECONDS - started))"
-        echo "NIX_ROOT_STORE_OPTIMISE_COMPLETE system=${{ inputs.system }} status=$optimise_status durationSeconds=$duration"
 
         df -h /nix
 
