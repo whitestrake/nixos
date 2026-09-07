@@ -11,24 +11,50 @@ import ci_cache_workflow as workflow
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_evaluator_inventory_retains_only_new_external_non_derivations(self):
-        unrelated, declared, git, archive, source, drv = [
+    def test_evaluator_inventory_retains_only_new_external_nix_source_trees(self):
+        unrelated, declared, git, archive, source, drv, ordinary, projection, legacy = (
+            paths
+        ) = [
             "/nix/store/" + char * 32 + "-" + name
             for char, name in zip(
-                "012345",
-                ("unrelated", "declared", "git", "archive", "source", "eval.drv"),
+                "012345678",
+                (
+                    "unrelated",
+                    "declared",
+                    "git",
+                    "archive",
+                    "source",
+                    "eval.drv",
+                    "patch",
+                    "projection",
+                    "legacy",
+                ),
             )
         ]
-        self.assertEqual(
-            workflow.evaluator_inputs(
-                [unrelated],
-                [drv, git, source, declared, archive, unrelated],
-                [declared, git, archive],
-            ),
-            {"evaluator/" + "4" * 32: source},
-        )
-        with self.assertRaisesRegex(ValueError, "unsafe evaluator input"):
-            workflow.evaluator_inputs([], [source + "/child"], [])
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def local(path):
+                return Path(tmp) / Path(path).name
+
+            for path in paths:
+                if path == ordinary:
+                    local(path).touch()
+                else:
+                    local(path).mkdir()
+                    if path != projection:
+                        (
+                            local(path)
+                            / ("default.nix" if path == legacy else "flake.nix")
+                        ).touch()
+            with patch.object(workflow, "Path", side_effect=local):
+                self.assertEqual(
+                    workflow.evaluator_inputs(
+                        [unrelated], paths, [declared, git, archive]
+                    ),
+                    {"evaluator/" + "4" * 32: source, "evaluator/" + "8" * 32: legacy},
+                )
+                with self.assertRaisesRegex(ValueError, "unsafe evaluator input"):
+                    workflow.evaluator_inputs([], [source + "/child"], [])
 
     def test_planned_inputs_validate_before_root_transaction(self):
         action = Path(__file__).parents[1] / "actions/nix-root-build/action.yml"
@@ -147,9 +173,7 @@ else:
             }
         }
         inputs = workflow.input_paths(archive)
-        inputs.update(
-            workflow.evaluator_inputs([], ["/nix/store/" + "4" * 32 + "-source"], [])
-        )
+        inputs["evaluator/" + "4" * 32] = "/nix/store/" + "4" * 32 + "-source"
         self.assertEqual(inputs["nixpkgs/nested"], "/nix/store/nested")
         total, parts = workflow.coverages(proof, inputs, nfb, {"definition": "sha"})
         self.assertEqual(
@@ -240,6 +264,9 @@ else:
             directory = root / "plan"
             calls = []
             source_input = "/nix/store/" + "3" * 32 + "-source"
+            source_directory = root / Path(source_input).name
+            source_directory.mkdir()
+            (source_directory / "flake.nix").touch()
 
             def run(*argv):
                 calls.append(argv)
@@ -281,6 +308,9 @@ else:
                 ),
                 patch.object(workflow.subprocess, "check_output", return_value=raw),
                 patch.object(workflow, "run", side_effect=run),
+                patch.object(
+                    workflow, "Path", side_effect=lambda path: root / Path(path).name
+                ),
                 patch.object(workflow.generation, "check_run"),
                 patch.object(workflow.generation, "resolve", side_effect=resolve),
             ):

@@ -42,6 +42,12 @@ def evaluator_inputs(before, after, excluded):
             continue
         match = STORE_PATH.fullmatch(path)
         image.require(match is not None, "unsafe evaluator input path: " + path)
+        source = Path(path)
+        # ponytail: conventional Nix entry points only; widen on a demonstrated miss.
+        if not source.is_dir() or not any(
+            (source / name).is_file() for name in ("flake.nix", "default.nix")
+        ):
+            continue
         result["evaluator/" + match[1]] = path
     return result
 
