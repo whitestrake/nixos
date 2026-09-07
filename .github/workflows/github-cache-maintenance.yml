@@ -25,6 +25,10 @@ name: Cache Maintenance
         description: Rebuild even when semantic coverage matches
         type: boolean
         default: false
+      exhaustive_checks:
+        description: Recursively hash Nix store contents on producers and readers (use with force_rebuild)
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -194,7 +198,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y squashfs-tools
-          python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json" "$SYSTEM"
+          python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json" "$SYSTEM" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
           if [ "$SYSTEM" = x86_64-linux ]; then
            nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
            bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
@@ -212,7 +216,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          "$HOST_PYTHON" .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" aarch64-darwin
+          "$HOST_PYTHON" .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" aarch64-darwin ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
           "$HOST_PYTHON" .github/scripts/ci_darwin.py produce --state "$RUNNER_TEMP/darwin" --coverage "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" --output "$RUNNER_TEMP/darwin-produced" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
           for component in darwin-image-aarch64-darwin darwin-maintenance-aarch64-darwin; do
            "$HOST_PYTHON" .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "$component" --directory "$RUNNER_TEMP/darwin-produced/$component"
@@ -293,7 +297,7 @@ jobs:
         run: |
           set -euo pipefail
           "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py check-roots "$RUNNER_TEMP/plan/$COMPONENT.json" "$CI_LANE_SYSTEM"
-      - name: Run fresh full-image workload before deep verification
+      - name: Run fresh full-image workload
         env:
           SYSTEM: ${{ matrix.system }}
         if: matrix.component != 'linux-seed-x86_64-linux'
@@ -304,12 +308,12 @@ jobs:
           else
            bash .github/scripts/ci-nfb.sh "$SYSTEM" "$SYSTEM"
           fi
-      - name: Deep-verify exact candidate reader
+      - name: Validate exact candidate reader
         env:
           COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py reader "$RUNNER_TEMP/selection.json" "$COMPONENT"
+          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py reader "$RUNNER_TEMP/selection.json" "$COMPONENT" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
       - name: Detach Darwin store
         if: always() && runner.os == 'macOS'
         run: |

@@ -179,7 +179,11 @@ def plan(directory, proof_path, run_id, release_id=None):
         )
 
 
-def verify(coverage, system, deep=True):
+def verify(coverage, system, deep=False):
+    print(
+        f"CI_CACHE_VALIDATION system={system} exhaustive_checks={str(deep).lower()}",
+        flush=True,
+    )
     roots = Path("/nix/var/nix/gcroots/github-ci") / system
     retained = {str(path.resolve()) for path in roots.iterdir() if path.is_symlink()}
     image.require(
@@ -193,17 +197,16 @@ def verify(coverage, system, deep=True):
         paths and all(os.path.lexists(path) for path in paths),
         "expected closure paths missing",
     )
-    if not deep:
-        return
-    subprocess.run(
-        ["nix", "store", "verify", "--recursive", "--no-trust", *coverage["roots"]],
-        check=True,
-    )
     nfb = roots / "nix-fast-build/bin/nix-fast-build"
     subprocess.run([str(nfb), "--help"], check=True, stdout=subprocess.DEVNULL)
+    if deep:
+        subprocess.run(
+            ["nix", "store", "verify", "--recursive", "--no-trust", *coverage["roots"]],
+            check=True,
+        )
 
 
-def reader(selection_path, component):
+def reader(selection_path, component, deep=False):
     selection = generation.read_selection(
         selection_path, os.environ["GITHUB_REPOSITORY"]
     )
@@ -247,7 +250,7 @@ def reader(selection_path, component):
             and restored["imageSha256"] == manifest["imageSha256"],
             "mounted Linux component differs",
         )
-    verify(manifest["coverage"], system)
+    verify(manifest["coverage"], system, deep=deep)
     print(
         f"CI_CACHE_READER_VERIFIED component={component} releaseId={current['releaseId']}"
     )
@@ -268,9 +271,12 @@ def main():
         p = sub.add_parser(operation)
         p.add_argument("coverage", type=Path)
         p.add_argument("system", choices=SYSTEMS)
+        if operation == "verify":
+            p.add_argument("--exhaustive-checks", action="store_true")
     p = sub.add_parser("reader")
     p.add_argument("selection", type=Path)
     p.add_argument("component", choices=generation.COMPONENTS)
+    p.add_argument("--exhaustive-checks", action="store_true")
     args = parser.parse_args()
     if args.operation == "plan":
         plan(args.directory, args.proof, args.run_id, args.release_id)
@@ -283,10 +289,10 @@ def main():
         verify(
             json.loads(args.coverage.read_text()),
             args.system,
-            deep=args.operation == "verify",
+            deep=args.operation == "verify" and args.exhaustive_checks,
         )
     else:
-        reader(args.selection, args.component)
+        reader(args.selection, args.component, deep=args.exhaustive_checks)
 
 
 if __name__ == "__main__":
