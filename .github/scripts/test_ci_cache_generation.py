@@ -44,6 +44,37 @@ def generation(release_id=7):
 
 
 class GenerationTest(unittest.TestCase):
+    def test_asset_body_authenticates_draft_metadata_and_checks_digest(self):
+        body = b"candidate"
+        asset = {
+            "id": 9,
+            "name": "candidate.json",
+            "size": len(body),
+            "digest": "sha256:" + G.sha256(body),
+            "browser_download_url": "https://attacker.example/unused",
+        }
+        pin = G.identity(asset)
+        with (
+            patch.object(G, "gh_download_whole", return_value=body) as authenticated,
+            patch.object(G, "download_whole", return_value=body) as public,
+        ):
+            self.assertEqual(
+                G.asset_body("owner/repo", {"draft": True, "assets": [asset]}, pin),
+                body,
+            )
+            authenticated.assert_called_once_with("owner/repo", asset, 64 * 1024 * 1024)
+            public.assert_not_called()
+
+            self.assertEqual(
+                G.asset_body("owner/repo", {"draft": False, "assets": [asset]}, pin),
+                body,
+            )
+            public.assert_called_once_with(asset, 64 * 1024 * 1024)
+
+            authenticated.return_value = b"candidaXe"
+            with self.assertRaisesRegex(ValueError, "asset content digest mismatch"):
+                G.asset_body("owner/repo", {"draft": True, "assets": [asset]}, pin)
+
     def test_seal_rejects_unrealised_coverage_and_component_conflicts(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -119,7 +150,7 @@ class GenerationTest(unittest.TestCase):
                         patch.object(
                             G,
                             "asset_body",
-                            side_effect=lambda _release, pin: json.dumps(
+                            side_effect=lambda _repo, _release, pin: json.dumps(
                                 manifests[pin["assetId"]]
                             ).encode(),
                         ),
@@ -221,7 +252,7 @@ class GenerationTest(unittest.TestCase):
             patch.object(
                 G,
                 "asset_body",
-                side_effect=lambda _r, pin, *_args: bodies[pin["assetId"]],
+                side_effect=lambda _repo, _r, pin, *_args: bodies[pin["assetId"]],
             ),
             patch.object(G, "publisher_context", return_value=20),
             patch.object(G, "trusted_generation"),
@@ -466,7 +497,7 @@ class GenerationTest(unittest.TestCase):
             patch.object(
                 G,
                 "asset_body",
-                side_effect=lambda _release, pin, *_args: bodies[pin["assetId"]],
+                side_effect=lambda _repo, _release, pin, *_args: bodies[pin["assetId"]],
             ),
             patch.object(G, "upload", side_effect=upload),
             patch.object(G.time, "time", return_value=300000) as now,

@@ -207,6 +207,32 @@ def single_fixture(data, url):
 
 
 class ReleaseImageTest(unittest.TestCase):
+    def test_authenticated_asset_download_uses_pinned_id_and_checks_size(self):
+        asset = {
+            "id": 9,
+            "size": 4,
+            "browser_download_url": "https://attacker.example/unused",
+        }
+        with patch.object(IMAGE.subprocess, "run") as run:
+            run.return_value.stdout = b"data"
+            self.assertEqual(IMAGE.gh_download_whole("owner/repo", asset), b"data")
+            run.assert_called_once_with(
+                [
+                    "gh",
+                    "api",
+                    "repos/owner/repo/releases/assets/9",
+                    "--header",
+                    "Accept: application/octet-stream",
+                ],
+                stdout=IMAGE.subprocess.PIPE,
+                stderr=IMAGE.subprocess.PIPE,
+                check=True,
+                timeout=60,
+            )
+            run.return_value.stdout = b"short"
+            with self.assertRaisesRegex(ValueError, "asset size mismatch"):
+                IMAGE.gh_download_whole("owner/repo", asset)
+
     def test_local_producer_uses_verified_blocks_and_numeric_profile(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

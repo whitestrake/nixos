@@ -399,6 +399,32 @@ def download_whole(asset, limit=64 * 1024 * 1024):
     return body
 
 
+def gh_download_whole(repo, asset, limit=64 * 1024 * 1024):
+    require(
+        re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo),
+        "invalid repository",
+    )
+    require(
+        type(asset.get("id")) is int and asset["id"] > 0 and 0 < asset["size"] <= limit,
+        "invalid asset or download limit",
+    )
+    body = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo}/releases/assets/{asset['id']}",
+            "--header",
+            "Accept: application/octet-stream",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        timeout=60,
+    ).stdout
+    require(len(body) == asset["size"], "asset size mismatch")
+    return body
+
+
 def load_manifest(repo, release_id, manifest_identity, directory):
     # The identity comes from a frozen, authenticated generation selection.
     require(

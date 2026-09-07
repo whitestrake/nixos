@@ -20,6 +20,7 @@ from ci_cache_image import (
     download_whole,
     file_sha256,
     gh_api,
+    gh_download_whole,
     gh_upload,
     is_sha256,
     require,
@@ -220,10 +221,14 @@ def verify_proof(source, production=False):
     )
 
 
-def asset_body(release, pin, limit=64 * 1024 * 1024):
+def asset_body(repo, release, pin, limit=64 * 1024 * 1024):
     matches = [a for a in release["assets"] if a.get("id") == pin["assetId"]]
     require(len(matches) == 1 and identity(matches[0]) == pin, "asset identity changed")
-    body = download_whole(matches[0], limit)
+    body = (
+        gh_download_whole(repo, matches[0], limit)
+        if release.get("draft")
+        else download_whole(matches[0], limit)
+    )
     require(sha256(body) == pin["sha256"], "asset content digest mismatch")
     return body
 
@@ -243,7 +248,7 @@ def load_generation(repo, release_id=None, production=None):
     assets = [a for a in release["assets"] if a.get("name") == MANIFEST]
     require(len(assets) == 1, "missing generation manifest")
     pin = identity(assets[0])
-    generation = json.loads(asset_body(release, pin, 64 * 1024))
+    generation = json.loads(asset_body(repo, release, pin, 64 * 1024))
     validate_generation(generation)
     require(
         generation["releaseId"] == release["id"]
@@ -421,7 +426,7 @@ def candidate(repo, release_id):
     )
     assets = [a for a in release["assets"] if a["name"] == "candidate.json"]
     require(len(assets) == 1, "missing candidate identity")
-    plan = json.loads(asset_body(release, identity(assets[0]), 65536))
+    plan = json.loads(asset_body(repo, release, identity(assets[0]), 65536))
     require(plan["releaseId"] == release_id, "candidate identity mismatch")
     require(
         publisher_context(repo, plan["source"]["revision"], False)
@@ -538,7 +543,7 @@ def seal(repo, release_id, output):
         matches = [a for a in release["assets"] if a["name"] == component + ".json"]
         require(len(matches) == 1, "missing component")
         pin = identity(matches[0])
-        manifest = json.loads(asset_body(release, pin))
+        manifest = json.loads(asset_body(repo, release, pin))
         validate_manifest(manifest)
         coverage = manifest.get("coverage")
         fingerprint(coverage)
@@ -653,11 +658,11 @@ def latest_release(repo):
         raise
 
 
-def promotion_intent(release):
+def promotion_intent(repo, release):
     matches = [a for a in release["assets"] if a["name"] == "promotion-intent.json"]
     require(len(matches) == 1, "missing promotion intent")
     pin = identity(matches[0])
-    intent = json.loads(asset_body(release, pin, 65536))
+    intent = json.loads(asset_body(repo, release, pin, 65536))
     require(
         intent.get("releaseId") == release["id"]
         and positive(intent.get("publisherRunId")),
@@ -671,7 +676,7 @@ def promotion_intent(release):
 
 
 def finish_promotion(repo, release, recovery_run=None):
-    intent, pin = promotion_intent(release)
+    intent, pin = promotion_intent(repo, release)
     # Only a generation observed current can be completed. A delayed completion
     # starts grace later, never before its real promotion.
     require(
@@ -696,13 +701,13 @@ def promotion_chain(repo, release):
         matches = [a for a in release["assets"] if a["name"] == "promotion.json"]
         if not matches:
             break
-        record = json.loads(asset_body(release, identity(matches[0]), 65536))
+        record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
         require(
             record.get("releaseId") == release["id"]
             and positive(record.get("promotedAt")),
             "invalid promotion record",
         )
-        intent, pin = promotion_intent(release)
+        intent, pin = promotion_intent(repo, release)
         require(
             record.get("intentSha256") == pin["sha256"]
             and all(record.get(k) == v for k, v in intent.items()),
@@ -748,7 +753,9 @@ def promote(repo, selection_path, receipts):
     release = gh_api(repo, f"releases/{generation['releaseId']}")
     for component in COMPONENTS:
         receipt = read_receipt(repo, receipts[component], generation, component)
-        manifest = json.loads(asset_body(release, generation["components"][component]))
+        manifest = json.loads(
+            asset_body(repo, release, generation["components"][component])
+        )
         require(
             receipt.get("imageSha256") == manifest["imageSha256"],
             "reader image mismatch",
@@ -835,7 +842,7 @@ def prune(repo, source, execute=False):
     latest = gh_api(repo, "releases/latest")
     generation, _ = load_generation(repo, latest["id"], production=True)
     if not any(a["name"] == "promotion.json" for a in latest["assets"]):
-        intent, _ = promotion_intent(latest)
+        intent, _ = promotion_intent(repo, latest)
         require(
             intent["publisherRunId"] == generation["publisherRunId"],
             "promotion publisher mismatch",
