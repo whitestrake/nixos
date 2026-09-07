@@ -1,0 +1,252 @@
+name: Disposable Darwin hosted fault acceptance
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths: [.github/workflows/darwin-hosted-fault-acceptance.yml]
+  workflow_dispatch:
+    inputs:
+      cache_release_id:
+        description: Explicit staged Release ID
+        required: true
+        type: string
+      control_proof_store_path:
+        description: Same-head successful ordinary CI proof store path
+        required: true
+        type: string
+      control_run_id:
+        description: Same-head successful ordinary CI run ID
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+  checks: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GITHUB_TOKEN: ${{ github.token }}
+  CI_PUBLISH_CHECKS: "true"
+  CACHE_RELEASE_ID: ${{ inputs.cache_release_id }}
+  CONTROL_RUN_ID: ${{ inputs.control_run_id }}
+  CONTROL_PROOF_STORE_PATH: ${{ inputs.control_proof_store_path }}
+
+jobs:
+  register:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Darwin hosted fault workflow registered; fault jobs run only through workflow_dispatch.'
+
+  active-nfb-loss:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-cache-select
+        with:
+          mode: warm
+          release-id: ${{ env.CACHE_RELEASE_ID }}
+      - uses: ./.github/actions/ci-darwin-prepare
+        with:
+          mode: hot
+          configure-cachix: "true"
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Prepare control and fault observer
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -m 700 "$evidence"
+          jq -e --argjson id "$CACHE_RELEASE_ID" \
+            '.generation.releaseId == $id' "$RUNNER_TEMP/selection.json" >/dev/null
+          jq -e '.mode == "hot"' "$RUNNER_TEMP/darwin/mode.json" >/dev/null
+          jq -e '.recovered == false' "$RUNNER_TEMP/darwin/setup-recovery.json" >/dev/null
+          helper="$(jq -r .pid "$RUNNER_TEMP/darwin/helper.json")"
+          kill -0 "$helper"
+          root=/nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build
+          nfb="$(cd -P "$root" && pwd)/bin/nix-fast-build"
+          [ -x "$nfb" ]
+          nix path-info "${nfb%/bin/nix-fast-build}" >/dev/null
+          "$nfb" --help >/dev/null
+          printf '%s\n' "$nfb" > "$evidence/nfb-path.txt"
+          nix store cat --store https://whitestrake.cachix.org \
+            "$CONTROL_PROOF_STORE_PATH" > "$evidence/control-proof.json"
+          jq -ceS -f .github/scripts/ci-build-proof.jq "$evidence/control-proof.json" \
+            > "$RUNNER_TEMP/control-proof.canonical.json"
+          cmp "$evidence/control-proof.json" "$RUNNER_TEMP/control-proof.canonical.json"
+          jq -e --arg revision "$GITHUB_SHA" '.revision == $revision' \
+            "$evidence/control-proof.json" >/dev/null
+      - name: Lose helper during active NFB
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -uo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          nfb="$(cat "$evidence/nfb-path.txt")"
+          "$HOST_PYTHON" .github/native-harness/fault_observer.py \
+            --phase runtime --state "$RUNNER_TEMP/darwin" --evidence "$evidence" \
+            --release-id "$CACHE_RELEASE_ID" --nfb "$nfb" --timeout 20 &
+          observer=$!
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- \
+            /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin \
+            2>&1 | tee "$evidence/transaction.log"
+          workload=${PIPESTATUS[0]}
+          wait "$observer"
+          observed=$?
+          printf '{"workload":%s,"observer":%s}\n' "$workload" "$observed" > "$evidence/step-status.json"
+          [ "$workload" -eq 0 ] && [ "$observed" -eq 0 ]
+      - name: Verify single recovery and selected proof
+        run: |
+          "$HOST_PYTHON" .github/native-harness/verify_harness.py loss \
+            --state "$RUNNER_TEMP/darwin" --evidence "$RUNNER_TEMP/evidence" \
+            --release-id "$CACHE_RELEASE_ID" --control-run-id "$CONTROL_RUN_ID" \
+            --control-proof-store-path "$CONTROL_PROOF_STORE_PATH"
+          shasum -a 256 "$RUNNER_TEMP/evidence/control-proof.json" \
+            "$RUNNER_TEMP/evidence/recovered-proof.json" > "$RUNNER_TEMP/evidence/proof.sha256"
+      - name: Preserve bounded evidence
+        if: always()
+        run: |
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -p "$evidence"
+          for file in selection.json darwin/mode.json darwin/setup-recovery.json darwin/helper.json; do
+            [ ! -f "$RUNNER_TEMP/$file" ] || cp -p "$RUNNER_TEMP/$file" "$evidence/$(basename "$file")"
+          done
+          shasum -a 256 .github/native-harness/* > "$evidence/harness.sha256"
+      - name: Detach Darwin store
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+      - name: Upload active-loss evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: darwin-hosted-fault-evidence-active-nfb-loss
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  genuine-build-failure:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-cache-select
+        with:
+          mode: warm
+          release-id: ${{ env.CACHE_RELEASE_ID }}
+      - uses: ./.github/actions/ci-darwin-prepare
+        with:
+          mode: hot
+          configure-cachix: "true"
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Run intentional derivation failure
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -uo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/evidence"
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- \
+            /bin/bash .github/native-harness/failure-workload.sh \
+            2>&1 | tee "$RUNNER_TEMP/evidence/transaction.log"
+          status=${PIPESTATUS[0]}
+          printf '{"workload":%s}\n' "$status" > "$RUNNER_TEMP/evidence/step-status.json"
+          [ "$status" -ne 0 ]
+      - name: Verify genuine failure stayed failed
+        run: |
+          "$HOST_PYTHON" .github/native-harness/verify_harness.py failure \
+            --state "$RUNNER_TEMP/darwin" --evidence "$RUNNER_TEMP/evidence" \
+            --release-id "$CACHE_RELEASE_ID"
+      - name: Preserve bounded evidence
+        if: always()
+        run: |
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -p "$evidence"
+          for file in selection.json darwin/mode.json darwin/setup-recovery.json darwin/helper.json; do
+            [ ! -f "$RUNNER_TEMP/$file" ] || cp -p "$RUNNER_TEMP/$file" "$evidence/$(basename "$file")"
+          done
+          shasum -a 256 .github/native-harness/* > "$evidence/harness.sha256"
+      - name: Detach Darwin store
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+      - name: Upload genuine-failure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: darwin-hosted-fault-evidence-genuine-build-failure
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  setup-loss:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-cache-select
+        with:
+          mode: warm
+          release-id: ${{ env.CACHE_RELEASE_ID }}
+      - name: Start setup observer
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -m 700 "$evidence"
+          /usr/bin/python3 .github/native-harness/fault_observer.py \
+            --phase setup --state "$RUNNER_TEMP/darwin" --evidence "$evidence" \
+            --release-id "$CACHE_RELEASE_ID" --timeout 120 \
+            > "$evidence/observer.log" 2>&1 &
+          printf '%s\n' "$!" > "$evidence/observer.pid"
+      - uses: ./.github/actions/ci-darwin-prepare
+        with:
+          mode: hot
+          configure-cachix: "true"
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Verify native setup recovery
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/evidence/observer-result.json"
+          for _ in {1..125}; do
+            [ ! -f "$result" ] || break
+            sleep 1
+          done
+          [ -f "$result" ] || { kill "$(cat "$RUNNER_TEMP/evidence/observer.pid")" || true; exit 1; }
+          "$HOST_PYTHON" .github/native-harness/verify_harness.py setup \
+            --state "$RUNNER_TEMP/darwin" --evidence "$RUNNER_TEMP/evidence" \
+            --release-id "$CACHE_RELEASE_ID"
+      - name: Preserve bounded evidence
+        if: always()
+        run: |
+          evidence="$RUNNER_TEMP/evidence"
+          mkdir -p "$evidence"
+          for file in selection.json darwin/mode.json darwin/setup-recovery.json darwin/helper.json; do
+            [ ! -f "$RUNNER_TEMP/$file" ] || cp -p "$RUNNER_TEMP/$file" "$evidence/$(basename "$file")"
+          done
+          shasum -a 256 .github/native-harness/* > "$evidence/harness.sha256"
+      - name: Detach Darwin store
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+      - name: Upload setup-loss evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: darwin-hosted-fault-evidence-setup-loss
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 7
