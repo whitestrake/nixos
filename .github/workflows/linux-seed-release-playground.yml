@@ -1,5 +1,5 @@
 name: Linux Seed Release E52 Playground
-run-name: E52 ${{ inputs.round || 'registration' }} ${{ inputs.treatment || 'register' }}
+run-name: E52 ${{ inputs.round }} ${{ inputs.treatment }}
 
 on:
   workflow_dispatch:
@@ -17,15 +17,12 @@ on:
         description: JSON object containing pinned raw and compressed seed sources
         type: string
         required: true
-  push:
-    branches: [feat/ci-optimisation]
-    paths: [.github/workflows/linux-seed-release-playground.yml]
 
 permissions:
   contents: read
 
 concurrency:
-  group: e52-${{ github.ref }}-${{ inputs.round || github.run_id }}
+  group: e52-${{ github.ref }}-${{ inputs.round }}
   cancel-in-progress: false
 
 env:
@@ -40,15 +37,7 @@ env:
   ZSTD_IMAGE_SHA256: 77882027bc72dfee33d578a6f410c5fbecb5eba5769de7567fa5c1a3dfb05f79
 
 jobs:
-  register:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    steps:
-      - run: echo 'E52 workflow registered; readers run only through workflow_dispatch.'
-
   reader:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -164,7 +153,7 @@ jobs:
           path: ${{ runner.temp }}/fast-ci-erofs
           key: fast-ci-native-seed-v1-34027062459-x86_64-linux
           fail-on-cache-miss: true
-      - name: Restore with legacy four-worker assembly
+      - name: Restore with existing Release reader
         if: inputs.treatment == 'legacy'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -419,7 +408,7 @@ jobs:
                cpu:{model:$cpuModel,count:$cpuCount,unit:"runner-wide busy jiffies",
                  clockTicksPerSecond:$clockTicks,transport:$transportCpu,mount:$mountCpu,
                  install:$installCpu,workloadPublication:$workloadCpu},
-               network:{unit:"received payload bytes",transportInterface:$transportRx,
+               network:{unit:"interface RX byte counters; not payload bytes",transportInterface:$transportRx,
                  workloadInterface:$workloadRx},
                seconds:{controlIdentityPreflight:$preflightSeconds,completeEndpoint:$completeSeconds,
                  transportTotal:$transportSeconds,releaseSelectionApi:$selectionSeconds,
