@@ -327,9 +327,22 @@ def cleanup(root):
     # Refuse to detach while any unexpected process still has store files open.
     mount = root / "mounted"
     if mount.exists():
-        users = subprocess.run(
-            ["sudo", "lsof", "-t", "+f", "--", "/nix"], capture_output=True, text=True
-        )
+        # ReportCrash can retain store files briefly after owned children exit.
+        deadline = time.monotonic() + 10
+        while True:
+            users = subprocess.run(
+                ["sudo", "lsof", "-t", "+f", "--", "/nix"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if (
+                users.returncode not in (0, 1)
+                or not users.stdout.strip()
+                or time.monotonic() >= deadline
+            ):
+                break
+            time.sleep(0.2)
         if users.returncode not in (0, 1) or users.stdout.strip():
             pids = sorted({int(pid) for pid in users.stdout.split() if pid.isdecimal()})
             diagnostic = {

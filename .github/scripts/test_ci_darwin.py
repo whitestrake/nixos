@@ -12,6 +12,47 @@ import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_cleanup_waits_only_for_transient_store_users(self):
+        import io
+
+        for transient, status in ((False, 1), (True, 1), (True, 2)):
+            with (
+                self.subTest(transient=transient, status=status),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                (root / "mounted").touch()
+                inventory = (
+                    [subprocess.CompletedProcess([], 0, "515\n")] if transient else []
+                )
+                inventory.append(subprocess.CompletedProcess([], status, ""))
+                inventory.append(
+                    subprocess.CompletedProcess(
+                        [], 0, "/dev/disk7 on /nix (hfs, local)\n"
+                    )
+                )
+                with (
+                    patch.object(darwin.subprocess, "run", side_effect=inventory),
+                    patch.object(darwin.time, "monotonic", return_value=0),
+                    patch.object(darwin.time, "sleep") as sleep,
+                    patch.object(darwin, "command") as detach,
+                    patch.object(darwin, "stop_group") as stop,
+                    patch.object(sys, "stderr", io.StringIO()),
+                ):
+                    if status == 2:
+                        with self.assertRaisesRegex(ValueError, "store users remain"):
+                            darwin.cleanup(root)
+                        detach.assert_not_called()
+                        stop.assert_not_called()
+                        self.assertTrue((root / "mounted").exists())
+                    else:
+                        darwin.cleanup(root)
+                        detach.assert_called_once_with(
+                            "sudo", "hdiutil", "detach", "/nix", timeout=120
+                        )
+                        self.assertFalse((root / "mounted").exists())
+                    self.assertEqual(sleep.call_count, int(transient))
+
     def test_cleanup_keeps_reader_alive_until_native_detach_succeeds(self):
         for detach_fails in (False, True):
             with (
@@ -92,6 +133,7 @@ class RecoveryTests(unittest.TestCase):
                     ) as run,
                     patch.object(darwin, "command") as command,
                     patch.object(darwin, "stop_group") as stop,
+                    patch.object(darwin.time, "monotonic", side_effect=[0, 10]),
                     patch.object(sys, "stderr", output),
                 ):
                     with self.assertRaisesRegex(
