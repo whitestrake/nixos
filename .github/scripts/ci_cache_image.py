@@ -399,13 +399,15 @@ def download_whole(asset, limit=64 * 1024 * 1024):
     return body
 
 
-def load_manifest(repo, release_id, manifest_sha, directory):
+def load_manifest(repo, release_id, manifest_identity, directory):
     # The identity comes from a frozen, authenticated generation selection.
-    identity = manifest_sha if isinstance(manifest_sha, dict) else None
-    require(identity is not None, "component manifest identity is required")
-    manifest_sha = identity["sha256"] if identity else manifest_sha
     require(
-        isinstance(release_id, int) and release_id > 0 and is_sha256(manifest_sha),
+        isinstance(manifest_identity, dict), "component manifest identity is required"
+    )
+    require(
+        isinstance(release_id, int)
+        and release_id > 0
+        and is_sha256(manifest_identity["sha256"]),
         "invalid pinned release or manifest digest",
     )
     release = gh_api(repo, f"releases/{release_id}")
@@ -413,19 +415,19 @@ def load_manifest(repo, release_id, manifest_sha, directory):
     manifest_assets = [
         asset
         for asset in release.get("assets", [])
-        if asset.get("id") == identity["assetId"]
-        and asset.get("name") == identity["name"]
-        and asset.get("size") == identity["size"]
+        if asset.get("id") == manifest_identity["assetId"]
+        and asset.get("name") == manifest_identity["name"]
+        and asset.get("size") == manifest_identity["size"]
     ]
     require(len(manifest_assets) == 1, "release must contain one manifest")
     manifest_asset = manifest_assets[0]
     require(
         manifest_asset.get("id") is not None
-        and manifest_asset.get("digest") == "sha256:" + manifest_sha,
+        and manifest_asset.get("digest") == "sha256:" + manifest_identity["sha256"],
         "manifest asset identity mismatch",
     )
     body = download_whole(manifest_asset)
-    require(sha256(body) == manifest_sha, "manifest digest mismatch")
+    require(sha256(body) == manifest_identity["sha256"], "manifest digest mismatch")
     manifest = json.loads(body)
     validate_manifest(manifest)
     require(manifest["releaseId"] == release_id, "manifest release ID mismatch")
@@ -723,10 +725,10 @@ class BlockStore:
         return data[offset : offset + length]
 
 
-def eager(repo, release_id, manifest_sha, directory, workers=1):
+def eager(repo, release_id, manifest_identity, directory, workers=1):
     require(isinstance(workers, int) and 1 <= workers <= 4, "workers must be 1..4")
     selection_started = time.monotonic()
-    manifest, assets = load_manifest(repo, release_id, manifest_sha, directory)
+    manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
     selection_seconds = time.monotonic() - selection_started
     fetcher = RangeFetcher(repo, assets)
     directory = Path(directory)
@@ -790,9 +792,7 @@ def eager(repo, release_id, manifest_sha, directory, workers=1):
             path.unlink(missing_ok=True)
     return {
         "releaseId": release_id,
-        "manifestSha256": manifest_sha["sha256"]
-        if isinstance(manifest_sha, dict)
-        else manifest_sha,
+        "manifestSha256": manifest_identity["sha256"],
         "image": str(image_path),
         "imageBytes": manifest["imageBytes"],
         "imageSha256": manifest["imageSha256"],
@@ -932,8 +932,8 @@ def make_server(store, log):
     return ImageServer(store, WireLog(log))
 
 
-def serve(repo, release_id, manifest_sha, directory, ready, log, hot_pack=None):
-    manifest, assets = load_manifest(repo, release_id, manifest_sha, directory)
+def serve(repo, release_id, manifest_identity, directory, ready, log, hot_pack=None):
+    manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
     wire_log = WireLog(log)
     store = BlockStore(repo, release_id, manifest, assets, directory, wire_log)
     if manifest.get("component") == "darwin-image-aarch64-darwin":
@@ -957,7 +957,7 @@ def serve(repo, release_id, manifest_sha, directory, ready, log, hot_pack=None):
         )
     hot_blocks, hot_bytes = import_hot_pack(hot_pack, store) if hot_pack else (0, 0)
     return run_server(
-        store, ready, wire_log, hot_pack, hot_blocks, hot_bytes, manifest_sha
+        store, ready, wire_log, hot_pack, hot_blocks, hot_bytes, manifest_identity
     )
 
 
@@ -1003,7 +1003,13 @@ def serve_local(image, manifest_path, directory, ready, log):
 
 
 def run_server(
-    store, ready, wire_log, hot_pack=None, hot_blocks=0, hot_bytes=0, manifest_sha=None
+    store,
+    ready,
+    wire_log,
+    hot_pack=None,
+    hot_blocks=0,
+    hot_bytes=0,
+    manifest_identity=None,
 ):
     manifest = store.manifest
     release_id = manifest["releaseId"]
@@ -1022,9 +1028,9 @@ def run_server(
         server.server_close()
     result = {
         "releaseId": release_id,
-        "manifestSha256": manifest_sha["sha256"]
-        if isinstance(manifest_sha, dict)
-        else manifest_sha,
+        "manifestSha256": manifest_identity["sha256"]
+        if manifest_identity is not None
+        else None,
         "image": url,
         "imageBytes": manifest["imageBytes"],
         "imageSha256": manifest["imageSha256"],

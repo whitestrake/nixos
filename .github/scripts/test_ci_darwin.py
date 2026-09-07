@@ -1,4 +1,5 @@
 import os
+import http.client
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,129 @@ import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_initial_restore_has_one_pre_attach_recovery(self):
+        import json
+
+        selection = {
+            "generation": {
+                "releaseId": 7,
+                "components": {
+                    darwin.IMAGE: {"name": "image"},
+                    darwin.MAINTENANCE: {"name": "maintenance"},
+                },
+            }
+        }
+        for mode, failure, terminal in (
+            ("eager", "payload", False),
+            ("eager", "http-truncated", False),
+            ("hot", "helper", False),
+            ("hot", "attach", True),
+            ("maintenance", "payload", False),
+            ("maintenance", "extract", False),
+            ("eager", "attach", True),
+            ("maintenance", "attach", True),
+            ("eager", "recovery", True),
+            ("eager", "cleanup", True),
+            ("eager", "selection", True),
+        ):
+            with (
+                self.subTest(mode=mode, failure=failure),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp) / "state"
+                source = Path(tmp) / "selection.json"
+                source.write_text(json.dumps(selection))
+                events = []
+
+                def eager(_repo, _release, pin, directory, _workers):
+                    events.append(pin["name"])
+                    directory.mkdir()
+                    (directory / "partial").touch()
+                    if failure == "http-truncated" and len(events) == 1:
+                        raise http.client.IncompleteRead(b"partial")
+                    if failure in ("payload", "cleanup", "recovery"):
+                        if len(events) == 1 or failure == "recovery":
+                            raise ValueError("corrupt payload")
+
+                def extract(_source, _directory):
+                    events.append("extract")
+                    if failure == "extract":
+                        raise ValueError("invalid archive")
+                    return "bundle"
+
+                def helper(state, _argv):
+                    events.append("helper")
+                    if failure == "helper":
+                        (state / "startup-failure").write_text("helper-exited")
+                        raise RuntimeError("helper exited")
+                    return "http://127.0.0.1/image.dmg"
+
+                original_cleanup = darwin.cleanup
+
+                def cleanup(state):
+                    events.append("cleanup")
+                    if failure == "cleanup":
+                        raise RuntimeError("cleanup failed")
+                    original_cleanup(state)
+                    self.assertFalse((state / "restore").exists())
+
+                def attach(*_args, **_kwargs):
+                    events.append("attach")
+                    if failure == "attach":
+                        raise RuntimeError("native attach failed")
+
+                with (
+                    patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "ci_darwin.py",
+                            "mount",
+                            "--state",
+                            str(root),
+                            "--selection",
+                            str(source),
+                            "--mode",
+                            mode,
+                        ],
+                    ),
+                    patch.object(sys, "platform", "darwin"),
+                    patch.object(sys, "executable", "/usr/bin/python3"),
+                    patch.object(darwin, "state_root", side_effect=lambda p: p),
+                    patch.object(
+                        darwin,
+                        "read_selection",
+                        return_value=selection,
+                        side_effect=ValueError("invalid selection")
+                        if failure == "selection"
+                        else None,
+                    ),
+                    patch.object(darwin.image, "eager", side_effect=eager),
+                    patch.object(darwin, "start_helper", side_effect=helper),
+                    patch.object(darwin, "safe_extract", side_effect=extract),
+                    patch.object(darwin, "attach", side_effect=attach),
+                    patch.object(darwin, "cleanup", side_effect=cleanup),
+                    patch.object(darwin, "command"),
+                ):
+                    if terminal:
+                        with self.assertRaises((ValueError, RuntimeError)):
+                            darwin.main()
+                    else:
+                        self.assertEqual(darwin.main(), 0)
+                        self.assertEqual(events[-1], "attach")
+                        self.assertEqual(events.count("cleanup"), 1)
+                        self.assertEqual(
+                            json.loads((root / "mode.json").read_text())["mode"],
+                            "cold" if mode == "maintenance" else "maintenance",
+                        )
+                        self.assertFalse(darwin.recover_setup(root)["recovered"])
+                if failure in ("attach", "selection"):
+                    self.assertNotIn("cleanup", events)
+                if failure == "recovery":
+                    self.assertEqual(events, ["image", "cleanup", "maintenance"])
+                if failure == "cleanup":
+                    self.assertEqual(events, ["image", "cleanup"])
+
     def test_setup_recovery_requires_fault_and_consumes_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

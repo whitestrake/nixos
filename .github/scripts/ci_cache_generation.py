@@ -820,10 +820,28 @@ def retirement_plan(releases, chain, now):
     )
 
 
-def prune(repo, execute=False):
+def prune(repo, source, execute=False):
+    validate_source(source)
+    run_id = publisher_context(repo, source["revision"], True)
+    check_run(
+        repo,
+        source["runId"],
+        source["revision"],
+        SOURCE_WORKFLOW,
+        production=True,
+        successful=True,
+    )
+    verify_proof(source, production=True)
     latest = gh_api(repo, "releases/latest")
     generation, _ = load_generation(repo, latest["id"], production=True)
-    publisher_context(repo, generation["source"]["revision"], True)
+    if not any(a["name"] == "promotion.json" for a in latest["assets"]):
+        intent, _ = promotion_intent(latest)
+        require(
+            intent["publisherRunId"] == generation["publisherRunId"],
+            "promotion publisher mismatch",
+        )
+        if execute:
+            finish_promotion(repo, latest, recovery_run=run_id)
     chain = promotion_chain(repo, latest)
     releases = []
     for page in range(1, 101):
@@ -885,6 +903,7 @@ def main():
             command.add_argument("--selection", required=True, type=Path)
             command.add_argument("--receipts", required=True, type=Path)
         else:
+            command.add_argument("--source", required=True, type=Path)
             command.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.command == "resolve":
@@ -906,7 +925,7 @@ def main():
             args.repo, args.selection, json.loads(args.receipts.read_text())
         )
     else:
-        result = prune(args.repo, args.execute)
+        result = prune(args.repo, json.loads(args.source.read_text()), args.execute)
     print(json.dumps(result, separators=(",", ":")))
 
 

@@ -132,6 +132,119 @@ class WorkflowTests(unittest.TestCase):
                     json.loads((root / "good/receipt.json").read_text())["verified"]
                 )
 
+    def test_unchanged_coverage_still_supplies_current_housekeeping_source(self):
+        revision = "f" * 40
+        raw = json.dumps(
+            {
+                "revision": revision,
+                "records": [
+                    {"system": system, "storePath": "/nix/store/output-" + system}
+                    for system in workflow.SYSTEMS
+                ],
+            }
+        ).encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "plan"
+
+            def run(*argv):
+                if argv == ("git", "rev-parse", "HEAD"):
+                    return revision
+                if argv[:3] == ("nix", "flake", "archive"):
+                    return json.dumps(
+                        {
+                            "path": "/nix/store/checkout",
+                            "inputs": {"nixpkgs": {"path": "/nix/store/input"}},
+                        }
+                    )
+                return "/nix/store/tool" if argv[0] == "nix" else "definition"
+
+            def resolve(*_args):
+                return {
+                    "generation": {
+                        "source": {"revision": "a" * 40},
+                        "coverage": json.loads(
+                            (directory / "coverage.json").read_text()
+                        ),
+                    }
+                }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_REPOSITORY": "owner/repo",
+                        "GITHUB_OUTPUT": str(root / "output"),
+                        "FORCE_REBUILD": "false",
+                    },
+                ),
+                patch.object(workflow.subprocess, "check_output", return_value=raw),
+                patch.object(workflow, "run", side_effect=run),
+                patch.object(workflow.generation, "check_run"),
+                patch.object(workflow.generation, "resolve", side_effect=resolve),
+            ):
+                workflow.plan(directory, "/nix/store/" + "a" * 32 + "-proof", 11)
+            self.assertEqual((root / "output").read_text(), "refresh=false\n")
+            source = json.loads((directory / "source.json").read_text())
+            self.assertEqual(source["revision"], revision)
+            self.assertEqual(source["runId"], 11)
+            self.assertEqual(
+                source["proof"]["sha256"], workflow.hashlib.sha256(raw).hexdigest()
+            )
+
+    def test_darwin_receipt_rejects_wrong_or_recovered_reader(self):
+        component = "darwin-image-aarch64-darwin"
+        selection = {
+            "repo": "owner/repo",
+            "generation": {
+                "releaseId": 7,
+                "components": {component: {"sha256": "a" * 64}},
+            },
+        }
+        manifest = {"coverage": {"roots": []}, "imageSha256": "b" * 64}
+        for case, message in (
+            ("selection", "generation differs"),
+            ("maintenance", "fell back"),
+            ("records", "missing successful"),
+            ("backing", "hot backing failed"),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                state = root / "darwin"
+                (state / "selected").mkdir(parents=True)
+                (state / "reader").mkdir()
+                (state / "selection.json").write_text(
+                    json.dumps({} if case == "selection" else selection)
+                )
+                (state / "mode.json").write_text(
+                    json.dumps(
+                        {"mode": "maintenance" if case == "maintenance" else "hot"}
+                    )
+                )
+                if case != "records":
+                    (state / "selected/records.json").write_text("[]")
+                if case == "backing":
+                    (state / "reader/backing-failure").touch()
+                with (
+                    patch.dict(
+                        os.environ,
+                        {"RUNNER_TEMP": tmp, "GITHUB_REPOSITORY": "owner/repo"},
+                    ),
+                    patch.object(
+                        workflow.generation, "read_selection", return_value=selection
+                    ),
+                    patch.object(
+                        workflow.image, "load_manifest", return_value=(manifest, {})
+                    ),
+                    patch.object(workflow, "verify") as verify,
+                ):
+                    with self.assertRaisesRegex(ValueError, message):
+                        workflow.receipt(
+                            root / "selection", component, root / "receipt"
+                        )
+                    verify.assert_not_called()
+                    self.assertFalse((root / "receipt/receipt.json").exists())
+
     def test_nfb_remote_arguments_and_source_failure(self):
         script = Path(__file__).with_name("ci-nfb.sh").resolve()
         with tempfile.TemporaryDirectory() as tmp:

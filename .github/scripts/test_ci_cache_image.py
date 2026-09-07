@@ -345,7 +345,7 @@ class ReleaseImageTest(unittest.TestCase):
         finally:
             origin.close()
 
-    def test_manifest_sha_is_checked_before_json_is_trusted(self):
+    def test_manifest_identity_is_checked_before_json_is_trusted(self):
         origin = Origin(b"not json")
         original = IMAGE.gh_api
         try:
@@ -439,14 +439,16 @@ class ReleaseImageTest(unittest.TestCase):
         try:
             manifest, assets = shard_fixture(parts, origin)
 
-            def load(_repo, _release_id, _manifest_sha, directory):
+            def load(_repo, _release_id, _manifest_identity, directory):
                 Path(directory).mkdir(parents=True)
                 return manifest, assets
 
             IMAGE.load_manifest = load
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "reader"
-                result = IMAGE.eager("owner/repo", 7, "0" * 64, root, workers=2)
+                result = IMAGE.eager(
+                    "owner/repo", 7, {"sha256": "0" * 64}, root, workers=2
+                )
                 self.assertEqual(Path(result["image"]).read_bytes(), b"abcdefgh")
                 self.assertEqual(
                     (result["requestCount"], result["responseBytes"]), (2, 8)
@@ -473,7 +475,7 @@ class ReleaseImageTest(unittest.TestCase):
                     )
                     manifest, assets = shard_fixture(parts, origin)
 
-                    def load(_repo, _release_id, _manifest_sha, directory):
+                    def load(_repo, _release_id, _manifest_identity, directory):
                         Path(directory).mkdir(parents=True)
                         return manifest, assets
 
@@ -482,7 +484,13 @@ class ReleaseImageTest(unittest.TestCase):
                         with tempfile.TemporaryDirectory() as directory:
                             root = Path(directory) / "reader"
                             with self.assertRaises(ValueError):
-                                IMAGE.eager("owner/repo", 7, "0" * 64, root, workers=2)
+                                IMAGE.eager(
+                                    "owner/repo",
+                                    7,
+                                    {"sha256": "0" * 64},
+                                    root,
+                                    workers=2,
+                                )
                             self.assertFalse((root / "image.dmg").exists())
                     finally:
                         origin.close()
@@ -517,7 +525,7 @@ class ReleaseImageTest(unittest.TestCase):
                     ) as file_digest,
                     patch.object(IMAGE.RangeFetcher, "fetch_to", fetch_to),
                 ):
-                    result = IMAGE.eager("owner/repo", 7, "0" * 64, root)
+                    result = IMAGE.eager("owner/repo", 7, {"sha256": "0" * 64}, root)
 
                 self.assertEqual(Path(result["image"]).read_bytes(), b"abcdefgh")
                 self.assertEqual(Path(result["image"]).stat().st_ino, downloaded_inode)
@@ -548,7 +556,7 @@ class ReleaseImageTest(unittest.TestCase):
                             )[1],
                         ):
                             with self.assertRaises(ValueError):
-                                IMAGE.eager("owner/repo", 7, "0" * 64, root)
+                                IMAGE.eager("owner/repo", 7, {"sha256": "0" * 64}, root)
                         self.assertFalse((root / "image.dmg").exists())
                         self.assertEqual(list(root.glob("image.dmg.*")), [])
                 finally:

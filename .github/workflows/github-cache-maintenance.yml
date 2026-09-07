@@ -101,6 +101,11 @@ jobs:
            extra=(--release-id "$CACHE_RELEASE_ID")
           fi
           python3 .github/scripts/ci_cache_workflow.py plan "$RUNNER_TEMP/plan" "$proof" "$SOURCE_RUN_ID" "${extra[@]}"
+      - name: Complete promotion and retire aged generations without rebuilding
+        if: steps.plan.outputs.refresh == 'false' && github.ref == 'refs/heads/master'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/plan/source.json" --execute
       - name: Begin complete candidate
         id: begin
         if: steps.plan.outputs.refresh == 'true'
@@ -159,7 +164,6 @@ jobs:
           repository: ${{ github.repository }}
           selection: ${{ runner.temp }}/selection.json
           component: linux-full-${{ matrix.system }}
-          format: squashfs
           extra-nix-conf: |
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
@@ -261,27 +265,22 @@ jobs:
           - component: linux-seed-x86_64-linux
             system: x86_64-linux
             runner: ubuntu-24.04
-            format: erofs
             mode: ''
           - component: linux-full-x86_64-linux
             system: x86_64-linux
             runner: ubuntu-24.04
-            format: squashfs
             mode: ''
           - component: linux-full-aarch64-linux
             system: aarch64-linux
             runner: ubuntu-24.04-arm
-            format: squashfs
             mode: ''
           - component: darwin-image-aarch64-darwin
             system: aarch64-darwin
             runner: macos-26
-            format: ''
             mode: hot
           - component: darwin-maintenance-aarch64-darwin
             system: aarch64-darwin
             runner: macos-26
-            format: ''
             mode: maintenance
     env:
       GH_TOKEN: ${{ github.token }}
@@ -312,7 +311,6 @@ jobs:
           repository: ${{ github.repository }}
           selection: ${{ runner.temp }}/selection.json
           component: ${{ matrix.component }}
-          format: ${{ matrix.format }}
       - if: runner.os == 'macOS'
         uses: ./.github/actions/ci-darwin-prepare
         with:
@@ -384,4 +382,5 @@ jobs:
              if length != 5 or (map(.name) | unique | length) != 5 then error("missing or duplicate receipts")
              else map({key:(.name | ltrimstr("cache-reader-")),value:.id}) | from_entries end' > "$RUNNER_TEMP/receipts.json"
           python3 .github/scripts/ci_cache_generation.py promote --repo "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --receipts "$RUNNER_TEMP/receipts.json"
-          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --execute
+          jq -ce .generation.source "$RUNNER_TEMP/selection.json" > "$RUNNER_TEMP/source.json"
+          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/source.json" --execute

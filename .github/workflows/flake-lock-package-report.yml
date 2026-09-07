@@ -118,7 +118,6 @@ jobs:
           repository: ${{ github.repository }}
           selection: ${{ runner.temp }}/selection.json
           component: linux-full-${{ matrix.system }}
-          format: squashfs
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto

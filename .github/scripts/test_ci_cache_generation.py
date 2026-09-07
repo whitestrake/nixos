@@ -378,6 +378,193 @@ class GenerationTest(unittest.TestCase):
             self.assertEqual(record["recoveredByRunId"], 21)
             upload.assert_called_once()
 
+    def test_housekeeping_uses_current_source_and_reconciles_before_grace(self):
+        old = generation()
+        source = copy.deepcopy(old["source"])
+        source.update(revision="f" * 40, runId=11)
+        releases = [
+            {"id": i, "tag_name": f"ci-cache-v1-{i}", "assets": [], "draft": False}
+            for i in (7, 6, 5)
+        ]
+        latest = releases[0]
+        bodies = {}
+
+        def add(release, name, value):
+            body = json.dumps(value).encode()
+            asset_id = len(bodies) + 100
+            bodies[asset_id] = body
+            release["assets"].append(
+                {
+                    "id": asset_id,
+                    "name": name,
+                    "size": len(body),
+                    "digest": "sha256:" + G.sha256(body),
+                }
+            )
+            return G.identity(release["assets"][-1])
+
+        for index, release in enumerate(releases):
+            intent = {
+                "releaseId": release["id"],
+                "previousId": releases[index + 1]["id"] if index < 2 else None,
+                "publisherRunId": 20,
+            }
+            pin = add(release, "promotion-intent.json", intent)
+            if index:
+                add(
+                    release,
+                    "promotion.json",
+                    {
+                        **intent,
+                        "intentSha256": pin["sha256"],
+                        "promotedAt": 100000 - index,
+                    },
+                )
+        mutations = []
+
+        def api(_repo, endpoint, method="GET", payload=None):
+            if method != "GET":
+                mutations.append(endpoint)
+                return None
+            if endpoint == "releases/latest":
+                return latest
+            if endpoint.startswith("releases?"):
+                return releases
+            if endpoint.startswith("releases/"):
+                return next(
+                    r for r in releases if r["id"] == int(endpoint.split("/")[-1])
+                )
+            if endpoint.startswith("git/ref/tags/"):
+                return {
+                    "ref": "refs/tags/" + endpoint.split("/")[-1],
+                    "object": {"type": "commit", "sha": old["source"]["revision"]},
+                }
+            raise AssertionError(endpoint)
+
+        def publisher(_repo, revision, production):
+            self.assertEqual(revision, source["revision"])
+            self.assertTrue(production)
+            return 21
+
+        def upload(_repo, release, path):
+            mutations.append(path.name)
+            return add(release, path.name, json.loads(path.read_text()))
+
+        with (
+            patch.object(G, "gh_api", side_effect=api),
+            patch.object(G, "publisher_context", side_effect=publisher),
+            patch.object(G, "check_run") as check,
+            patch.object(G, "verify_proof") as proof,
+            patch.object(
+                G,
+                "load_generation",
+                side_effect=lambda _repo, rid, **_kwargs: (
+                    {**old, "releaseId": rid},
+                    {},
+                ),
+            ),
+            patch.object(
+                G,
+                "asset_body",
+                side_effect=lambda _release, pin, *_args: bodies[pin["assetId"]],
+            ),
+            patch.object(G, "upload", side_effect=upload),
+            patch.object(G.time, "time", return_value=300000) as now,
+        ):
+            self.assertEqual(G.prune("owner/repo", source)["releaseIds"], [])
+            self.assertEqual(mutations, [])
+            self.assertEqual(G.prune("owner/repo", source, True)["releaseIds"], [])
+            record = json.loads(bodies[latest["assets"][-1]["id"]])
+            self.assertEqual(record["promotedAt"], 300000)
+            self.assertEqual(record["recoveredByRunId"], 21)
+            self.assertEqual(mutations, ["promotion.json"])
+            check.assert_called_with(
+                "owner/repo",
+                11,
+                source["revision"],
+                G.SOURCE_WORKFLOW,
+                production=True,
+                successful=True,
+            )
+            proof.assert_called_with(source, production=True)
+            now.return_value += G.GRACE
+            self.assertEqual(G.prune("owner/repo", source, True)["releaseIds"], [5])
+            self.assertEqual(
+                mutations[-2:], ["releases/5", "git/refs/tags/ci-cache-v1-5"]
+            )
+            for guard in (check, proof):
+                guard.side_effect = ValueError("untrusted or failed source")
+                before = mutations[:]
+                with self.assertRaises(ValueError):
+                    G.prune("owner/repo", source, True)
+                self.assertEqual(mutations, before)
+                guard.side_effect = None
+
+    def test_housekeeping_rejects_unsafe_current_publisher_and_failed_source(self):
+        source = generation()["source"]
+        publisher = {
+            "id": 21,
+            "head_sha": source["revision"],
+            "head_branch": "master",
+            "event": "workflow_run",
+            "path": G.PUBLISHER,
+            "head_repository": {"full_name": "owner/repo"},
+        }
+        for case in ("oidc", "foreign", "feature", "stale", "failed-source", "proof"):
+            with self.subTest(case=case):
+                run = copy.deepcopy(publisher)
+                if case == "foreign":
+                    run["head_repository"]["full_name"] = "foreign/repo"
+                if case == "feature":
+                    run["head_branch"] = "feature"
+
+                def api(_repo, endpoint):
+                    if endpoint == "actions/runs/21":
+                        return run
+                    if endpoint == "commits/master":
+                        return {
+                            "sha": "f" * 40 if case == "stale" else source["revision"]
+                        }
+                    if endpoint == "actions/runs/10":
+                        return {
+                            **publisher,
+                            "id": 10,
+                            "path": G.SOURCE_WORKFLOW,
+                            "status": "completed",
+                            "conclusion": "failure"
+                            if case == "failed-source"
+                            else "success",
+                        }
+                    raise AssertionError(
+                        "must reject before Release access: " + endpoint
+                    )
+
+                with (
+                    patch.dict(
+                        G.os.environ,
+                        {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_ID": "21"},
+                    ),
+                    patch.object(G, "gh_api", side_effect=api),
+                    patch.object(
+                        G,
+                        "publisher_claims",
+                        side_effect=ValueError("OIDC rejected")
+                        if case == "oidc"
+                        else None,
+                    ),
+                    patch.object(
+                        G,
+                        "verify_proof",
+                        side_effect=ValueError("proof rejected")
+                        if case == "proof"
+                        else None,
+                    ),
+                    patch.object(G, "upload") as upload,
+                ):
+                    with self.assertRaises(ValueError):
+                        G.prune("owner/repo", source, True)
+                    upload.assert_not_called()
+
     def test_no_latest_is_cold_but_other_api_failures_are_errors(self):
         for status in (404, 500):
             error = G.subprocess.CalledProcessError(

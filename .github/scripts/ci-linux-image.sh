@@ -28,10 +28,12 @@ valid_system() {
   esac
 }
 
-valid_component() {
-  case "${1:-}:${2:-}" in
-    linux-seed-x86_64-linux:erofs | linux-full-x86_64-linux:squashfs | linux-full-aarch64-linux:squashfs) ;;
-    *) return 1 ;;
+component_settings() {
+  case "${1:-}" in
+    linux-seed-x86_64-linux) system=x86_64-linux format=erofs ;;
+    linux-full-x86_64-linux) system=x86_64-linux format=squashfs ;;
+    linux-full-aarch64-linux) system=aarch64-linux format=squashfs ;;
+    *) die "unsupported Linux component: ${1:-}" ;;
   esac
 }
 
@@ -146,10 +148,9 @@ validate_database() {
 }
 
 restore_mount() {
-  local repo="$1" selection="$2" component="$3" format="$4" directory="$5" workers="$6"
-  local system image result nfb
-  valid_component "$component" "$format" || die "component and filesystem format do not match"
-  [[ "$workers" =~ ^[1-4]$ ]] || die "workers must be 1..4"
+  local repo="$1" selection="$2" component="$3" directory="$4"
+  local system format image result nfb
+  component_settings "$component"
   directory="$(canonical_temp_path "$directory")" || die "restore directory must resolve beneath RUNNER_TEMP"
   [ ! -e "$directory" ] || die "restore directory already exists: $directory"
   result="$RUNNER_TEMP/ci-linux-eager-$$.json"
@@ -157,7 +158,7 @@ restore_mount() {
 
   if ! python3 .github/scripts/ci_cache_image.py eager \
     --repo "$repo" --selection "$selection" --component "$component" \
-    --directory "$directory" --workers "$workers" > "$result"; then
+    --directory "$directory" --workers 4 > "$result"; then
     rm -f "$result"
     remove_temp_path "$directory"
     return 1
@@ -168,11 +169,6 @@ restore_mount() {
     [ -f "$(mount_dir "$format")/owned" ] || remove_temp_path "$directory"
     return 1
   fi
-  case "$component" in
-    linux-seed-x86_64-linux) system=x86_64-linux ;;
-    linux-full-x86_64-linux) system=x86_64-linux ;;
-    linux-full-aarch64-linux) system=aarch64-linux ;;
-  esac
   if ! validate_database; then
     cleanup_overlay "$format" || return
     rm -f "$result"
@@ -191,9 +187,8 @@ restore_mount() {
 }
 
 validate_mounted() {
-  local system="$1" format="$2" root links nfb
-  valid_system "$system" || die "unsupported Linux system: $system"
-  valid_format "$format" || die "format must be erofs or squashfs"
+  local system format root links nfb
+  component_settings "$1"
   root="$(nix_dir)"
   mountpoint -q "$root" || die "$root is not mounted"
   nfb="$(nfb_path "$system")"
@@ -317,6 +312,17 @@ pack_seed() {
 }
 
 self_test() {
+  local component system format
+  for component in linux-seed-x86_64-linux linux-full-x86_64-linux linux-full-aarch64-linux; do
+    component_settings "$component"
+    [ "$system" = "${component#linux-full-}" ] || [ "$system" = "${component#linux-seed-}" ]
+    if [[ "$component" == linux-seed-* ]]; then
+      [ "$format" = erofs ]
+    else
+      [ "$format" = squashfs ]
+    fi
+  done
+  if (component_settings invalid >/dev/null 2>&1); then return 1; fi
   checkpoint_complete '0|3|3'
   if checkpoint_complete '1|2|0'; then return 1; fi
 
@@ -418,6 +424,7 @@ shift || true
 case "$command" in
   checkpoint) checkpoint_full "$@" ;;
   cleanup) cleanup_overlay "$@" ;;
+  cleanup-component) component_settings "$1"; cleanup_overlay "$format" ;;
   discard-temp) remove_temp_path "$@" ;;
   freeze) freeze_full "$@" ;;
   pack-full) pack_full "$@" ;;

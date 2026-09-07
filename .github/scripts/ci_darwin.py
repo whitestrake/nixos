@@ -2,6 +2,7 @@
 """Darwin Release store lifecycle. Run with host Python, never a /nix interpreter."""
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -409,12 +410,22 @@ def mount(root, mode, repo):
             ],
         )
     else:
-        image.eager(
-            repo, selection["generation"]["releaseId"], pin, root / "restore", 4
-        )
-        source = root / "restore/image.dmg"
-        if mode == "maintenance":
-            source = safe_extract(source, root / "bundle")
+        try:
+            image.eager(
+                repo, selection["generation"]["releaseId"], pin, root / "restore", 4
+            )
+            source = root / "restore/image.dmg"
+            if mode == "maintenance":
+                source = safe_extract(source, root / "bundle")
+        except (
+            ValueError,
+            OSError,
+            http.client.HTTPException,
+            subprocess.SubprocessError,
+            tarfile.TarError,
+        ):
+            (root / "startup-failure").write_text("payload-restore-failure")
+            raise
     attach(root, source, shadow=mode in ("hot", "eager"))
     print(json.dumps({"mode": mode, "releaseId": selection["generation"]["releaseId"]}))
 
@@ -705,7 +716,9 @@ def main():
                 raise
             cleanup(root)
             print(json.dumps({"fallback": fault, "phase": "mount"}))
-            mount(root, "maintenance", args.repo)
+            mount(
+                root, "cold" if args.mode == "maintenance" else "maintenance", args.repo
+            )
     elif args.operation == "recover-setup":
         write_json(root / "setup-recovery.json", recover_setup(root))
     elif args.operation == "ready":
