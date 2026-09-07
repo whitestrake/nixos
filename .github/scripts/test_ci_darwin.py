@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import ci_darwin as darwin
@@ -26,6 +27,12 @@ class RecoveryTests(unittest.TestCase):
         for mode, failure, terminal in (
             ("eager", "payload", False),
             ("eager", "http-truncated", False),
+            ("eager", "transport", False),
+            ("eager", "local-permission", True),
+            ("eager", "local-missing", True),
+            ("maintenance", "local-permission", True),
+            ("maintenance", "local-missing", True),
+            ("maintenance", "local-tool", True),
             ("hot", "helper", False),
             ("hot", "attach", True),
             ("maintenance", "payload", False),
@@ -44,9 +51,18 @@ class RecoveryTests(unittest.TestCase):
                 source = Path(tmp) / "selection.json"
                 source.write_text(json.dumps(selection))
                 events = []
+                local_error = {
+                    "local-permission": PermissionError("local write denied"),
+                    "local-missing": FileNotFoundError("local path or zstd missing"),
+                    "local-tool": subprocess.CalledProcessError(1, "local tool"),
+                }.get(failure)
 
                 def eager(_repo, _release, pin, directory, _workers):
                     events.append(pin["name"])
+                    if mode == "eager" and local_error:
+                        raise local_error
+                    if failure == "transport" and len(events) == 1:
+                        raise urllib.error.URLError("payload unavailable")
                     directory.mkdir()
                     (directory / "partial").touch()
                     if failure == "http-truncated" and len(events) == 1:
@@ -57,6 +73,8 @@ class RecoveryTests(unittest.TestCase):
 
                 def extract(_source, _directory):
                     events.append("extract")
+                    if local_error:
+                        raise local_error
                     if failure == "extract":
                         raise ValueError("invalid archive")
                     return "bundle"
@@ -116,7 +134,11 @@ class RecoveryTests(unittest.TestCase):
                     patch.object(darwin, "command"),
                 ):
                     if terminal:
-                        with self.assertRaises((ValueError, RuntimeError)):
+                        with self.assertRaises(
+                            type(local_error)
+                            if local_error
+                            else (ValueError, RuntimeError)
+                        ):
                             darwin.main()
                     else:
                         self.assertEqual(darwin.main(), 0)
@@ -127,6 +149,14 @@ class RecoveryTests(unittest.TestCase):
                             "cold" if mode == "maintenance" else "maintenance",
                         )
                         self.assertFalse(darwin.recover_setup(root)["recovered"])
+                if local_error:
+                    self.assertFalse((root / "startup-failure").exists())
+                    self.assertNotIn("cleanup", events)
+                    self.assertNotIn("attach", events)
+                    self.assertEqual(
+                        events,
+                        ["image"] if mode == "eager" else ["maintenance", "extract"],
+                    )
                 if failure in ("attach", "selection"):
                     self.assertNotIn("cleanup", events)
                 if failure == "recovery":

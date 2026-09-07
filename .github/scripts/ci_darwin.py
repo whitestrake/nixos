@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import urllib.error
 
 import ci_cache_image as image
 from ci_cache_generation import read_selection
@@ -419,9 +420,8 @@ def mount(root, mode, repo):
                 source = safe_extract(source, root / "bundle")
         except (
             ValueError,
-            OSError,
+            urllib.error.URLError,
             http.client.HTTPException,
-            subprocess.SubprocessError,
             tarfile.TarError,
         ):
             (root / "startup-failure").write_text("payload-restore-failure")
