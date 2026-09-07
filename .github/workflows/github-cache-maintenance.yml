@@ -1,0 +1,387 @@
+name: Cache Maintenance
+'on':
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful CI run at this exact workflow revision
+        required: true
+        type: string
+      proof_store_path:
+        description: Immutable proof published by that CI run
+        required: true
+        type: string
+      cache_release_id:
+        description: Optional pinned previous Release ID for maintenance restore
+        type: string
+        default: ''
+      force_rebuild:
+        description: Rebuild even when semantic coverage matches
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: github-release-cache-maintenance
+  cancel-in-progress: false
+jobs:
+  planning:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' && github.event.workflow_run.head_repository.full_name == github.repository)
+    outputs:
+      source_sha: ${{ steps.context.outputs.source_sha }}
+      release_id: ${{ steps.begin.outputs.release_id }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Authenticate source before checkout
+        id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
+           .head_repository.full_name == $repo and .head_sha == $sha and
+           .path == ".github/workflows/continuous-integration.yml" and
+           .status == "completed" and .conclusion == "success"
+          ' <<< "$run" >/dev/null
+          if [ "$EVENT_NAME" = workflow_run ] || [ "$GITHUB_REF" = refs/heads/master ]; then
+           [ "$GITHUB_SHA" = "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]
+           jq -e '.head_branch == "master"' <<< "$run" >/dev/null
+          else
+           [ "$EVENT_NAME" = workflow_dispatch ]
+           [[ "$GITHUB_REF" == refs/heads/* ]]
+           permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq .permission)"
+           case "$permission" in admin | maintain | write) ;; *) exit 1 ;; esac
+          fi
+          echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.context.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Resolve accepted proof and desired coverage
+        id: plan
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
+          DISPATCH_PROOF: ${{ inputs.proof_store_path }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+          CACHE_RELEASE_ID: ${{ inputs.cache_release_id }}
+        run: |
+          set -euo pipefail
+          proof="$DISPATCH_PROOF"
+          if [ "$GITHUB_REF" = refs/heads/master ]; then
+           source modules/deployment/scripts/cachix-pin-functions.sh
+           proof="$(cachix_pin_path_strict "$(cachix_fetch_pins whitestrake)" successful-master-build)"
+           [ "$GITHUB_SHA" = "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]
+          fi
+          [[ "$proof" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]
+          extra=()
+          if [ -n "$CACHE_RELEASE_ID" ]; then
+           [[ "$CACHE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+           extra=(--release-id "$CACHE_RELEASE_ID")
+          fi
+          python3 .github/scripts/ci_cache_workflow.py plan "$RUNNER_TEMP/plan" "$proof" "$SOURCE_RUN_ID" "${extra[@]}"
+      - name: Begin complete candidate
+        id: begin
+        if: steps.plan.outputs.refresh == 'true'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/ci_cache_generation.py begin --repo "$GITHUB_REPOSITORY"  --source "$RUNNER_TEMP/plan/source.json" --coverage "$RUNNER_TEMP/plan/coverage.json" > "$RUNNER_TEMP/candidate.json"
+          echo "release_id=$(jq -er .releaseId "$RUNNER_TEMP/candidate.json")" >> "$GITHUB_OUTPUT"
+      - if: steps.begin.outputs.release_id != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cache-plan
+          path: ${{ runner.temp }}/plan
+          retention-days: 7
+  produce:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 355
+    needs: planning
+    if: needs.planning.outputs.release_id != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-26
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.planning.outputs.release_id }}
+      CI_LANE_SYSTEM: ${{ matrix.system }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.planning.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cache-plan
+          path: ${{ runner.temp }}/plan
+      - name: Pin maintenance source
+        run: |
+          set -euo pipefail
+          echo "CI_EXPECTED_RECORDS=$RUNNER_TEMP/plan/$CI_LANE_SYSTEM-records.json" >> "$GITHUB_ENV"
+          if [ -f "$RUNNER_TEMP/plan/previous.json" ]; then
+           cp "$RUNNER_TEMP/plan/previous.json" "$RUNNER_TEMP/selection.json"
+          fi
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/ci-cache-restore
+        with:
+          repository: ${{ github.repository }}
+          selection: ${{ runner.temp }}/selection.json
+          component: linux-full-${{ matrix.system }}
+          format: squashfs
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - if: runner.os == 'macOS'
+        uses: ./.github/actions/ci-darwin-prepare
+        with:
+          mode: maintenance
+          extra-nix-conf: |
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+          configure-cachix: 'true'
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Select accepted platform records
+        id: records
+        run: |
+          set -euo pipefail
+          echo "records=$(cat "$CI_EXPECTED_RECORDS")" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/nix-root-build
+        with:
+          system: ${{ matrix.system }}
+          builds-json: ${{ steps.records.outputs.records }}
+      - name: Produce and upload Linux images
+        env:
+          SYSTEM: ${{ matrix.system }}
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools
+          python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json" "$SYSTEM"
+          if [ "$SYSTEM" = x86_64-linux ]; then
+           nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
+           bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
+           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed"
+           python3 .github/scripts/ci_cache_workflow.py bind "$RUNNER_TEMP/seed-packed" "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json"
+           python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
+           rm "$RUNNER_TEMP/erofs-tool"
+          fi
+          nix store gc
+          bash .github/scripts/ci-linux-image.sh checkpoint squashfs
+          bash .github/scripts/ci-linux-image.sh freeze squashfs
+          bash .github/scripts/ci-linux-image.sh pack-full "$RUNNER_TEMP/full.squashfs" 2
+          python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/full.squashfs" --output "$RUNNER_TEMP/full-packed"
+          python3 .github/scripts/ci_cache_workflow.py bind "$RUNNER_TEMP/full-packed" "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json"
+          python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-full-$SYSTEM" --directory "$RUNNER_TEMP/full-packed"
+      - name: Produce, profile and upload Darwin images
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          "$HOST_PYTHON" .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" aarch64-darwin
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py produce --state "$RUNNER_TEMP/darwin" --coverage "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" --output "$RUNNER_TEMP/darwin-produced" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
+          for component in darwin-image-aarch64-darwin darwin-maintenance-aarch64-darwin; do
+           "$HOST_PYTHON" .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "$component" --directory "$RUNNER_TEMP/darwin-produced/$component"
+          done
+      - name: Detach Darwin store
+        if: always() && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+  seal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs:
+      - planning
+      - produce
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.planning.outputs.release_id }}
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.planning.outputs.source_sha }}
+          persist-credentials: false
+      - name: Seal exact complete generation
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/ci_cache_generation.py seal --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cache-selection
+          path: ${{ runner.temp }}/selection.json
+          retention-days: 7
+  readers:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    needs:
+      - planning
+      - seal
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: linux-seed-x86_64-linux
+            system: x86_64-linux
+            runner: ubuntu-24.04
+            format: erofs
+            mode: ''
+          - component: linux-full-x86_64-linux
+            system: x86_64-linux
+            runner: ubuntu-24.04
+            format: squashfs
+            mode: ''
+          - component: linux-full-aarch64-linux
+            system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            format: squashfs
+            mode: ''
+          - component: darwin-image-aarch64-darwin
+            system: aarch64-darwin
+            runner: macos-26
+            format: ''
+            mode: hot
+          - component: darwin-maintenance-aarch64-darwin
+            system: aarch64-darwin
+            runner: macos-26
+            format: ''
+            mode: maintenance
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CI_LANE_SYSTEM: ${{ matrix.system }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.planning.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cache-selection
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cache-plan
+          path: ${{ runner.temp }}/plan
+      - name: Select expected records
+        run: |
+          set -euo pipefail
+          echo "CI_EXPECTED_RECORDS=$RUNNER_TEMP/plan/$CI_LANE_SYSTEM-records.json" >> "$GITHUB_ENV"
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/ci-cache-restore
+        with:
+          repository: ${{ github.repository }}
+          selection: ${{ runner.temp }}/selection.json
+          component: ${{ matrix.component }}
+          format: ${{ matrix.format }}
+      - if: runner.os == 'macOS'
+        uses: ./.github/actions/ci-darwin-prepare
+        with:
+          mode: ${{ matrix.mode }}
+          configure-cachix: ${{ matrix.mode == 'hot' }}
+      - name: Check original image coverage before workload
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py check-roots "$RUNNER_TEMP/plan/$COMPONENT.json" "$CI_LANE_SYSTEM"
+      - name: Run fresh full-image workload before deep verification
+        env:
+          SYSTEM: ${{ matrix.system }}
+        if: matrix.component != 'linux-seed-x86_64-linux'
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+           "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
+          else
+           bash .github/scripts/ci-nfb.sh "$SYSTEM" "$SYSTEM"
+          fi
+      - name: Verify expected roots and emit fresh-reader receipt
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py receipt "$RUNNER_TEMP/selection.json" "$COMPONENT" "$RUNNER_TEMP/receipt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cache-reader-${{ matrix.component }}
+          path: ${{ runner.temp }}/receipt/receipt.json
+          retention-days: 7
+      - name: Detach Darwin store
+        if: always() && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs:
+      - planning
+      - readers
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.planning.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cache-selection
+          path: ${{ runner.temp }}
+      - uses: ./.github/actions/install-nix
+      - name: Authenticate receipts, promote and prune retired generations
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+           | jq -ce '[.[].artifacts[] | select(.name | startswith("cache-reader-"))] |
+             if length != 5 or (map(.name) | unique | length) != 5 then error("missing or duplicate receipts")
+             else map({key:(.name | ltrimstr("cache-reader-")),value:.id}) | from_entries end' > "$RUNNER_TEMP/receipts.json"
+          python3 .github/scripts/ci_cache_generation.py promote --repo "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --receipts "$RUNNER_TEMP/receipts.json"
+          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --execute

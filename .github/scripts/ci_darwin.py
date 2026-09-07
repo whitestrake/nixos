@@ -438,6 +438,19 @@ def recovery_ready():
     command("nix", "path-info", ROOTS / "nix-fast-build", stdout=subprocess.DEVNULL)
 
 
+def recover_setup(root):
+    settings = json.loads((root / "mode.json").read_text())
+    if settings["mode"] != "hot":
+        return {"recovered": False}
+    reason = helper_fault(helper_pid(root), root / "reader/backing-failure")
+    if not reason:
+        return {"recovered": False}
+    cleanup(root)
+    mount(root, "maintenance", settings["repo"])
+    # The ordinary installer/Cachix actions run before recovery_ready in setup.
+    return {"recovered": True, "cacheFault": reason}
+
+
 def run(root, argv):
     settings = json.loads((root / "mode.json").read_text())
     hot = settings["mode"] == "hot"
@@ -650,7 +663,10 @@ def produce(root, output, coverage, argv):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("mount", "run", "cleanup", "produce"))
+    parser.add_argument(
+        "operation",
+        choices=("mount", "run", "cleanup", "produce", "recover-setup", "ready"),
+    )
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument(
         "--mode", choices=("hot", "eager", "maintenance", "cold"), default="hot"
@@ -690,6 +706,10 @@ def main():
             cleanup(root)
             print(json.dumps({"fallback": fault, "phase": "mount"}))
             mount(root, "maintenance", args.repo)
+    elif args.operation == "recover-setup":
+        write_json(root / "setup-recovery.json", recover_setup(root))
+    elif args.operation == "ready":
+        recovery_ready()
     elif args.operation == "cleanup":
         cleanup(root)
     elif args.operation == "run":

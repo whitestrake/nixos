@@ -135,11 +135,13 @@ runs:
           restored=true
           image="$CI_LINUX_IMAGE"
           nfb="$CI_LINUX_NFB"
+          cat "$(dirname "$image")/eager.json"
         else
           restored=false
           image=
           nfb=
         fi
+        echo "CI_LINUX_PREPARED restored=$restored image=$image nixFastBuild=$nfb"
         {
           echo "restored=$restored"
           echo "image=$image"

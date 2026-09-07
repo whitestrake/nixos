@@ -4,11 +4,48 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_setup_recovery_requires_fault_and_consumes_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            darwin.write_json(root / "mode.json", {"mode": "hot", "repo": "owner/repo"})
+            events = []
+
+            def mount(state, mode, repo):
+                events.append((mode, repo))
+                darwin.write_json(state / "mode.json", {"mode": mode, "repo": repo})
+
+            with (
+                patch.object(darwin, "helper_fault", return_value=None) as fault,
+                patch.object(
+                    darwin, "cleanup", side_effect=lambda _: events.append("cleanup")
+                ),
+                patch.object(darwin, "mount", side_effect=mount),
+                patch.object(darwin, "recovery_ready") as ready,
+            ):
+                self.assertEqual(darwin.recover_setup(root), {"recovered": False})
+                self.assertEqual(events, [])
+                fault.return_value = "backing-failure"
+                self.assertTrue(darwin.recover_setup(root)["recovered"])
+                self.assertEqual(events, ["cleanup", ("maintenance", "owner/repo")])
+                ready.assert_not_called()
+                self.assertFalse(darwin.recover_setup(root)["recovered"])
+                self.assertEqual(len(events), 2)
+            darwin.write_json(root / "mode.json", {"mode": "hot", "repo": "owner/repo"})
+            with (
+                patch.object(darwin, "helper_fault", return_value="backing-failure"),
+                patch.object(darwin, "cleanup", side_effect=RuntimeError("busy store")),
+                patch.object(darwin, "mount") as mounted,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "busy store"):
+                    darwin.recover_setup(root)
+                mounted.assert_not_called()
+
     def test_recovery_selection_and_cleanup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

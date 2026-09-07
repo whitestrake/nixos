@@ -1,0 +1,92 @@
+name: Prepare Darwin CI store
+description: Mount the selected native image or reconstruct a cold sparsebundle.
+inputs:
+  mode:
+    description: hot, eager or maintenance
+    default: hot
+  extra-nix-conf:
+    description: Additional ordinary installer configuration
+    default: ""
+  configure-cachix:
+    description: Run the ordinary Cachix action
+    default: "false"
+  cachix-auth-token:
+    description: Optional Cachix authentication
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: mount
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DARWIN_MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        trap 'echo "CI_DARWIN_PREPARE_COMPLETE durationSeconds=$SECONDS"' EXIT
+        host_python="$(command -v python3)"
+        case "$host_python" in /nix/*) exit 1 ;; esac
+        echo "HOST_PYTHON=$host_python" >> "$GITHUB_ENV"
+        for tool in gh gtar zstd; do
+          if ! command -v "$tool" >/dev/null; then
+            case "$tool" in gtar) brew install gnu-tar ;; *) brew install "$tool" ;; esac
+          fi
+          case "$(command -v "$tool")" in /nix/*) exit 1 ;; esac
+        done
+        if [ -f "$RUNNER_TEMP/selection.json" ]; then
+          "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" \
+            --repo "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --mode "$DARWIN_MODE"
+        else
+          "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" --mode cold
+        fi
+    - name: Install Nix
+      id: install
+      continue-on-error: true
+      uses: ./.github/actions/install-nix
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+    - name: Configure Cachix
+      id: cachix
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
+      continue-on-error: true
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: whitestrake
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipPush: true
+    - name: Classify setup and recover confirmed hot backing failure
+      id: recovery
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INSTALL_OUTCOME: ${{ steps.install.outcome }}
+        CACHIX_OUTCOME: ${{ steps.cachix.outcome }}
+        CONFIGURE_CACHIX: ${{ inputs.configure-cachix }}
+      run: |
+        set -euo pipefail
+        "$HOST_PYTHON" .github/scripts/ci_darwin.py recover-setup --state "$RUNNER_TEMP/darwin"
+        cat "$RUNNER_TEMP/darwin/setup-recovery.json"
+        recovered="$(jq -r .recovered "$RUNNER_TEMP/darwin/setup-recovery.json")"
+        echo "recovered=$recovered" >> "$GITHUB_OUTPUT"
+        if [ "$recovered" != true ]; then
+          [ "$INSTALL_OUTCOME" = success ] || { echo '::error ::Genuine Nix setup failure'; exit 1; }
+          if [ "$CONFIGURE_CACHIX" = true ]; then
+            [ "$CACHIX_OUTCOME" = success ] || { echo '::error ::Genuine Cachix setup failure'; exit 1; }
+          fi
+        fi
+    - name: Install Nix after clean recovery
+      if: steps.recovery.outputs.recovered == 'true'
+      uses: ./.github/actions/install-nix
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+    - name: Configure Cachix after clean recovery
+      if: steps.recovery.outputs.recovered == 'true' && inputs.configure-cachix == 'true'
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: whitestrake
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipPush: true
+    - name: Validate restored runtime after ordinary setup
+      if: steps.recovery.outputs.recovered == 'true'
+      shell: bash
+      run: '"$HOST_PYTHON" .github/scripts/ci_darwin.py ready --state "$RUNNER_TEMP/darwin"'

@@ -1,0 +1,38 @@
+name: Select CI cache generation
+description: Resolve an optional generation once and pin all subsequent reads.
+inputs:
+  mode:
+    description: warm or cold
+    default: warm
+  release-id:
+    description: Optional explicit numeric Release ID
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CACHE_MODE: ${{ inputs.mode }}
+        CACHE_RELEASE_ID: ${{ inputs.release-id }}
+      run: |
+        set -euo pipefail
+        trap 'echo "CI_CACHE_SELECTION_COMPLETE durationSeconds=$SECONDS"' EXIT
+        [ ! -e "$RUNNER_TEMP/selection.json" ]
+        case "$CACHE_MODE" in warm | cold | '') ;; *) exit 64 ;; esac
+        if [ -n "$CACHE_RELEASE_ID" ]; then
+          [[ "$CACHE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]] || exit 64
+          [ "$CACHE_MODE" != cold ] || { echo '::error ::cold conflicts with an explicit Release'; exit 64; }
+          python3 .github/scripts/ci_cache_generation.py resolve --repo "$GITHUB_REPOSITORY" \
+            --release-id "$CACHE_RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
+        elif [ "$CACHE_MODE" != cold ]; then
+          if ! python3 .github/scripts/ci_cache_generation.py resolve --repo "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/selection.json" >/dev/null; then
+            echo '::notice ::No usable optional generation; reconstructing cold.'
+          fi
+        fi
+        if [ -f "$RUNNER_TEMP/selection.json" ]; then
+          jq -c '{releaseId:.generation.releaseId, revision:.generation.source.revision, components:(.generation.components | map_values(.sha256))}' "$RUNNER_TEMP/selection.json"
+        else
+          echo 'CI_CACHE_SELECTION mode=cold'
+        fi
