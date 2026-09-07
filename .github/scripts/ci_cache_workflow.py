@@ -106,14 +106,14 @@ def plan(directory, proof_path, run_id, release_id=None):
         ),
         "invalid external input roots",
     )
-    before = run("nix-store", "--query", "--all").splitlines()
+    before = run("nix", "path-info", "--all").splitlines()
     nfb = {
         system: run(
             "nix", "eval", "--raw", f".#packages.{system}.nix-fast-build.outPath"
         )
         for system in SYSTEMS
     }
-    after = run("nix-store", "--query", "--all").splitlines()
+    after = run("nix", "path-info", "--all").splitlines()
     realised = evaluator_inputs(before, after, [*inputs.values(), *checkout_roots])
     image.require(not inputs.keys() & realised.keys(), "evaluator input name collision")
     inputs.update(realised)

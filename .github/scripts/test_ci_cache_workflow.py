@@ -256,7 +256,7 @@ else:
                     )
                 if argv[:3] == ("nix", "flake", "metadata"):
                     return json.dumps({"path": "/nix/store/" + "2" * 32 + "-git"})
-                if argv[0] == "nix-store":
+                if argv == ("nix", "path-info", "--all"):
                     return "" if calls.count(argv) == 1 else source_input
                 return "/nix/store/tool" if argv[0] == "nix" else "definition"
 
@@ -286,11 +286,11 @@ else:
             ):
                 workflow.plan(directory, "/nix/store/" + "a" * 32 + "-proof", 11)
             self.assertEqual(
-                [call for call in calls if call[0] in ("nix", "nix-store")],
+                [call for call in calls if call[0] == "nix"],
                 [
                     ("nix", "flake", "archive", "--json", "path:."),
                     ("nix", "flake", "metadata", "--json", "."),
-                    ("nix-store", "--query", "--all"),
+                    ("nix", "path-info", "--all"),
                     *(
                         (
                             "nix",
@@ -300,7 +300,7 @@ else:
                         )
                         for system in workflow.SYSTEMS
                     ),
-                    ("nix-store", "--query", "--all"),
+                    ("nix", "path-info", "--all"),
                 ],
             )
             self.assertEqual(
