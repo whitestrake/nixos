@@ -12,6 +12,55 @@ import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_cleanup_keeps_reader_alive_until_native_detach_succeeds(self):
+        for detach_fails in (False, True):
+            with (
+                self.subTest(detach_fails=detach_fails),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                (root / "mounted").touch()
+                (root / "reader").mkdir()
+                darwin.write_json(root / "helper.json", {"pid": 123})
+                events = []
+
+                def detach(*args, **kwargs):
+                    self.assertEqual(args, ("sudo", "hdiutil", "detach", "/nix"))
+                    self.assertEqual(events, [], "HTTP backing stopped before detach")
+                    self.assertTrue((root / "reader").is_dir())
+                    events.append("detach")
+                    if detach_fails:
+                        raise subprocess.CalledProcessError(16, args)
+
+                with (
+                    patch.object(
+                        darwin.subprocess,
+                        "run",
+                        side_effect=[
+                            subprocess.CompletedProcess([], 1, ""),
+                            subprocess.CompletedProcess(
+                                [], 0, "/dev/disk7 on /nix (hfs, local)\n"
+                            ),
+                        ],
+                    ),
+                    patch.object(darwin, "command", side_effect=detach),
+                    patch.object(
+                        darwin,
+                        "stop_group",
+                        side_effect=lambda pid: events.append(("stop", pid)),
+                    ),
+                ):
+                    if detach_fails:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            darwin.cleanup(root)
+                    else:
+                        darwin.cleanup(root)
+                self.assertEqual(
+                    events, ["detach"] if detach_fails else ["detach", ("stop", 123)]
+                )
+                for name in ("mounted", "reader", "helper.json"):
+                    self.assertEqual((root / name).exists(), detach_fails)
+
     def test_cleanup_refusal_reports_store_users_without_detaching(self):
         import io
         import json

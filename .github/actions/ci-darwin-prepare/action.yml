@@ -45,6 +45,16 @@ runs:
       uses: ./.github/actions/install-nix
       with:
         extra-nix-conf: ${{ inputs.extra-nix-conf }}
+    - name: Select cached Cachix
+      id: cachix-bin
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
+      shell: bash
+      run: |
+        cached=/nix/var/nix/gcroots/github-ci/aarch64-darwin/cachix/bin/cachix
+        if [ -x "$cached" ]; then
+          echo "path=$cached" >> "$GITHUB_OUTPUT"
+          echo "${cached%/*}" >> "$GITHUB_PATH"
+        fi
     - name: Configure Cachix
       id: cachix
       if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
@@ -54,6 +64,7 @@ runs:
         name: whitestrake
         authToken: ${{ inputs.cachix-auth-token }}
         skipPush: true
+        cachixBin: ${{ steps.cachix-bin.outputs.path }}
     - name: Classify setup and recover confirmed hot backing failure
       id: recovery
       shell: bash
@@ -86,6 +97,7 @@ runs:
         name: whitestrake
         authToken: ${{ inputs.cachix-auth-token }}
         skipPush: true
+        cachixBin: ${{ steps.cachix-bin.outputs.path }}
     - name: Validate restored runtime after ordinary setup
       if: steps.recovery.outputs.recovered == 'true'
       shell: bash

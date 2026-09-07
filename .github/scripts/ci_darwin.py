@@ -361,7 +361,6 @@ def cleanup(root):
             users.returncode in (0, 1) and not users.stdout.strip(),
             "store users remain; refusing detach",
         )
-    stop_group(helper_pid(root))
     if mount.exists():
         mounted = subprocess.run(
             ["mount"], capture_output=True, text=True, check=True
@@ -369,6 +368,8 @@ def cleanup(root):
         if " on /nix (" in mounted:
             command("sudo", "hdiutil", "detach", "/nix", timeout=120)
         mount.unlink()
+    # Native unmount may still read the HTTP base image beneath the shadow.
+    stop_group(helper_pid(root))
     for name in ("reader", "restore", "bundle", "image.shadow", "helper.json"):
         path = root / name
         if path.is_dir():
@@ -667,12 +668,16 @@ def produce(root, output, coverage, argv):
         validate_roots(coverage)
         attempt = profile / "work"
         attempt.mkdir()
-        status, fault = supervise(
-            argv, attempt, helper_pid(profile), profile / "reader/backing-failure"
-        )
-        image.require(
-            status == 0 and fault is None, "exact-image profile workload failed"
-        )
+        for workload in ([str(ROOTS / "cachix/bin/cachix"), "--version"], argv):
+            status, fault = supervise(
+                workload,
+                attempt,
+                helper_pid(profile),
+                profile / "reader/backing-failure",
+            )
+            image.require(
+                status == 0 and fault is None, "exact-image profile workload failed"
+            )
         validate_roots(coverage)
         # Keep the profile log before cleanup discards the verified block state.
         shutil.copyfile(profile / "reader/requests.jsonl", output / "profile.jsonl")
