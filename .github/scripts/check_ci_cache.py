@@ -22,18 +22,10 @@ def packed(root):
     image.pack_image(source, output, shard_size=8, block_size=4)
     manifest = json.loads((output / image.DRAFT_NAME).read_text())
     manifest["releaseId"] = 7
-    assets = {}
     for asset_id, shard in enumerate(manifest["shards"], 10):
         shard["assetId"] = asset_id
-        assets[asset_id] = {
-            "id": asset_id,
-            "name": shard["name"],
-            "size": shard["size"],
-            "digest": "sha256:" + shard["sha256"],
-            "browser_download_url": "",
-        }
     image.validate_manifest(manifest)
-    return source, manifest, assets
+    return source, manifest
 
 
 def complete_generation():
@@ -69,7 +61,7 @@ def complete_generation():
 class CacheCheck(unittest.TestCase):
     def test_real_pack_manifest_rejects_mutated_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
-            _, manifest, _ = packed(Path(directory))
+            _, manifest = packed(Path(directory))
             mutations = (
                 lambda value: value.update(imageBytes=True),
                 lambda value: value["shards"][0].update(name="../escape"),
@@ -85,7 +77,7 @@ class CacheCheck(unittest.TestCase):
     def test_hot_zip_and_uncached_backing_verify_actual_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, manifest, _ = packed(root)
+            source, manifest = packed(root)
             store = image.BlockStore(manifest, root / "reader", local_image=source)
             profile = root / "profile"
             profile.write_text("0\n1\n")
