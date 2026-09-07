@@ -149,36 +149,6 @@ def supervise(argv, directory, helper_pid=None, marker=None):
             signal.signal(signum, handler)
 
 
-def transaction(root, attempt, recover, publish=lambda _directory: None):
-    for number in (1, 2):
-        directory = root / f"attempt-{number}"
-        directory.mkdir(mode=0o700)
-        started = time.monotonic()
-        status, reason = attempt(directory, number)
-        print(
-            json.dumps(
-                {
-                    "attempt": number,
-                    "status": status,
-                    "cacheFault": reason,
-                    "durationSeconds": round(time.monotonic() - started, 3),
-                }
-            ),
-            flush=True,
-        )
-        if reason and number == 1:
-            shutil.rmtree(directory)
-            recover()
-            continue
-        # Only a confirmed discarded cache attempt suppresses Checks API output.
-        publish(directory)
-        if status == 0 and reason is None:
-            directory.rename(root / "selected")
-            return 0
-        return status or 1
-    raise RuntimeError("unreachable recovery state")
-
-
 def state_root(path):
     path = Path(path).resolve()
     temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
@@ -284,23 +254,24 @@ def native_mountpoint():
     )
 
 
-def start_helper(root, argv):
+def start_helper(root, argv, profile=None):
     reader = root / "reader"
     ready = reader / "ready.txt"
     log = root / "helper.log"
     with log.open("wb") as stream:
+        command_line = [
+            sys.executable,
+            str(SCRIPTS / "ci_cache_image.py"),
+            *map(str, argv),
+            "--directory",
+            str(reader),
+            "--ready",
+            str(ready),
+        ]
+        if profile:
+            command_line += ["--profile", str(profile)]
         process = subprocess.Popen(
-            [
-                sys.executable,
-                str(SCRIPTS / "ci_cache_image.py"),
-                *map(str, argv),
-                "--directory",
-                str(reader),
-                "--ready",
-                str(ready),
-                "--log",
-                str(reader / "requests.jsonl"),
-            ],
+            command_line,
             stdout=stream,
             stderr=stream,
             start_new_session=True,
@@ -454,7 +425,7 @@ def mount(root, mode, repo):
     else:
         try:
             image.eager(
-                repo, selection["generation"]["releaseId"], pin, root / "restore", 4
+                repo, selection["generation"]["releaseId"], pin, root / "restore"
             )
             source = root / "restore/image.dmg"
             if mode == "maintenance":
@@ -508,22 +479,36 @@ def recover_setup(root):
 def run(root, argv):
     settings = json.loads((root / "mode.json").read_text())
     hot = settings["mode"] == "hot"
-
-    def attempt(directory, number):
-        return supervise(
+    for number in (1, 2):
+        directory = root / f"attempt-{number}"
+        directory.mkdir(mode=0o700)
+        started = time.monotonic()
+        status, reason = supervise(
             argv,
             directory,
             helper_pid(root) if hot and number == 1 else None,
             root / "reader/backing-failure",
         )
+        print(
+            json.dumps(
+                {
+                    "attempt": number,
+                    "status": status,
+                    "cacheFault": reason,
+                    "durationSeconds": round(time.monotonic() - started, 3),
+                }
+            ),
+            flush=True,
+        )
+        if reason and number == 1:
+            image.require(hot, "recovery is only supported for the hot reader")
+            shutil.rmtree(directory)
+            cleanup(root)
+            mount(root, "maintenance", settings["repo"])
+            recovery_ready()
+            continue
 
-    def recover():
-        image.require(hot, "recovery is only supported for the hot reader")
-        cleanup(root)
-        mount(root, "maintenance", settings["repo"])
-        recovery_ready()
-
-    def publish(directory):
+        # Only a confirmed discarded cache attempt suppresses Checks API output.
         journal = directory / "checks.json"
         if journal.exists():
             command(
@@ -532,8 +517,11 @@ def run(root, argv):
                 "--replay-checks",
                 journal,
             )
-
-    return transaction(root, attempt, recover, publish)
+        if status == 0 and reason is None:
+            directory.rename(root / "selected")
+            return 0
+        return status or 1
+    raise RuntimeError("unreachable recovery state")
 
 
 def filesystem_gate(path):
@@ -675,9 +663,12 @@ def produce(root, output, coverage, argv):
     write_json(manifest_path, manifest)
     profile = output / "profile"
     profile.mkdir()
+    block_profile = output / "profile.blocks"
     try:
         source = start_helper(
-            profile, ["serve-local", "--image", exported, "--manifest", manifest_path]
+            profile,
+            ["serve-local", "--image", exported, "--manifest", manifest_path],
+            profile=block_profile,
         )
         attach(profile, source, shadow=True)
         validate_roots(coverage)
@@ -694,12 +685,10 @@ def produce(root, output, coverage, argv):
                 status == 0 and fault is None, "exact-image profile workload failed"
             )
         validate_roots(coverage)
-        # Keep the profile log before cleanup discards the verified block state.
-        shutil.copyfile(profile / "reader/requests.jsonl", output / "profile.jsonl")
     finally:
         cleanup(profile)
     hot = packed / "hot.bin"
-    image.pack_hot(exported, manifest_path, output / "profile.jsonl", hot)
+    image.pack_hot(exported, manifest_path, block_profile, hot)
     manifest["hotPack"] = {
         "name": hot.name,
         "size": hot.stat().st_size,

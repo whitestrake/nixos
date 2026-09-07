@@ -3,7 +3,6 @@
 
 import argparse
 import base64
-import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ import re
 import subprocess
 import tempfile
 import time
-import zipfile
 import urllib.request
 import urllib.parse
 
@@ -33,13 +31,39 @@ MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
 PUBLISHER = ".github/workflows/github-cache-maintenance.yml"
 SOURCE_WORKFLOW = ".github/workflows/continuous-integration.yml"
-COMPONENTS = (
-    "linux-seed-x86_64-linux",
-    "linux-full-x86_64-linux",
-    "linux-full-aarch64-linux",
-    "darwin-image-aarch64-darwin",
-    "darwin-maintenance-aarch64-darwin",
+READERS = (
+    {
+        "component": "linux-seed-x86_64-linux",
+        "system": "x86_64-linux",
+        "runner": "ubuntu-24.04",
+        "mode": "",
+    },
+    {
+        "component": "linux-full-x86_64-linux",
+        "system": "x86_64-linux",
+        "runner": "ubuntu-24.04",
+        "mode": "",
+    },
+    {
+        "component": "linux-full-aarch64-linux",
+        "system": "aarch64-linux",
+        "runner": "ubuntu-24.04-arm",
+        "mode": "",
+    },
+    {
+        "component": "darwin-image-aarch64-darwin",
+        "system": "aarch64-darwin",
+        "runner": "macos-26",
+        "mode": "hot",
+    },
+    {
+        "component": "darwin-maintenance-aarch64-darwin",
+        "system": "aarch64-darwin",
+        "runner": "macos-26",
+        "mode": "maintenance",
+    },
 )
+COMPONENTS = tuple(reader["component"] for reader in READERS)
 GRACE = 24 * 60 * 60
 
 
@@ -535,7 +559,7 @@ def upload_component(repo, release_id, component, directory):
         return upload(repo, release, path)
 
 
-def seal(repo, release_id, output):
+def seal(repo, release_id):
     release, generation = candidate(repo, release_id)
     expected_coverage = fingerprint(generation["coverage"])
     actual_coverage = {"roots": [], "inputs": {}, "tools": {}}
@@ -598,55 +622,8 @@ def seal(repo, release_id, output):
         "PATCH",
         {"draft": False, "make_latest": "false"},
     )
-    return resolve(repo, output, release_id)
-
-
-def read_receipt(repo, artifact_id, generation, component):
-    meta = gh_api(repo, f"actions/artifacts/{artifact_id}")
-    require(
-        meta.get("id") == artifact_id
-        and not meta.get("expired")
-        and meta.get("workflow_run", {}).get("id") == generation["publisherRunId"],
-        "receipt run mismatch",
-    )
-    require(
-        meta.get("name") == "cache-reader-" + component
-        and 0 < meta.get("size_in_bytes", 0) <= 1024 * 1024,
-        "receipt identity mismatch",
-    )
-    archive = subprocess.run(
-        ["gh", "api", f"repos/{repo}/actions/artifacts/{artifact_id}/zip"],
-        stdout=subprocess.PIPE,
-        check=True,
-        timeout=60,
-    ).stdout
-    require(
-        len(archive) <= 1024 * 1024
-        and "sha256:" + sha256(archive) == meta.get("digest"),
-        "receipt archive digest mismatch",
-    )
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        require(
-            bundle.namelist() == ["receipt.json"]
-            and bundle.getinfo("receipt.json").file_size <= 65536,
-            "invalid receipt archive",
-        )
-        receipt = json.loads(bundle.read("receipt.json"))
-    require(
-        receipt.get("schema") == "ci-cache-reader-receipt-v1"
-        and receipt.get("releaseId") == generation["releaseId"]
-        and receipt.get("component") == component,
-        "receipt generation mismatch",
-    )
-    require(
-        receipt.get("manifestSha256") == generation["components"][component]["sha256"],
-        "receipt manifest mismatch",
-    )
-    require(
-        receipt.get("freshReader") is True and receipt.get("verified") is True,
-        "reader validation failed",
-    )
-    return receipt
+    load_generation(repo, release_id, production=False)
+    return {"releaseId": release_id}
 
 
 def latest_release(repo):
@@ -735,37 +712,14 @@ def promotion_chain(repo, release):
     return chain
 
 
-def promote(repo, selection_path, receipts):
-    selection = read_selection(selection_path, repo)
-    generation, pin = load_generation(
-        repo, selection["generation"]["releaseId"], production=True
-    )
-    require(
-        generation == selection["generation"] and pin == selection["manifest"],
-        "selected generation changed",
-    )
+def promote(repo, release_id):
+    generation, _ = load_generation(repo, release_id, production=True)
     run_id = publisher_context(repo, generation["source"]["revision"], True)
     require(
         run_id == generation["publisherRunId"], "only original publisher can promote"
     )
     verify_proof(generation["source"], production=True)
-    require(set(receipts) == set(COMPONENTS), "all fresh readers are required")
     release = gh_api(repo, f"releases/{generation['releaseId']}")
-    for component in COMPONENTS:
-        receipt = read_receipt(repo, receipts[component], generation, component)
-        manifest = json.loads(
-            asset_body(repo, release, generation["components"][component])
-        )
-        require(
-            receipt.get("imageSha256") == manifest["imageSha256"],
-            "reader image mismatch",
-        )
-        if component == "darwin-image-aarch64-darwin":
-            require(
-                receipt.get("filesystemVerified") is True
-                and receipt.get("hotPackSha256") == manifest["hotPack"]["sha256"],
-                "Darwin verification missing",
-            )
     latest = latest_release(repo)
     previous = None
     if latest and owned(latest):
@@ -785,7 +739,6 @@ def promote(repo, selection_path, receipts):
         "releaseId": release["id"],
         "previousId": previous,
         "publisherRunId": run_id,
-        "receipts": receipts,
     }
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "promotion-intent.json"
@@ -894,21 +847,18 @@ def main():
     for name in ("resolve", "begin", "upload-component", "seal", "promote", "prune"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
-        if name in ("resolve", "seal"):
+        if name == "resolve":
             command.add_argument("--output", required=True, type=Path)
         if name == "resolve":
             command.add_argument("--release-id", type=int)
         elif name == "begin":
             for field in ("source", "coverage"):
                 command.add_argument("--" + field, required=True, type=Path)
-        elif name in ("upload-component", "seal"):
+        elif name in ("upload-component", "seal", "promote"):
             command.add_argument("--release-id", required=True, type=int)
             if name == "upload-component":
                 command.add_argument("--component", required=True, choices=COMPONENTS)
                 command.add_argument("--directory", required=True, type=Path)
-        elif name == "promote":
-            command.add_argument("--selection", required=True, type=Path)
-            command.add_argument("--receipts", required=True, type=Path)
         else:
             command.add_argument("--source", required=True, type=Path)
             command.add_argument("--execute", action="store_true")
@@ -926,11 +876,9 @@ def main():
             args.repo, args.release_id, args.component, args.directory
         )
     elif args.command == "seal":
-        result = seal(args.repo, args.release_id, args.output)
+        result = seal(args.repo, args.release_id)
     elif args.command == "promote":
-        result = promote(
-            args.repo, args.selection, json.loads(args.receipts.read_text())
-        )
+        result = promote(args.repo, args.release_id)
     else:
         result = prune(args.repo, json.loads(args.source.read_text()), args.execute)
     print(json.dumps(result, separators=(",", ":")))

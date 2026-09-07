@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 import ci_cache_generation as generation
 import ci_cache_image as image
@@ -171,6 +172,11 @@ def plan(directory, proof_path, run_id, release_id=None):
         stream.write(
             f"refresh={'true' if refresh or os.environ.get('FORCE_REBUILD') == 'true' else 'false'}\n"
         )
+        stream.write(
+            "reader_matrix="
+            + json.dumps({"include": generation.READERS}, separators=(",", ":"))
+            + "\n"
+        )
 
 
 def verify(coverage, system, deep=True):
@@ -197,16 +203,16 @@ def verify(coverage, system, deep=True):
     subprocess.run([str(nfb), "--help"], check=True, stdout=subprocess.DEVNULL)
 
 
-def receipt(selection_path, component, directory):
+def reader(selection_path, component):
     selection = generation.read_selection(
         selection_path, os.environ["GITHUB_REPOSITORY"]
     )
     current = selection["generation"]
     pin = current["components"][component]
-    directory.mkdir()
-    manifest, _ = image.load_manifest(
-        selection["repo"], current["releaseId"], pin, directory / "manifest"
-    )
+    with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
+        manifest, _ = image.load_manifest(
+            selection["repo"], current["releaseId"], pin, Path(directory) / "manifest"
+        )
     system = next(system for system in SYSTEMS if component.endswith(system))
     if component.startswith("darwin-"):
         state = Path(os.environ["RUNNER_TEMP"]) / "darwin"
@@ -242,20 +248,9 @@ def receipt(selection_path, component, directory):
             "mounted Linux component differs",
         )
     verify(manifest["coverage"], system)
-    result = {
-        "schema": "ci-cache-reader-receipt-v1",
-        "releaseId": current["releaseId"],
-        "component": component,
-        "manifestSha256": pin["sha256"],
-        "imageSha256": manifest["imageSha256"],
-        "freshReader": True,
-        "verified": True,
-    }
-    if component.startswith("darwin-image-"):
-        result.update(
-            filesystemVerified=True, hotPackSha256=manifest["hotPack"]["sha256"]
-        )
-    write(directory / "receipt.json", result)
+    print(
+        f"CI_CACHE_READER_VERIFIED component={component} releaseId={current['releaseId']}"
+    )
 
 
 def main():
@@ -273,10 +268,9 @@ def main():
         p = sub.add_parser(operation)
         p.add_argument("coverage", type=Path)
         p.add_argument("system", choices=SYSTEMS)
-    p = sub.add_parser("receipt")
+    p = sub.add_parser("reader")
     p.add_argument("selection", type=Path)
     p.add_argument("component", choices=generation.COMPONENTS)
-    p.add_argument("directory", type=Path)
     args = parser.parse_args()
     if args.operation == "plan":
         plan(args.directory, args.proof, args.run_id, args.release_id)
@@ -292,7 +286,7 @@ def main():
             deep=args.operation == "verify",
         )
     else:
-        receipt(args.selection, args.component, args.directory)
+        reader(args.selection, args.component)
 
 
 if __name__ == "__main__":

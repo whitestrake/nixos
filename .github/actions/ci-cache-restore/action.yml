@@ -16,17 +16,6 @@ inputs:
     required: false
     default: ""
 
-outputs:
-  restored:
-    description: "true only when the selected image remains mounted after validation."
-    value: ${{ steps.final.outputs.restored }}
-  image:
-    description: "Verified mounted image path, or empty after cold installation."
-    value: ${{ steps.final.outputs.image }}
-  nix-fast-build:
-    description: "Cached nix-fast-build executable, or empty after cold installation."
-    value: ${{ steps.final.outputs.nix-fast-build }}
-
 runs:
   using: "composite"
   steps:
@@ -52,7 +41,6 @@ runs:
           {
             echo "restored=true"
             echo "image=$(jq -er .image "$result")"
-            echo "nix-fast-build=$(jq -er .nixFastBuild "$result")"
             echo "directory=$directory"
           } >> "$GITHUB_OUTPUT"
         else
@@ -61,7 +49,6 @@ runs:
           {
             echo "restored=false"
             echo "image="
-            echo "nix-fast-build="
             echo "directory=$directory"
           } >> "$GITHUB_OUTPUT"
         fi
@@ -107,11 +94,9 @@ runs:
         extra-nix-conf: ${{ inputs.extra-nix-conf }}
 
     - name: Publish final Linux store state
-      id: final
       shell: bash
       env:
         CI_LINUX_IMAGE: ${{ steps.restore.outputs.image }}
-        CI_LINUX_NFB: ${{ steps.restore.outputs.nix-fast-build }}
         CI_LINUX_RESTORED: ${{ steps.restore.outputs.restored }}
         CI_LINUX_VALIDATION: ${{ steps.validate.outcome }}
       run: |
@@ -119,21 +104,13 @@ runs:
         if [ "$CI_LINUX_RESTORED" = true ] && [ "$CI_LINUX_VALIDATION" = success ]; then
           restored=true
           image="$CI_LINUX_IMAGE"
-          nfb="$CI_LINUX_NFB"
           cat "$(dirname "$image")/eager.json"
         else
           restored=false
           image=
-          nfb=
         fi
-        echo "CI_LINUX_PREPARED restored=$restored image=$image nixFastBuild=$nfb"
-        {
-          echo "restored=$restored"
-          echo "image=$image"
-          echo "nix-fast-build=$nfb"
-        } >> "$GITHUB_OUTPUT"
+        echo "CI_LINUX_PREPARED restored=$restored image=$image"
         {
           echo "CI_LINUX_CACHE_RESTORED=$restored"
           echo "CI_LINUX_CACHE_IMAGE=$image"
-          echo "NIX_FAST_BUILD=$nfb"
         } >> "$GITHUB_ENV"

@@ -10,11 +10,11 @@ import os
 import re
 from pathlib import Path
 import signal
+import shutil
 import socketserver
 import struct
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 
@@ -224,36 +224,18 @@ def validate_manifest(manifest, require_assets=True):
 def pack_hot(image, manifest_path, profile, output):
     image = Path(image)
     manifest = json.loads(Path(manifest_path).read_text())
-    manifest = profile_manifest(manifest)
+    validate_manifest(manifest, require_assets=False)
     require(image.stat().st_size == manifest["imageBytes"], "image size mismatch")
     require(file_sha256(image) == manifest["imageSha256"], "image digest mismatch")
-    shards = {shard["assetId"]: shard for shard in manifest["shards"]}
-    selected = set()
-    with Path(profile).open() as stream:
-        for line in stream:
-            record = json.loads(line)
-            if not (
-                record.get("kind") == 1
-                and record.get("status") == 206
-                and record.get("valid") == 1
-            ):
-                continue
-            asset_id = record.get("assetId")
-            start = record.get("start")
-            end = record.get("end")
-            require(asset_id in shards, "profile references unknown asset")
-            shard = shards[asset_id]
-            require(
-                isinstance(start, int) and isinstance(end, int),
-                "profile range is not numeric",
-            )
-            require(0 <= start <= end < shard["size"], "invalid profile range")
-            first = (shard["offset"] + start) // manifest["blockSize"]
-            last = (shard["offset"] + end) // manifest["blockSize"]
-            selected.update(range(first, last + 1))
     blocks = [block for shard in manifest["shards"] for block in shard["blocks"]]
-    indices = sorted(selected)
-    require(indices and indices[-1] < len(blocks), "profile selects no valid blocks")
+    try:
+        indices = sorted({int(line) for line in Path(profile).read_text().splitlines()})
+    except ValueError as error:
+        raise ValueError("profile contains a non-numeric block index") from error
+    require(
+        indices and 0 <= indices[0] and indices[-1] < len(blocks),
+        "profile selects no valid blocks",
+    )
     payload_bytes = sum(blocks[index]["size"] for index in indices)
     require(
         0 < payload_bytes <= manifest["imageBytes"],
@@ -473,62 +455,20 @@ def load_manifest(repo, release_id, manifest_identity, directory):
     return manifest, assets
 
 
-class WireLog:
-    def __init__(self, path=None):
-        self.path = Path(path) if path else None
-        self.lock = threading.Lock()
-        if self.path:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text("")
-
-    def write(self, record):
-        if not self.path:
-            return
-        require(
-            all(type(value) in (int, float) for value in record.values()),
-            "wire records must be numeric",
-        )
-        with self.lock, self.path.open("a") as stream:
-            print(json.dumps(record, separators=(",", ":")), file=stream)
-
-
 class RangeFetcher:
-    def __init__(self, repo, assets, wire_log=None, api_call=gh_api):
+    def __init__(self, repo, assets):
         self.repo = repo
         self.assets = assets
         self.urls = {
             asset_id: asset["browser_download_url"]
             for asset_id, asset in assets.items()
         }
-        self.wire_log = wire_log or WireLog()
-        self.api_call = api_call
-        self.records = []
-        self.lock = threading.Lock()
-
-    def _record(self, asset_id, start, end, status, size, started, refreshed, valid):
-        record = {
-            "kind": 1,
-            "assetId": asset_id,
-            "start": start,
-            "end": end,
-            "status": status,
-            "bytes": size,
-            "elapsedNs": time.monotonic_ns() - started,
-            "refreshed": refreshed,
-            "valid": valid,
-        }
-        with self.lock:
-            self.records.append(record)
-        self.wire_log.write(record)
-        return record
 
     def _fetch(self, asset_id, start, end, target=None):
         asset = self.assets.get(asset_id)
         require(asset is not None, "unknown pinned asset ID")
         require(0 <= start <= end < asset["size"], "invalid asset byte range")
-        refreshed = 0
         for attempt in range(2):
-            started = time.monotonic_ns()
             request = urllib.request.Request(
                 self.urls[asset_id], headers={"Range": f"bytes={start}-{end}"}
             )
@@ -550,33 +490,26 @@ class RangeFetcher:
                     content_range = response.headers.get("Content-Range")
                     content_length = response.headers.get("Content-Length")
                     final_url = response.geturl()
-                valid = int(
+                valid = (
                     status == 206
                     and content_range == f"bytes {start}-{end}/{asset['size']}"
                     and content_length == str(expected)
                     and size == expected
                 )
-                record = self._record(
-                    asset_id,
-                    start,
-                    end,
-                    status,
-                    size,
-                    started,
-                    refreshed,
-                    valid,
-                )
                 if not valid:
                     if target is not None:
                         Path(target).unlink(missing_ok=True)
-                    raise ValueError(f"invalid range response: {record}")
+                    raise ValueError(
+                        "invalid range response: "
+                        f"status={status} range={content_range!r} "
+                        f"length={content_length!r} bytes={size} expected={expected}"
+                    )
                 self.urls[asset_id] = final_url
                 return body if target is None else size
             except urllib.error.HTTPError as error:
-                self._record(asset_id, start, end, error.code, 0, started, refreshed, 0)
                 if error.code not in (401, 403, 618) or attempt:
                     raise
-                fresh = self.api_call(self.repo, f"releases/assets/{asset_id}")
+                fresh = gh_api(self.repo, f"releases/assets/{asset_id}")
                 require(fresh.get("id") == asset_id, "refreshed asset ID mismatch")
                 require(
                     fresh.get("name") == asset["name"],
@@ -593,10 +526,6 @@ class RangeFetcher:
                 self.assets[asset_id] = fresh
                 asset = fresh
                 self.urls[asset_id] = fresh["browser_download_url"]
-                refreshed = 1
-            except urllib.error.URLError:
-                self._record(asset_id, start, end, 0, 0, started, refreshed, 0)
-                raise
         raise AssertionError("unreachable")
 
     def fetch(self, asset_id, start, end):
@@ -604,31 +533,6 @@ class RangeFetcher:
 
     def fetch_to(self, asset_id, start, end, target):
         return self._fetch(asset_id, start, end, target)
-
-    def summary(self):
-        with self.lock:
-            records = list(self.records)
-        intervals = {}
-        for record in records:
-            if record["status"] != 206:
-                continue
-            intervals.setdefault(record["assetId"], []).append(
-                (record["start"], record["end"])
-            )
-        unique = 0
-        for ranges in intervals.values():
-            merged = []
-            for start, end in sorted(ranges):
-                if merged and start <= merged[-1][1] + 1:
-                    merged[-1][1] = max(merged[-1][1], end)
-                else:
-                    merged.append([start, end])
-            unique += sum(end - start + 1 for start, end in merged)
-        return {
-            "requestCount": len(records),
-            "responseBytes": sum(record["bytes"] for record in records),
-            "uniqueResponseBytes": unique,
-        }
 
 
 class BlockStore:
@@ -639,8 +543,8 @@ class BlockStore:
         manifest,
         assets,
         directory,
-        wire_log=None,
         local_image=None,
+        profile=None,
     ):
         validate_manifest(manifest)
         require(manifest["releaseId"] == release_id, "manifest release ID mismatch")
@@ -655,7 +559,11 @@ class BlockStore:
         self.directory = Path(directory)
         self.cache = self.directory / "blocks"
         self.cache.mkdir(parents=True, exist_ok=True)
-        self.fetcher = RangeFetcher(repo, assets, wire_log)
+        self.fetcher = RangeFetcher(repo, assets)
+        self.profile = Path(profile) if profile else None
+        if self.profile:
+            self.profile.parent.mkdir(parents=True, exist_ok=True)
+            self.profile.write_text("")
         self.blocks = []
         for shard in manifest["shards"]:
             require(shard["assetId"] in assets, "pinned shard asset is missing")
@@ -686,13 +594,9 @@ class BlockStore:
         start = first["offset"] - shard["offset"]
         end = last["offset"] - shard["offset"] + last["size"] - 1
         if self.local_image:
-            started = time.monotonic_ns()
             with self.local_image.open("rb") as source:
                 source.seek(shard["offset"] + start)
                 payload = source.read(end - start + 1)
-            self.fetcher._record(
-                shard["assetId"], start, end, 206, len(payload), started, 0, 1
-            )
         else:
             payload = self.fetcher.fetch(shard["assetId"], start, end)
         position = 0
@@ -727,6 +631,10 @@ class BlockStore:
         first = start // block_size
         last = (start + length - 1) // block_size
         with self.lock:
+            if self.profile:
+                with self.profile.open("a") as stream:
+                    for index in range(first, last + 1):
+                        print(index, file=stream)
             data_by_index = {}
             groups = []
             group = []
@@ -751,11 +659,8 @@ class BlockStore:
         return data[offset : offset + length]
 
 
-def eager(repo, release_id, manifest_identity, directory, workers=1):
-    require(isinstance(workers, int) and 1 <= workers <= 4, "workers must be 1..4")
-    selection_started = time.monotonic()
+def eager(repo, release_id, manifest_identity, directory):
     manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
-    selection_seconds = time.monotonic() - selection_started
     fetcher = RangeFetcher(repo, assets)
     directory = Path(directory)
     temporary = directory / "image.dmg.tmp"
@@ -771,47 +676,29 @@ def eager(repo, release_id, manifest_identity, directory, workers=1):
         fetcher.fetch_to(shard["assetId"], 0, shard["size"] - 1, path)
         require(file_sha256(path) == shard["sha256"], "shard digest mismatch")
 
-    restore_started = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             list(executor.map(download, enumerate(manifest["shards"])))
-        image_digest = hashlib.sha256()
         if len(shard_paths) == 1:
             require(
                 manifest["shards"][0]["sha256"] == manifest["imageSha256"],
                 "image digest mismatch",
             )
-            require(
-                shard_paths[0].stat().st_size == manifest["imageBytes"],
-                "image size mismatch",
-            )
             os.replace(shard_paths[0], temporary)
-            image_digest = None
-        with temporary.open("ab" if image_digest is None else "xb") as image:
-            for shard, path in (
-                [] if image_digest is None else zip(manifest["shards"], shard_paths)
-            ):
-                with path.open("rb") as source:
-                    for block in shard["blocks"]:
-                        part = source.read(block["size"])
-                        require(
-                            len(part) == block["size"]
-                            and sha256(part) == block["sha256"],
-                            "shard block digest mismatch",
-                        )
-                        image.write(part)
-                        image_digest.update(part)
-                    require(source.read(1) == b"", "shard has trailing data")
+        else:
+            with temporary.open("xb") as image:
+                for path in shard_paths:
+                    with path.open("rb") as source:
+                        shutil.copyfileobj(source, image)
+            require(
+                file_sha256(temporary) == manifest["imageSha256"],
+                "assembled image digest mismatch",
+            )
         require(
             temporary.stat().st_size == manifest["imageBytes"],
             "assembled image size mismatch",
         )
-        require(
-            image_digest is None or image_digest.hexdigest() == manifest["imageSha256"],
-            "assembled image digest mismatch",
-        )
         os.replace(temporary, image_path)
-        restore_seconds = time.monotonic() - restore_started
     finally:
         temporary.unlink(missing_ok=True)
         for path in shard_paths:
@@ -820,12 +707,7 @@ def eager(repo, release_id, manifest_identity, directory, workers=1):
         "releaseId": release_id,
         "manifestSha256": manifest_identity["sha256"],
         "image": str(image_path),
-        "imageBytes": manifest["imageBytes"],
         "imageSha256": manifest["imageSha256"],
-        "workers": workers,
-        "selectionSeconds": selection_seconds,
-        "restoreSeconds": restore_seconds,
-        **fetcher.summary(),
     }
 
 
@@ -851,39 +733,14 @@ def parse_range(value, size):
 class ImageServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, store, log):
+    def __init__(self, store):
         self.store = store
         self.fault = store.directory / "backing-failure"
-        self.wire_log = log
-        self.interface_requests = 0
-        self.interface_ranges = 0
-        self.interface_bytes = 0
-        self.metrics_lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), ImageHandler)
 
     def server_bind(self):
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address
-
-    def record_interface(self, method, ranged, status, sent, started, client_port):
-        with self.metrics_lock:
-            self.interface_requests += 1
-            self.interface_ranges += ranged
-            self.interface_bytes += sent
-        finished = time.monotonic_ns()
-        self.wire_log.write(
-            {
-                "kind": 2,
-                "method": method,
-                "range": ranged,
-                "status": status,
-                "bytes": sent,
-                "clientPort": client_port,
-                "startedNs": started,
-                "finishedNs": finished,
-                "elapsedNs": finished - started,
-            }
-        )
 
 
 class ImageHandler(BaseHTTPRequestHandler):
@@ -907,9 +764,7 @@ class ImageHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.send_error(400)
             return
-        started = time.monotonic_ns()
         size = self.server.store.manifest["imageBytes"]
-        ranged = int(self.headers.get("Range") is not None)
         status, start, end = 200, 0, size - 1
         if self.path != "/image":
             status, start, end = 404, 0, -1
@@ -946,45 +801,34 @@ class ImageHandler(BaseHTTPRequestHandler):
                     sent += len(data)
             except (BrokenPipeError, ConnectionResetError):
                 pass
-        self.server.record_interface(
-            int(send_body), ranged, status, sent, started, self.client_address[1]
-        )
 
     def log_message(self, *_args):
         pass
 
 
-def make_server(store, log):
-    return ImageServer(store, WireLog(log))
-
-
-def serve(repo, release_id, manifest_identity, directory, ready, log, hot_pack=None):
+def serve(repo, release_id, manifest_identity, directory, ready):
     manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
-    wire_log = WireLog(log)
-    store = BlockStore(repo, release_id, manifest, assets, directory, wire_log)
+    store = BlockStore(repo, release_id, manifest, assets, directory)
     if manifest.get("component") == "darwin-image-aarch64-darwin":
         require("hotPack" in manifest, "missing bound hot pack")
         pin = manifest["hotPack"]
-        if hot_pack is None:
-            from ci_cache_generation import identity
+        from ci_cache_generation import identity
 
-            require(
-                pin["assetId"] in assets
-                and identity(assets[pin["assetId"]]) == pin
-                and pin["size"] <= SHARD_SIZE,
-                "hot pack asset mismatch",
-            )
-            hot_pack = Path(directory) / "hot-pack.bin"
-            store.fetcher.fetch_to(pin["assetId"], 0, pin["size"] - 1, hot_pack)
+        require(
+            pin["assetId"] in assets
+            and identity(assets[pin["assetId"]]) == pin
+            and pin["size"] <= SHARD_SIZE,
+            "hot pack asset mismatch",
+        )
+        hot_pack = Path(directory) / "hot-pack.bin"
+        store.fetcher.fetch_to(pin["assetId"], 0, pin["size"] - 1, hot_pack)
         require(
             file_sha256(hot_pack) == pin["sha256"]
             and Path(hot_pack).stat().st_size == pin["size"],
             "hot pack identity mismatch",
         )
-    hot_blocks, hot_bytes = import_hot_pack(hot_pack, store) if hot_pack else (0, 0)
-    return run_server(
-        store, ready, wire_log, hot_pack, hot_blocks, hot_bytes, manifest_identity
-    )
+        import_hot_pack(hot_pack, store)
+    run_server(store, ready)
 
 
 def profile_manifest(manifest):
@@ -1002,7 +846,7 @@ def profile_manifest(manifest):
     return manifest
 
 
-def serve_local(image, manifest_path, directory, ready, log):
+def serve_local(image, manifest_path, directory, ready, profile):
     manifest = profile_manifest(json.loads(Path(manifest_path).read_text()))
     Path(directory).mkdir(parents=True, exist_ok=False)
     assets = {
@@ -1015,31 +859,20 @@ def serve_local(image, manifest_path, directory, ready, log):
         }
         for s in manifest["shards"]
     }
-    wire_log = WireLog(log)
     store = BlockStore(
         "",
         manifest["releaseId"],
         manifest,
         assets,
         directory,
-        wire_log,
         local_image=image,
+        profile=profile,
     )
-    return run_server(store, ready, wire_log)
+    run_server(store, ready)
 
 
-def run_server(
-    store,
-    ready,
-    wire_log,
-    hot_pack=None,
-    hot_blocks=0,
-    hot_bytes=0,
-    manifest_identity=None,
-):
-    manifest = store.manifest
-    release_id = manifest["releaseId"]
-    server = ImageServer(store, wire_log)
+def run_server(store, ready):
+    server = ImageServer(store)
     url = f"http://127.0.0.1:{server.server_port}/image"
 
     def stop(*_args):
@@ -1052,28 +885,6 @@ def run_server(
         server.serve_forever()
     finally:
         server.server_close()
-    result = {
-        "releaseId": release_id,
-        "manifestSha256": manifest_identity["sha256"]
-        if manifest_identity is not None
-        else None,
-        "image": url,
-        "imageBytes": manifest["imageBytes"],
-        "imageSha256": manifest["imageSha256"],
-        **store.fetcher.summary(),
-        "interfaceBytes": server.interface_bytes,
-        "interfaceRequests": server.interface_requests,
-        "interfaceRangeRequests": server.interface_ranges,
-    }
-    if hot_pack:
-        result.update(
-            {
-                "hotPackBlocks": hot_blocks,
-                "hotPackBytes": hot_bytes,
-                "hotPackSha256": file_sha256(hot_pack),
-            }
-        )
-    return result
 
 
 def main():
@@ -1093,14 +904,10 @@ def main():
         command.add_argument("--selection", required=True, type=Path)
         command.add_argument("--component", required=True)
         command.add_argument("--directory", required=True, type=Path)
-        if name == "eager":
-            command.add_argument("--workers", type=int, choices=range(1, 5), default=1)
-        else:
+        if name == "serve":
             command.add_argument("--ready", required=True, type=Path)
-            command.add_argument("--log", required=True, type=Path)
-            command.add_argument("--hot-pack", type=Path)
     local = commands.add_parser("serve-local")
-    for flag in ("image", "manifest", "directory", "ready", "log"):
+    for flag in ("image", "manifest", "directory", "ready", "profile"):
         local.add_argument("--" + flag, required=True, type=Path)
     args = parser.parse_args()
     if args.command == "pack":
@@ -1109,7 +916,7 @@ def main():
         result = pack_hot(args.image, args.manifest, args.profile, args.output)
     elif args.command == "serve-local":
         result = serve_local(
-            args.image, args.manifest, args.directory, args.ready, args.log
+            args.image, args.manifest, args.directory, args.ready, args.profile
         )
     else:
         from ci_cache_generation import read_selection
@@ -1118,9 +925,7 @@ def main():
         identity = selection["generation"]["components"][args.component]
         release_id = selection["generation"]["releaseId"]
         if args.command == "eager":
-            result = eager(
-                args.repo, release_id, identity, args.directory, args.workers
-            )
+            result = eager(args.repo, release_id, identity, args.directory)
         else:
             result = serve(
                 args.repo,
@@ -1128,10 +933,9 @@ def main():
                 identity,
                 args.directory,
                 args.ready,
-                args.log,
-                args.hot_pack,
             )
-    print(json.dumps(result, separators=(",", ":")))
+    if result is not None:
+        print(json.dumps(result, separators=(",", ":")))
 
 
 if __name__ == "__main__":

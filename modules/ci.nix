@@ -26,6 +26,10 @@
         path = ["x86_64-linux" "checks" "treefmt"];
         output = self.checks.x86_64-linux.treefmt;
       }
+      {
+        path = ["x86_64-linux" "checks" "ci-cache"];
+        output = self.checks.x86_64-linux.ci-cache;
+      }
     ];
 
   systemRoots =
@@ -56,6 +60,13 @@
     {}
     roots;
 in {
+  perSystem = {pkgs, ...}: {
+    checks.ci-cache = pkgs.runCommand "ci-cache-check" {} ''
+      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts/check_ci_cache.py}
+      touch $out
+    '';
+  };
+
   flake.ci =
     systemRoots
     // {

@@ -16,6 +16,26 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Disable Apple crash reporters before mounting
+      timeout-minutes: 2
+      shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" != macOS ] || [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          exit 0
+        fi
+        # ReportCrash can retain failed processes and prevent clean /nix detachment.
+        user_service="gui/$(id -u)/com.apple.ReportCrash"
+        root_service="system/com.apple.ReportCrash.Root"
+        /bin/launchctl print "$user_service" >/dev/null
+        sudo /bin/launchctl print "$root_service" >/dev/null
+        /bin/launchctl bootout "$user_service"
+        sudo /bin/launchctl bootout "$root_service"
+        if /bin/launchctl print "$user_service" >/dev/null 2>&1 ||
+          sudo /bin/launchctl print "$root_service" >/dev/null 2>&1; then
+          echo "::error ::Apple crash reporter remained loaded"
+          exit 1
+        fi
     - id: mount
       shell: bash
       env:

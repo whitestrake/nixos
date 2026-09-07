@@ -38,6 +38,7 @@ jobs:
     outputs:
       source_sha: ${{ steps.context.outputs.source_sha }}
       release_id: ${{ steps.begin.outputs.release_id }}
+      reader_matrix: ${{ steps.plan.outputs.reader_matrix }}
     permissions:
       contents: write
       actions: read
@@ -205,8 +206,6 @@ jobs:
            rm "$RUNNER_TEMP/erofs-tool"
           fi
           nix store gc
-          bash .github/scripts/ci-linux-image.sh checkpoint squashfs
-          bash .github/scripts/ci-linux-image.sh freeze squashfs
           bash .github/scripts/ci-linux-image.sh pack-full "$RUNNER_TEMP/full.squashfs" 2
           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/full.squashfs" --output "$RUNNER_TEMP/full-packed"
           python3 .github/scripts/ci_cache_workflow.py bind "$RUNNER_TEMP/full-packed" "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json"
@@ -248,45 +247,21 @@ jobs:
       - name: Seal exact complete generation
         run: |
           set -euo pipefail
-          python3 .github/scripts/ci_cache_generation.py seal --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: cache-selection
-          path: ${{ runner.temp }}/selection.json
-          retention-days: 7
+          python3 .github/scripts/ci_cache_generation.py seal --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" >/dev/null
   readers:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     needs:
       - planning
       - seal
+    if: needs.planning.outputs.release_id != ''
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - component: linux-seed-x86_64-linux
-            system: x86_64-linux
-            runner: ubuntu-24.04
-            mode: ''
-          - component: linux-full-x86_64-linux
-            system: x86_64-linux
-            runner: ubuntu-24.04
-            mode: ''
-          - component: linux-full-aarch64-linux
-            system: aarch64-linux
-            runner: ubuntu-24.04-arm
-            mode: ''
-          - component: darwin-image-aarch64-darwin
-            system: aarch64-darwin
-            runner: macos-26
-            mode: hot
-          - component: darwin-maintenance-aarch64-darwin
-            system: aarch64-darwin
-            runner: macos-26
-            mode: maintenance
+      matrix: ${{ fromJSON(needs.planning.outputs.reader_matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
       CI_LANE_SYSTEM: ${{ matrix.system }}
+      RELEASE_ID: ${{ needs.planning.outputs.release_id }}
     permissions:
       contents: read
       actions: read
@@ -297,15 +272,12 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: cache-selection
-          path: ${{ runner.temp }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
           name: cache-plan
           path: ${{ runner.temp }}/plan
-      - name: Select expected records
+      - name: Pin candidate and select expected records
         run: |
           set -euo pipefail
+          python3 .github/scripts/ci_cache_generation.py resolve --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
           echo "CI_EXPECTED_RECORDS=$RUNNER_TEMP/plan/$CI_LANE_SYSTEM-records.json" >> "$GITHUB_ENV"
       - if: runner.os == 'Linux'
         uses: ./.github/actions/ci-cache-restore
@@ -335,17 +307,12 @@ jobs:
           else
            bash .github/scripts/ci-nfb.sh "$SYSTEM" "$SYSTEM"
           fi
-      - name: Verify expected roots and emit fresh-reader receipt
+      - name: Deep-verify exact candidate reader
         env:
           COMPONENT: ${{ matrix.component }}
         run: |
           set -euo pipefail
-          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py receipt "$RUNNER_TEMP/selection.json" "$COMPONENT" "$RUNNER_TEMP/receipt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: cache-reader-${{ matrix.component }}
-          path: ${{ runner.temp }}/receipt/receipt.json
-          retention-days: 7
+          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py reader "$RUNNER_TEMP/selection.json" "$COMPONENT"
       - name: Detach Darwin store
         if: always() && runner.os == 'macOS'
         run: |
@@ -359,13 +326,14 @@ jobs:
     needs:
       - planning
       - readers
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && needs.readers.result == 'success'
     permissions:
       contents: write
       actions: read
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.planning.outputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -373,16 +341,11 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: cache-selection
-          path: ${{ runner.temp }}
+          name: cache-plan
+          path: ${{ runner.temp }}/plan
       - uses: ./.github/actions/install-nix
-      - name: Authenticate receipts, promote and prune retired generations
+      - name: Promote and prune retired generations
         run: |
           set -euo pipefail
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
-           | jq -ce '[.[].artifacts[] | select(.name | startswith("cache-reader-"))] |
-             if length != 5 or (map(.name) | unique | length) != 5 then error("missing or duplicate receipts")
-             else map({key:(.name | ltrimstr("cache-reader-")),value:.id}) | from_entries end' > "$RUNNER_TEMP/receipts.json"
-          python3 .github/scripts/ci_cache_generation.py promote --repo "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --receipts "$RUNNER_TEMP/receipts.json"
-          jq -ce .generation.source "$RUNNER_TEMP/selection.json" > "$RUNNER_TEMP/source.json"
-          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/source.json" --execute
+          python3 .github/scripts/ci_cache_generation.py promote --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID"
+          python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/plan/source.json" --execute
