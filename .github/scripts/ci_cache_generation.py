@@ -2,7 +2,6 @@
 """Immutable complete Release generations, authenticated through GitHub Actions."""
 
 import argparse
-import base64
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ import subprocess
 import tempfile
 import time
 import urllib.request
-import urllib.parse
 
 from ci_cache_image import (
     DRAFT_NAME,
@@ -20,9 +18,12 @@ from ci_cache_image import (
     gh_api,
     gh_download_whole,
     gh_upload,
+    identity,
     is_sha256,
+    positive,
     require,
     sha256,
+    validate_identity,
     validate_manifest,
 )
 
@@ -67,40 +68,8 @@ COMPONENTS = tuple(reader["component"] for reader in READERS)
 GRACE = 24 * 60 * 60
 
 
-def positive(value):
-    return type(value) is int and value > 0
-
-
 def owned(release):
     return re.fullmatch(r"ci-cache-v1-[0-9]+", release.get("tag_name", "")) is not None
-
-
-def identity(asset):
-    result = {
-        "assetId": asset["id"],
-        "name": asset["name"],
-        "size": asset["size"],
-        "sha256": asset["digest"].removeprefix("sha256:"),
-    }
-    validate_identity(result)
-    return result
-
-
-def validate_identity(value):
-    require(
-        isinstance(value, dict) and set(value) == {"assetId", "name", "size", "sha256"},
-        "invalid asset identity fields",
-    )
-    require(
-        positive(value["assetId"]) and positive(value["size"]),
-        "invalid asset identity numbers",
-    )
-    require(
-        isinstance(value["name"], str)
-        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", value["name"]),
-        "invalid asset name",
-    )
-    require(is_sha256(value["sha256"]), "invalid asset digest")
 
 
 def fingerprint(coverage):
@@ -313,6 +282,8 @@ def resolve(repo, output, release_id=None):
 
 
 def read_selection(path, repo):
+    # resolve() authenticates this job-local handoff before cached tooling runs.
+    # Readers still verify downloaded manifests and bytes against its identities.
     selection = json.loads(Path(path).read_text())
     require(
         selection.get("schema") == "ci-cache-selection-v1"
@@ -325,14 +296,8 @@ def read_selection(path, repo):
         "selection requires explicit trust mode",
     )
     validate_generation(selection["generation"])
-    current, pin = load_generation(
-        repo,
-        selection["generation"]["releaseId"],
-        production=selection.get("production", True),
-    )
     require(
-        current == selection["generation"] and pin == selection["manifest"],
-        "frozen selection changed",
+        selection["manifest"]["name"] == MANIFEST, "invalid generation manifest name"
     )
     return selection
 
@@ -344,7 +309,6 @@ def publisher_context(repo, revision, production):
     )
     run_id = int(os.environ.get("GITHUB_RUN_ID", "0"))
     require(positive(run_id), "publisher requires Actions run context")
-    publisher_claims(repo, run_id, production)
     check_run(repo, run_id, revision, PUBLISHER, production)
     if production:
         require(
@@ -352,72 +316,6 @@ def publisher_context(repo, revision, production):
             "source is no longer current master",
         )
     return run_id
-
-
-class NoTokenRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *_args, **_kwargs):
-        raise ValueError("OIDC endpoint must not redirect")
-
-
-def publisher_claims(repo, run_id, production):
-    endpoint = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
-    parsed = urllib.parse.urlsplit(endpoint)
-    require(
-        parsed.scheme == "https"
-        and parsed.hostname
-        and parsed.hostname.endswith(".actions.githubusercontent.com")
-        and parsed.port in (None, 443)
-        and parsed.username is None
-        and parsed.password is None,
-        "publisher requires GitHub OIDC endpoint",
-    )
-    token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
-    require(token, "publisher requires id-token: write")
-    audience = "ci-cache-publisher"
-    query = urllib.parse.parse_qsl(parsed.query)
-    query = [(key, value) for key, value in query if key != "audience"] + [
-        ("audience", audience)
-    ]
-    endpoint = urllib.parse.urlunsplit(
-        parsed._replace(query=urllib.parse.urlencode(query))
-    )
-    request = urllib.request.Request(
-        endpoint, headers={"Authorization": "Bearer " + token}
-    )
-    # Claims are accepted only from the authenticated GitHub HTTPS response,
-    # never from a caller-supplied JWT or unauthenticated adjacent receipt.
-    with urllib.request.build_opener(NoTokenRedirect()).open(
-        request, timeout=60
-    ) as response:
-        encoded = json.loads(response.read(65536))["value"].split(".")
-    require(len(encoded) == 3, "invalid OIDC response")
-    claims = json.loads(
-        base64.urlsafe_b64decode(encoded[1] + "=" * (-len(encoded[1]) % 4))
-    )
-    require(
-        claims.get("iss") == "https://token.actions.githubusercontent.com"
-        and claims.get("aud") == audience
-        and claims.get("repository") == repo
-        and claims.get("run_id") == str(run_id),
-        "publisher OIDC identity mismatch",
-    )
-    require(
-        type(claims.get("exp")) is int and claims["exp"] > time.time(),
-        "publisher OIDC token expired",
-    )
-    require(
-        claims.get("workflow_ref", "").startswith(
-            repo + "/" + PUBLISHER + "@refs/heads/"
-        ),
-        "publisher OIDC workflow mismatch",
-    )
-    if production:
-        require(
-            claims.get("ref") == "refs/heads/master"
-            and claims["workflow_ref"] == repo + "/" + PUBLISHER + "@refs/heads/master",
-            "PR publishers cannot promote or prune",
-        )
-    return claims
 
 
 def upload(repo, release, path):
@@ -669,47 +567,21 @@ def finish_promotion(repo, release, recovery_run=None):
     return record
 
 
-def promotion_chain(repo, release):
-    chain = []
-    seen = set()
-    while release and owned(release):
-        require(release["id"] not in seen, "promotion cycle")
-        seen.add(release["id"])
-        matches = [a for a in release["assets"] if a["name"] == "promotion.json"]
-        if not matches:
-            break
-        record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
-        require(
-            record.get("releaseId") == release["id"]
-            and positive(record.get("promotedAt")),
-            "invalid promotion record",
-        )
-        intent, pin = promotion_intent(repo, release)
-        require(
-            record.get("intentSha256") == pin["sha256"]
-            and all(record.get(k) == v for k, v in intent.items()),
-            "promotion does not match intent",
-        )
-        generation, _ = load_generation(repo, release["id"], production=True)
-        require(
-            record.get("publisherRunId") == generation["publisherRunId"],
-            "promotion publisher mismatch",
-        )
-        require(
-            not chain or record["promotedAt"] <= chain[-1]["promotedAt"],
-            "promotion order mismatch",
-        )
-        chain.append(record)
-        previous = record.get("previousId")
-        if previous is None:
-            break
-        require(positive(previous), "invalid predecessor")
-        try:
-            release = gh_api(repo, f"releases/{previous}")
-        except subprocess.CalledProcessError:
-            # Older ancestors may already have been retired by a previous publisher.
-            break
-    return chain
+def promotion_record(repo, release, generation):
+    matches = [a for a in release["assets"] if a["name"] == "promotion.json"]
+    require(len(matches) == 1, "missing promotion record")
+    record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
+    intent, pin = promotion_intent(repo, release)
+    require(
+        record.get("releaseId") == release["id"]
+        and positive(record.get("promotedAt"))
+        and record.get("previousId") != release["id"]
+        and record.get("publisherRunId") == generation["publisherRunId"]
+        and record.get("intentSha256") == pin["sha256"]
+        and all(record.get(k) == v for k, v in intent.items()),
+        "invalid promotion record",
+    )
+    return record
 
 
 def promote(repo, release_id):
@@ -723,12 +595,10 @@ def promote(repo, release_id):
     latest = latest_release(repo)
     previous = None
     if latest and owned(latest):
-        load_generation(repo, latest["id"], production=True)
+        current, _ = load_generation(repo, latest["id"], production=True)
         if not any(a["name"] == "promotion.json" for a in latest["assets"]):
             finish_promotion(repo, latest, recovery_run=run_id)
-        require(
-            promotion_chain(repo, latest), "current generation lacks promotion evidence"
-        )
+        promotion_record(repo, latest, current)
         previous = latest["id"]
     require(previous != release["id"], "already promoted")
     require(
@@ -754,29 +624,18 @@ def promote(repo, release_id):
     return finish_promotion(repo, release)
 
 
-def retirement_plan(releases, chain, now):
-    if len(chain) < 2:
+def retirement_plan(releases, current, now):
+    # ponytail: frequent promotions retain extras; track retirement individually if space demands it.
+    if now - current["promotedAt"] < GRACE:
         return []
-    for current, previous in zip(chain, chain[1:]):
-        require(
-            current.get("previousId") == previous.get("releaseId")
-            and current["promotedAt"] >= previous["promotedAt"],
-            "invalid promotion chain",
-        )
-    protected = {chain[0]["releaseId"], chain[0]["previousId"]}
-    retired = {
-        record["previousId"]: chain[index - 1]["promotedAt"]
-        for index, record in enumerate(chain)
-        if index > 0 and record.get("previousId")
-    }
+    protected = {current["releaseId"], current["previousId"]}
     return sorted(
         release["id"]
         for release in releases
         if owned(release)
         and not release.get("draft")
         and release["id"] not in protected
-        and release["id"] in retired
-        and now - retired[release["id"]] >= GRACE
+        and any(asset["name"] == "promotion.json" for asset in release["assets"])
     )
 
 
@@ -800,9 +659,10 @@ def prune(repo, source, execute=False):
             intent["publisherRunId"] == generation["publisherRunId"],
             "promotion publisher mismatch",
         )
-        if execute:
-            finish_promotion(repo, latest, recovery_run=run_id)
-    chain = promotion_chain(repo, latest)
+        if not execute:
+            return {"releaseIds": [], "executed": False}
+        finish_promotion(repo, latest, recovery_run=run_id)
+    current = promotion_record(repo, latest, generation)
     releases = []
     for page in range(1, 101):
         batch = gh_api(repo, f"releases?per_page=100&page={page}")
@@ -811,11 +671,13 @@ def prune(repo, source, execute=False):
             break
     else:
         raise ValueError("release inventory exceeds bound")
-    planned = retirement_plan(releases, chain, int(time.time()))
+    planned = retirement_plan(releases, current, int(time.time()))
     tag_targets = {}
     for release_id in planned:
         retired, _ = load_generation(repo, release_id, production=True)
         release = next(r for r in releases if r["id"] == release_id)
+        record = promotion_record(repo, release, retired)
+        require(record["promotedAt"] <= current["promotedAt"], "newer promotion found")
         tag = gh_api(repo, f"git/ref/tags/{release['tag_name']}")
         require(
             tag.get("ref") == "refs/tags/" + release["tag_name"]
@@ -849,7 +711,6 @@ def main():
         command.add_argument("--repo", required=True)
         if name == "resolve":
             command.add_argument("--output", required=True, type=Path)
-        if name == "resolve":
             command.add_argument("--release-id", type=int)
         elif name == "begin":
             for field in ("source", "coverage"):

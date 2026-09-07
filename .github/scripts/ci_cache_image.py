@@ -12,11 +12,11 @@ from pathlib import Path
 import signal
 import shutil
 import socketserver
-import struct
 import subprocess
 import threading
 import urllib.error
 import urllib.request
+import zipfile
 
 
 SCHEMA = "ci-cache-image-v1"
@@ -24,9 +24,7 @@ BLOCK_SIZE = 64 * 1024
 SHARD_SIZE = 512 * 1024 * 1024
 MANIFEST_NAME = "manifest.json"
 DRAFT_NAME = "draft-manifest.json"
-HOT_SCHEMA = "darwin-hot-pack-v1"
-HOT_MAGIC = b"DRHOT1\0\0"
-MAX_HOT_HEADER = 16 * 1024 * 1024
+HOT_COMMENT = b"image-sha256:"
 
 
 def sha256(data):
@@ -52,6 +50,38 @@ def is_sha256(value):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def positive(value):
+    return type(value) is int and value > 0
+
+
+def identity(asset):
+    result = {
+        "assetId": asset["id"],
+        "name": asset["name"],
+        "size": asset["size"],
+        "sha256": asset["digest"].removeprefix("sha256:"),
+    }
+    validate_identity(result)
+    return result
+
+
+def validate_identity(value):
+    require(
+        isinstance(value, dict) and set(value) == {"assetId", "name", "size", "sha256"},
+        "invalid asset identity fields",
+    )
+    require(
+        positive(value["assetId"]) and positive(value["size"]),
+        "invalid asset identity numbers",
+    )
+    require(
+        isinstance(value["name"], str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", value["name"]),
+        "invalid asset name",
+    )
+    require(is_sha256(value["sha256"]), "invalid asset digest")
 
 
 def pack_image(image, output, shard_size=SHARD_SIZE, block_size=BLOCK_SIZE):
@@ -241,37 +271,28 @@ def pack_hot(image, manifest_path, profile, output):
         0 < payload_bytes <= manifest["imageBytes"],
         "invalid hot-pack payload size",
     )
-    header = json.dumps(
-        {
-            "schema": HOT_SCHEMA,
-            "imageSha256": manifest["imageSha256"],
-            "blockSize": manifest["blockSize"],
-            "blocks": indices,
-            "payloadBytes": payload_bytes,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    require(len(header) <= MAX_HOT_HEADER, "hot-pack header is too large")
     output = Path(output)
     require(not output.exists(), "hot-pack output already exists")
     temporary = output.with_suffix(output.suffix + ".tmp")
-    with image.open("rb") as source, temporary.open("xb") as target:
-        target.write(HOT_MAGIC)
-        target.write(struct.pack(">I", len(header)))
-        target.write(header)
-        for index in indices:
-            block = blocks[index]
-            source.seek(block["offset"])
-            data = source.read(block["size"])
-            require(
-                len(data) == block["size"] and sha256(data) == block["sha256"],
-                "source block digest mismatch",
-            )
-            target.write(data)
-    os.replace(temporary, output)
+    try:
+        with (
+            image.open("rb") as source,
+            zipfile.ZipFile(temporary, "x", compression=zipfile.ZIP_STORED) as archive,
+        ):
+            archive.comment = HOT_COMMENT + manifest["imageSha256"].encode()
+            for index in indices:
+                block = blocks[index]
+                source.seek(block["offset"])
+                data = source.read(block["size"])
+                require(
+                    len(data) == block["size"] and sha256(data) == block["sha256"],
+                    "source block digest mismatch",
+                )
+                archive.writestr(f"blocks/{index:08d}.block", data)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return {
-        "schema": HOT_SCHEMA,
         "imageSha256": manifest["imageSha256"],
         "blockSize": manifest["blockSize"],
         "blockCount": len(indices),
@@ -282,65 +303,44 @@ def pack_hot(image, manifest_path, profile, output):
 
 def import_hot_pack(path, store):
     path = Path(path)
-    with path.open("rb") as stream:
-        require(stream.read(len(HOT_MAGIC)) == HOT_MAGIC, "invalid hot-pack magic")
-        encoded_length = stream.read(4)
-        require(len(encoded_length) == 4, "truncated hot-pack header length")
-        header_length = struct.unpack(">I", encoded_length)[0]
-        require(0 < header_length <= MAX_HOT_HEADER, "invalid hot-pack header size")
-        encoded_header = stream.read(header_length)
-        require(len(encoded_header) == header_length, "truncated hot-pack header")
-        header = json.loads(encoded_header)
-        require(header.get("schema") == HOT_SCHEMA, "invalid hot-pack schema")
+    with zipfile.ZipFile(path) as archive:
         require(
-            header.get("imageSha256") == store.manifest["imageSha256"],
+            archive.comment == HOT_COMMENT + store.manifest["imageSha256"].encode(),
             "hot-pack image digest mismatch",
         )
+        entries = archive.infolist()
+        require(entries, "hot-pack has no blocks")
+        pattern = re.compile(r"blocks/([0-9]{8})\.block")
         require(
-            header.get("blockSize") == store.manifest["blockSize"],
-            "hot-pack block size mismatch",
+            all(pattern.fullmatch(entry.filename) for entry in entries),
+            "invalid hot-pack block name",
         )
-        indices = header.get("blocks")
-        require(isinstance(indices, list) and indices, "hot-pack has no blocks")
+        indices = [int(pattern.fullmatch(entry.filename).group(1)) for entry in entries]
         require(indices == sorted(set(indices)), "hot-pack blocks are not unique")
         require(
-            all(
-                isinstance(index, int) and 0 <= index < len(store.blocks)
-                for index in indices
-            ),
+            indices[-1] < len(store.blocks),
             "hot-pack block index is out of range",
         )
-        payload_bytes = sum(store.blocks[index][1]["size"] for index in indices)
-        require(
-            header.get("payloadBytes") == payload_bytes,
-            "hot-pack payload size mismatch",
-        )
-        payload_offset = len(HOT_MAGIC) + 4 + header_length
-        require(
-            path.stat().st_size == payload_offset + payload_bytes,
-            "hot-pack file size mismatch",
-        )
-        for index in indices:
-            block = store.blocks[index][1]
-            data = stream.read(block["size"])
-            require(
-                len(data) == block["size"] and sha256(data) == block["sha256"],
-                "hot-pack block digest mismatch",
-            )
-        require(stream.read(1) == b"", "hot-pack has trailing data")
-        stream.seek(payload_offset)
+        payload_bytes = 0
         with store.lock:
-            for index in indices:
+            for entry, index in zip(entries, indices):
                 block = store.blocks[index][1]
-                data = stream.read(block["size"])
                 require(
-                    len(data) == block["size"] and sha256(data) == block["sha256"],
-                    "hot-pack block changed during import",
+                    entry.compress_type == zipfile.ZIP_STORED
+                    and entry.file_size == block["size"]
+                    and entry.compress_size == block["size"],
+                    "hot-pack block size mismatch",
                 )
-                path = store._path(index)
-                temporary = path.with_suffix(".tmp")
+                data = archive.read(entry)
+                require(
+                    sha256(data) == block["sha256"],
+                    "hot-pack block digest mismatch",
+                )
+                block_path = store._path(index)
+                temporary = block_path.with_suffix(".tmp")
                 temporary.write_bytes(data)
-                os.replace(temporary, path)
+                os.replace(temporary, block_path)
+                payload_bytes += len(data)
     return len(indices), payload_bytes
 
 
@@ -409,15 +409,8 @@ def gh_download_whole(repo, asset, limit=64 * 1024 * 1024):
 
 def load_manifest(repo, release_id, manifest_identity, directory):
     # The identity comes from a frozen, authenticated generation selection.
-    require(
-        isinstance(manifest_identity, dict), "component manifest identity is required"
-    )
-    require(
-        isinstance(release_id, int)
-        and release_id > 0
-        and is_sha256(manifest_identity["sha256"]),
-        "invalid pinned release or manifest digest",
-    )
+    validate_identity(manifest_identity)
+    require(positive(release_id), "invalid pinned release or manifest digest")
     release = gh_api(repo, f"releases/{release_id}")
     require(release.get("id") == release_id, "release ID changed")
     manifest_assets = [
@@ -430,8 +423,7 @@ def load_manifest(repo, release_id, manifest_identity, directory):
     require(len(manifest_assets) == 1, "release must contain one manifest")
     manifest_asset = manifest_assets[0]
     require(
-        manifest_asset.get("id") is not None
-        and manifest_asset.get("digest") == "sha256:" + manifest_identity["sha256"],
+        identity(manifest_asset) == manifest_identity,
         "manifest asset identity mismatch",
     )
     body = download_whole(manifest_asset)
@@ -443,11 +435,15 @@ def load_manifest(repo, release_id, manifest_identity, directory):
     for shard in manifest["shards"]:
         asset = assets.get(shard["assetId"])
         require(asset is not None, "pinned shard asset is missing")
-        require(asset.get("name") == shard["name"], "shard asset name mismatch")
-        require(asset.get("size") == shard["size"], "shard asset size mismatch")
+        pin = {
+            "assetId": shard["assetId"],
+            "name": shard["name"],
+            "size": shard["size"],
+            "sha256": shard["sha256"],
+        }
         require(
-            asset.get("digest") == "sha256:" + shard["sha256"],
-            "shard asset digest mismatch",
+            identity(asset) == pin,
+            "shard asset identity mismatch",
         )
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
@@ -510,18 +506,9 @@ class RangeFetcher:
                 if error.code not in (401, 403, 618) or attempt:
                     raise
                 fresh = gh_api(self.repo, f"releases/assets/{asset_id}")
-                require(fresh.get("id") == asset_id, "refreshed asset ID mismatch")
                 require(
-                    fresh.get("name") == asset["name"],
-                    "refreshed asset name mismatch",
-                )
-                require(
-                    fresh.get("size") == asset["size"],
-                    "refreshed asset size mismatch",
-                )
-                require(
-                    fresh.get("digest") == asset["digest"],
-                    "refreshed asset digest mismatch",
+                    identity(fresh) == identity(asset),
+                    "refreshed asset identity mismatch",
                 )
                 self.assets[asset_id] = fresh
                 asset = fresh
@@ -538,16 +525,15 @@ class RangeFetcher:
 class BlockStore:
     def __init__(
         self,
-        repo,
-        release_id,
         manifest,
-        assets,
         directory,
+        *,
+        repo=None,
+        assets=None,
         local_image=None,
         profile=None,
     ):
-        validate_manifest(manifest)
-        require(manifest["releaseId"] == release_id, "manifest release ID mismatch")
+        validate_manifest(manifest, require_assets=local_image is None)
         self.manifest = manifest
         self.local_image = Path(local_image) if local_image else None
         if self.local_image:
@@ -559,14 +545,22 @@ class BlockStore:
         self.directory = Path(directory)
         self.cache = self.directory / "blocks"
         self.cache.mkdir(parents=True, exist_ok=True)
-        self.fetcher = RangeFetcher(repo, assets)
+        if self.local_image:
+            self.fetcher = None
+        else:
+            require(
+                isinstance(repo, str) and repo and isinstance(assets, dict),
+                "remote store requires repository assets",
+            )
+            self.fetcher = RangeFetcher(repo, assets)
         self.profile = Path(profile) if profile else None
         if self.profile:
             self.profile.parent.mkdir(parents=True, exist_ok=True)
             self.profile.write_text("")
         self.blocks = []
         for shard in manifest["shards"]:
-            require(shard["assetId"] in assets, "pinned shard asset is missing")
+            if not self.local_image:
+                require(shard["assetId"] in assets, "pinned shard asset is missing")
             for block in shard["blocks"]:
                 self.blocks.append((shard, block))
         # ponytail: one lock coalesces duplicate blocks; use per-block locks if concurrency matters.
@@ -808,19 +802,18 @@ class ImageHandler(BaseHTTPRequestHandler):
 
 def serve(repo, release_id, manifest_identity, directory, ready):
     manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
-    store = BlockStore(repo, release_id, manifest, assets, directory)
+    store = BlockStore(manifest, directory, repo=repo, assets=assets)
     if manifest.get("component") == "darwin-image-aarch64-darwin":
         require("hotPack" in manifest, "missing bound hot pack")
         pin = manifest["hotPack"]
-        from ci_cache_generation import identity
-
+        validate_identity(pin)
         require(
             pin["assetId"] in assets
             and identity(assets[pin["assetId"]]) == pin
             and pin["size"] <= SHARD_SIZE,
             "hot pack asset mismatch",
         )
-        hot_pack = Path(directory) / "hot-pack.bin"
+        hot_pack = Path(directory) / "hot.zip"
         store.fetcher.fetch_to(pin["assetId"], 0, pin["size"] - 1, hot_pack)
         require(
             file_sha256(hot_pack) == pin["sha256"]
@@ -831,39 +824,11 @@ def serve(repo, release_id, manifest_identity, directory, ready):
     run_server(store, ready)
 
 
-def profile_manifest(manifest):
-    if "releaseId" not in manifest:
-        validate_manifest(manifest, require_assets=False)
-        manifest = {
-            **manifest,
-            "releaseId": 1,
-            "shards": [
-                {**shard, "assetId": index + 1}
-                for index, shard in enumerate(manifest["shards"])
-            ],
-        }
-    validate_manifest(manifest)
-    return manifest
-
-
 def serve_local(image, manifest_path, directory, ready, profile):
-    manifest = profile_manifest(json.loads(Path(manifest_path).read_text()))
+    manifest = json.loads(Path(manifest_path).read_text())
     Path(directory).mkdir(parents=True, exist_ok=False)
-    assets = {
-        s["assetId"]: {
-            "id": s["assetId"],
-            "name": s["name"],
-            "size": s["size"],
-            "digest": "sha256:" + s["sha256"],
-            "browser_download_url": "",
-        }
-        for s in manifest["shards"]
-    }
     store = BlockStore(
-        "",
-        manifest["releaseId"],
         manifest,
-        assets,
         directory,
         local_image=image,
         profile=profile,

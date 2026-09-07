@@ -585,15 +585,8 @@ def validate_roots(coverage):
 
 def validate_hot(exported, manifest, hot, directory):
     # A fresh BlockStore authenticates every hot block against this exact image.
-    verified = image.profile_manifest(manifest)
-    assets = {
-        shard["assetId"]: {"browser_download_url": ""} for shard in verified["shards"]
-    }
     store = image.BlockStore(
-        "",
-        verified["releaseId"],
-        verified,
-        assets,
+        manifest,
         directory,
         local_image=exported,
     )
@@ -687,7 +680,7 @@ def produce(root, output, coverage, argv):
         validate_roots(coverage)
     finally:
         cleanup(profile)
-    hot = packed / "hot.bin"
+    hot = packed / "hot.zip"
     image.pack_hot(exported, manifest_path, block_profile, hot)
     manifest["hotPack"] = {
         "name": hot.name,

@@ -42,7 +42,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -142,7 +141,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -238,7 +236,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -330,7 +327,6 @@ jobs:
     permissions:
       contents: write
       actions: read
-      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_ID: ${{ needs.planning.outputs.release_id }}

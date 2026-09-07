@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 import ci_cache_generation as generation
 import ci_cache_image as image
@@ -81,17 +82,28 @@ class CacheCheck(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     image.validate_manifest(value)
 
-    def test_local_block_store_rejects_changed_uncached_backing(self):
+    def test_hot_zip_and_uncached_backing_verify_actual_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, manifest, assets = packed(root)
-            store = image.BlockStore(
-                "", 7, manifest, assets, root / "reader", local_image=source
-            )
+            source, manifest, _ = packed(root)
+            store = image.BlockStore(manifest, root / "reader", local_image=source)
+            profile = root / "profile"
+            profile.write_text("0\n1\n")
+            hot = root / "hot.zip"
+            image.pack_hot(source, root / "packed" / image.DRAFT_NAME, profile, hot)
+            self.assertEqual(image.import_hot_pack(hot, store), (2, 8))
             self.assertEqual(store.read(0, 4), b"abcd")
-            source.write_bytes(b"abcdWXYZijkl")
+            bad = root / "bad.zip"
+            with zipfile.ZipFile(hot) as original, zipfile.ZipFile(bad, "w") as corrupt:
+                corrupt.comment = original.comment
+                for index, name in enumerate(original.namelist()):
+                    data = original.read(name)
+                    corrupt.writestr(name, b"X" * len(data) if index == 0 else data)
+            with self.assertRaisesRegex(ValueError, "hot-pack block digest mismatch"):
+                image.import_hot_pack(bad, store)
+            source.write_bytes(b"abcdefghWXYZ")
             with self.assertRaisesRegex(ValueError, "block digest mismatch"):
-                store.read(4, 4)
+                store.read(8, 4)
 
     def test_generation_requires_exact_components_and_identities(self):
         valid = complete_generation()
@@ -117,17 +129,26 @@ class CacheCheck(unittest.TestCase):
     def test_retirement_keeps_current_previous_and_full_grace(self):
         promoted_at = 100_000
         releases = [
-            {"id": release_id, "tag_name": f"ci-cache-v1-{release_id}", "draft": False}
-            for release_id in range(1, 4)
+            {
+                "id": release_id,
+                "tag_name": f"ci-cache-v1-{release_id}",
+                "draft": False,
+                "assets": [{"name": "promotion.json"}],
+            }
+            for release_id in range(1, 6)
         ]
-        chain = [
-            {"releaseId": 3, "previousId": 2, "promotedAt": promoted_at},
-            {"releaseId": 2, "previousId": 1, "promotedAt": promoted_at - 1},
-        ]
+        releases[-1]["assets"] = []  # Never promoted; not eligible for retirement.
+        current = {"releaseId": 4, "previousId": 3, "promotedAt": promoted_at}
         before_grace = promoted_at + generation.GRACE - 1
         at_grace = promoted_at + generation.GRACE
-        self.assertEqual(generation.retirement_plan(releases, chain, before_grace), [])
-        self.assertEqual(generation.retirement_plan(releases, chain, at_grace), [1])
+        self.assertEqual(
+            generation.retirement_plan(releases, current, before_grace), []
+        )
+        self.assertEqual(
+            generation.retirement_plan(releases, current, at_grace), [1, 2]
+        )
+        current.update(releaseId=5, previousId=4, promotedAt=at_grace)
+        self.assertEqual(generation.retirement_plan(releases, current, at_grace), [])
 
 
 if __name__ == "__main__":
