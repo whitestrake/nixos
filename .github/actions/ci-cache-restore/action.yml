@@ -66,6 +66,7 @@ runs:
           } >> "$GITHUB_OUTPUT"
         else
           bash .github/scripts/ci-linux-image.sh cleanup "$CI_LINUX_FORMAT"
+          bash .github/scripts/ci-linux-image.sh discard-temp "$directory"
           {
             echo "restored=false"
             echo "image="

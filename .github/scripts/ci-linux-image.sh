@@ -66,7 +66,7 @@ checkpoint_complete() {
 checkpoint_database() {
   local database="$1" result
   [ -f "$database" ] || die "Nix database is missing: $database"
-  result="$(sudo sqlite3 "$database" 'PRAGMA wal_checkpoint(TRUNCATE);')"
+  result="$(sqlite3 "$database" 'PRAGMA wal_checkpoint(TRUNCATE);')"
   checkpoint_complete "$result" || die "SQLite checkpoint did not complete: $result"
   echo "CI_LINUX_SQLITE_CHECKPOINT result=$result" >&2
   sync
@@ -261,6 +261,13 @@ pack_full() {
   write_checksum "$image"
 }
 
+copy_seed_store() {
+  local store="$1" nfb="$2"
+  shift 2
+  nix copy --no-check-sigs --option auto-optimise-store false --to "$store" "$@"
+  nix path-info --store "$store" --recursive "$nfb" >/dev/null
+}
+
 pack_seed() {
   local system="$1" output="$2" store="$3" packer="$4" full_roots checkout_root
   local nfb name path index destination_roots
@@ -296,16 +303,15 @@ pack_seed() {
 
   mkdir -p "$output"
   printf '%s\n' "$nfb" > "$output/nfb-path.txt"
-  sudo nix copy --no-check-sigs --option auto-optimise-store false --to "$store" "${roots[@]}"
-  sudo nix path-info --store "$store" --recursive "$nfb" >/dev/null
+  copy_seed_store "$store" "$nfb" "${roots[@]}"
   destination_roots="$store/nix/var/nix/gcroots/github-ci/$system"
-  sudo mkdir -p "$destination_roots"
+  mkdir -p "$destination_roots"
   for index in "${!names[@]}"; do
-    sudo ln -sfn "${roots[$index]}" "$destination_roots/${names[$index]}"
+    ln -sfn "${roots[$index]}" "$destination_roots/${names[$index]}"
   done
 
   checkpoint_database "$store/nix/var/nix/db/db.sqlite"
-  sudo "$packer" --quiet --workers=1 -zzstd,level=3 -C65536 \
+  "$packer" --quiet --workers=1 -zzstd,level=3 -C65536 \
     -Efragments,ztailpacking,dedupe "$output/image" "$store/nix"
   write_checksum "$output/image"
 }
@@ -344,7 +350,6 @@ case "$1" in
     [ "${2:-}" != --bind ] || touch "$CI_LINUX_TEST_ROOT_MOUNTED"
     ;;
   rmdir) rmdir "$2" ;;
-  sqlite3) printf '%s\n' '0|0|0' ;;
   umount)
     [ "${CI_LINUX_TEST_FAIL_UMOUNT:-}" != "$2" ] || exit 1
     [ "$2" != "$CI_LINUX_TEST_NIX" ] || rm -f "$CI_LINUX_TEST_ROOT_MOUNTED"
@@ -352,13 +357,27 @@ case "$1" in
     ;;
 esac
 EOF
-  chmod +x "$scratch/bin/mountpoint" "$scratch/bin/sudo"
+  cat > "$scratch/bin/nix" <<'EOF'
+#!/usr/bin/env bash
+printf 'nix %s\n' "$*" >> "$CI_LINUX_TEST_LOG"
+if [ "$1" = copy ]; then
+  mkdir -p "$CI_LINUX_TEST_SEED_STORE/nix/var/nix/db" "$CI_LINUX_TEST_SEED_STORE/nix/store"
+  touch "$CI_LINUX_TEST_SEED_STORE/nix/var/nix/db/db.sqlite"
+fi
+EOF
+  cat > "$scratch/bin/sqlite3" <<'EOF'
+#!/usr/bin/env bash
+printf 'sqlite3 %s\n' "$*" >> "$CI_LINUX_TEST_LOG"
+printf '%s\n' '0|0|0'
+EOF
+  chmod +x "$scratch/bin/mountpoint" "$scratch/bin/nix" "$scratch/bin/sqlite3" "$scratch/bin/sudo"
 
   export PATH="$scratch/bin:$PATH" RUNNER_TEMP="$runner" CI_LINUX_NIX_DIR="$scratch/nix"
   export CI_LINUX_TEST_LOG="$log" CI_LINUX_TEST_NIX="$scratch/nix"
   export CI_LINUX_TEST_LOWER="$runner/linux-ci-mount-squashfs/lower"
   export CI_LINUX_TEST_ROOT_MOUNTED="$scratch/root-mounted"
   export CI_LINUX_TEST_LOWER_MOUNTED="$scratch/lower-mounted"
+  export CI_LINUX_TEST_SEED_STORE="$runner/seed-store"
   checkpoint_full squashfs
   freeze_full squashfs
   [ -f "$runner/linux-ci-mount-squashfs/root-pre-existing" ]
@@ -385,6 +404,12 @@ EOF
     return 1
   fi
   [ -e "$runner/linux-ci-mount-erofs/upper/dead" ]
+
+  : > "$log"
+  copy_seed_store "$CI_LINUX_TEST_SEED_STORE" /nix/store/nfb /nix/store/nfb /nix/store/input
+  [ -O "$CI_LINUX_TEST_SEED_STORE/nix/var/nix/db/db.sqlite" ]
+  grep -Fqx "nix copy --no-check-sigs --option auto-optimise-store false --to $CI_LINUX_TEST_SEED_STORE /nix/store/nfb /nix/store/input" "$log"
+  grep -Fqx "nix path-info --store $CI_LINUX_TEST_SEED_STORE --recursive /nix/store/nfb" "$log"
   rm -rf "$scratch"
 }
 
