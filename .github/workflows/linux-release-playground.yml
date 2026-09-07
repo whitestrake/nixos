@@ -1,10 +1,6 @@
 name: Linux Release-backed Image Probe
 
 on:
-  push:
-    branches: [feat/ci-optimisation]
-    paths:
-      - .github/workflows/linux-release-playground.yml
   workflow_dispatch:
     inputs:
       reader_pairs:
@@ -302,6 +298,7 @@ jobs:
   reader_first:
     name: Reader ${{ matrix.order.pair }} ${{ matrix.order.transport }} ${{ matrix.lane.name }}
     needs: collect
+    if: ${{ always() && !cancelled() && needs.collect.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -315,7 +312,7 @@ jobs:
           - name: full-arm
             runner: ubuntu-24.04-arm
             cache-dir: linux-lifecycle-squashfs
-        order: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"transport":"cache"}]' || '[{"pair":1,"transport":"cache"},{"pair":2,"transport":"release"},{"pair":3,"transport":"cache"}]') }}
+        order: ${{ fromJSON(inputs.reader_pairs == '1' && '[{"pair":1,"transport":"cache"}]' || '[{"pair":1,"transport":"cache"},{"pair":2,"transport":"release"},{"pair":3,"transport":"cache"}]') }}
     runs-on: ${{ matrix.lane.runner }}
     timeout-minutes: 45
     permissions:
@@ -629,6 +626,7 @@ jobs:
   reader_second:
     name: Reader ${{ matrix.order.pair }} ${{ matrix.order.transport }} ${{ matrix.lane.name }}
     needs: [collect, reader_first]
+    if: ${{ always() && !cancelled() && needs.collect.result == 'success' && needs.reader_first.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -642,7 +640,7 @@ jobs:
           - name: full-arm
             runner: ubuntu-24.04-arm
             cache-dir: linux-lifecycle-squashfs
-        order: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"transport":"release"}]' || '[{"pair":1,"transport":"release"},{"pair":2,"transport":"cache"},{"pair":3,"transport":"release"}]') }}
+        order: ${{ fromJSON(inputs.reader_pairs == '1' && '[{"pair":1,"transport":"release"}]' || '[{"pair":1,"transport":"release"},{"pair":2,"transport":"cache"},{"pair":3,"transport":"release"}]') }}
     runs-on: ${{ matrix.lane.runner }}
     timeout-minutes: 45
     permissions:
@@ -652,17 +650,24 @@ jobs:
 
   compare:
     needs: [reader_first, reader_second]
-    if: always() && needs.reader_first.result == 'success' && needs.reader_second.result == 'success'
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Require both reader stages to succeed
+        env:
+          FIRST_RESULT: ${{ needs.reader_first.result }}
+          SECOND_RESULT: ${{ needs.reader_second.result }}
+        run: |
+          test "$FIRST_RESULT" = success
+          test "$SECOND_RESULT" = success
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: linux-release-e51-reader-*
           path: ${{ runner.temp }}/readers
       - name: Require complete ordered pairs and exact lane equivalence
         env:
-          PAIRS: ${{ (github.event_name == 'push' || inputs.reader_pairs == '1') && '1' || '3' }}
+          PAIRS: ${{ inputs.reader_pairs }}
         run: |
           set -euo pipefail
           mapfile -d '' results < <(find "$RUNNER_TEMP/readers" -name result.json -print0 | sort -z)
