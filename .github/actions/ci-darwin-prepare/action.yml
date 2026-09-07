@@ -51,7 +51,7 @@ runs:
       shell: bash
       run: |
         cached=/nix/var/nix/gcroots/github-ci/aarch64-darwin/cachix/bin/cachix
-        if [ -x "$cached" ]; then
+        if [ -x "$cached" ] && cached="$(cd -P "${cached%/*}" && pwd)/cachix"; then
           echo "path=$cached" >> "$GITHUB_OUTPUT"
           echo "${cached%/*}" >> "$GITHUB_PATH"
         fi

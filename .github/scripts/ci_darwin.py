@@ -474,13 +474,15 @@ def mount(root, mode, repo):
 def recovery_ready():
     for executable in (
         Path.home() / ".nix-profile/bin/nix",
-        Path.home() / ".nix-profile/bin/cachix",
         ROOTS / "nix-fast-build/bin/nix-fast-build",
     ):
         image.require(
             os.access(executable, os.X_OK),
             f"missing recovery executable: {executable.name}",
         )
+    image.require(
+        shutil.which("cachix") is not None, "missing recovery executable: cachix"
+    )
     image.require(
         not Path("/nix/var/nix/daemon-socket/socket").exists(),
         "recovery requires single-user Nix",

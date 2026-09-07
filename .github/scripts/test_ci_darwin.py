@@ -12,6 +12,48 @@ import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_recovery_accepts_cachix_on_path_without_home_profile_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home, roots = root / "home", root / "roots"
+            cachix = root / "store/bin/cachix"
+            for executable in (
+                home / ".nix-profile/bin/nix",
+                roots / "nix-fast-build/bin/nix-fast-build",
+                cachix,
+            ):
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text("#!/bin/sh\nexit 0\n")
+                executable.chmod(0o700)
+            exists = Path.exists
+            with (
+                patch.object(Path, "home", return_value=home),
+                patch.object(darwin, "ROOTS", roots),
+                patch.dict(os.environ, {"PATH": str(cachix.parent)}),
+                patch.object(
+                    Path,
+                    "exists",
+                    lambda p: (
+                        False
+                        if str(p) == "/nix/var/nix/daemon-socket/socket"
+                        else exists(p)
+                    ),
+                ),
+                patch.object(
+                    darwin.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 1),
+                ),
+                patch.object(darwin, "command"),
+            ):
+                self.assertFalse((home / ".nix-profile/bin/cachix").exists())
+                darwin.recovery_ready()
+                cachix.unlink()
+                with self.assertRaisesRegex(
+                    ValueError, "missing recovery executable: cachix"
+                ):
+                    darwin.recovery_ready()
+
     def test_cleanup_waits_only_for_transient_store_users(self):
         import io
 
