@@ -330,6 +330,33 @@ def cleanup(root):
         users = subprocess.run(
             ["sudo", "lsof", "-t", "+f", "--", "/nix"], capture_output=True, text=True
         )
+        if users.returncode not in (0, 1) or users.stdout.strip():
+            pids = sorted({int(pid) for pid in users.stdout.split() if pid.isdecimal()})
+            diagnostic = {
+                "event": "store-cleanup-refused",
+                "lsofStatus": users.returncode,
+                "pids": pids,
+            }
+            if pids:
+                try:
+                    processes = subprocess.run(
+                        [
+                            "ps",
+                            "-o",
+                            "pid=,ppid=,pgid=,stat=,comm=",
+                            "-p",
+                            ",".join(map(str, pids)),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    diagnostic.update(
+                        psStatus=processes.returncode, processes=processes.stdout
+                    )
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    diagnostic["psError"] = type(error).__name__
+            print(json.dumps(diagnostic), file=sys.stderr, flush=True)
         image.require(
             users.returncode in (0, 1) and not users.stdout.strip(),
             "store users remain; refusing detach",

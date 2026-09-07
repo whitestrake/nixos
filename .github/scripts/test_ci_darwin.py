@@ -12,6 +12,58 @@ import ci_darwin as darwin
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_cleanup_refusal_reports_store_users_without_detaching(self):
+        import io
+        import json
+
+        for status, pids, ps_result in (
+            (
+                0,
+                "2167\n2167\n",
+                subprocess.CompletedProcess([], 0, "2167 1 2163 U nix\n"),
+            ),
+            (2, "", None),
+            (0, "2167\n", subprocess.TimeoutExpired("ps", 5)),
+        ):
+            with (
+                self.subTest(status=status, ps_result=ps_result),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                (root / "mounted").touch()
+                output = io.StringIO()
+                with (
+                    patch.object(
+                        darwin.subprocess,
+                        "run",
+                        side_effect=[
+                            subprocess.CompletedProcess([], status, pids),
+                            ps_result,
+                        ],
+                    ) as run,
+                    patch.object(darwin, "command") as command,
+                    patch.object(darwin, "stop_group") as stop,
+                    patch.object(sys, "stderr", output),
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "store users remain; refusing detach"
+                    ):
+                        darwin.cleanup(root)
+                diagnostic = json.loads(output.getvalue())
+                self.assertEqual(diagnostic["lsofStatus"], status)
+                self.assertEqual(diagnostic["pids"], [2167] if pids else [])
+                if pids:
+                    self.assertEqual(
+                        run.call_args.args[0],
+                        ["ps", "-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", "2167"],
+                    )
+                    self.assertEqual(run.call_args.kwargs["timeout"], 5)
+                if isinstance(ps_result, subprocess.CompletedProcess):
+                    self.assertIn("2167 1 2163 U nix", diagnostic["processes"])
+                command.assert_not_called()
+                stop.assert_not_called()
+                self.assertTrue((root / "mounted").exists())
+
     def test_initial_restore_has_one_pre_attach_recovery(self):
         import json
 

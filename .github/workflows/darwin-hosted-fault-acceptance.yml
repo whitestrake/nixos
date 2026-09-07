@@ -84,6 +84,7 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -uo pipefail
+          set +e
           evidence="$RUNNER_TEMP/evidence"
           nfb="$(cat "$evidence/nfb-path.txt")"
           "$HOST_PYTHON" .github/native-harness/fault_observer.py \
@@ -152,6 +153,7 @@ jobs:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -uo pipefail
+          set +e
           mkdir -m 700 "$RUNNER_TEMP/evidence"
           "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- \
             /bin/bash .github/native-harness/failure-workload.sh \
