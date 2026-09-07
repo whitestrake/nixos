@@ -21,7 +21,6 @@ permissions:
   actions: read
   contents: read
   checks: write
-
 env:
   GH_TOKEN: ${{ github.token }}
   GITHUB_TOKEN: ${{ github.token }}
@@ -29,7 +28,6 @@ env:
   CACHE_RELEASE_ID: ${{ inputs.cache_release_id }}
   CONTROL_RUN_ID: ${{ inputs.control_run_id }}
   CONTROL_PROOF_STORE_PATH: ${{ inputs.control_proof_store_path }}
-
 jobs:
   register:
     if: github.event_name == 'push'
@@ -37,7 +35,6 @@ jobs:
     timeout-minutes: 2
     steps:
       - run: echo 'Darwin hosted fault workflow registered; fault jobs run only through workflow_dispatch.'
-
   active-nfb-loss:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-26
@@ -50,6 +47,45 @@ jobs:
         with:
           mode: warm
           release-id: ${{ env.CACHE_RELEASE_ID }}
+      - name: Trial current-user crash reporter policy before mounting
+        timeout-minutes: 2
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          [ "$RUNNER_OS" = macOS ]
+          [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]
+          [ ! -e "$RUNNER_TEMP/darwin/mounted" ]
+          [ ! -d /nix/store ]
+          domain="gui/$(id -u)"
+          service="$domain/com.apple.ReportCrash"
+          plist=/System/Library/LaunchAgents/com.apple.ReportCrash.plist
+          marker="$RUNNER_TEMP/reportcrash-trial-restore"
+          /bin/launchctl print "$service" >/dev/null 2>&1
+          touch "$marker"
+          restore_on_failure() {
+            status=$?
+            if ! /bin/launchctl print "$service" >/dev/null 2>&1; then
+              /bin/launchctl bootstrap "$domain" "$plist" || status=1
+            fi
+            /bin/launchctl print "$service" >/dev/null 2>&1 || status=1
+            exit "$status"
+          }
+          trap restore_on_failure EXIT
+          /bin/launchctl bootout "$service"
+          if /bin/launchctl print "$service" >/dev/null 2>&1; then
+            echo '::error::Crash reporter remained loaded after bootout'
+            exit 1
+          fi
+          /bin/launchctl bootstrap "$domain" "$plist"
+          /bin/launchctl print "$service" >/dev/null 2>&1
+          echo 'REPORTCRASH_PREFLIGHT roundTrip=passed'
+          /bin/launchctl bootout "$service"
+          if /bin/launchctl print "$service" >/dev/null 2>&1; then
+            echo '::error::Crash reporter remained loaded for fault trial'
+            exit 1
+          fi
+          trap - EXIT
+          echo 'REPORTCRASH_TRIAL disabled=current-user'
       - uses: ./.github/actions/ci-darwin-prepare
         with:
           mode: hot
@@ -122,6 +158,25 @@ jobs:
           if [ -d "$RUNNER_TEMP/darwin" ]; then
             "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
           fi
+      - name: Restore current-user crash reporter after trial
+        if: always()
+        timeout-minutes: 2
+        shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          marker="$RUNNER_TEMP/reportcrash-trial-restore"
+          if [ -f "$marker" ]; then
+            [ "$RUNNER_OS" = macOS ]
+            [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]
+            domain="gui/$(id -u)"
+            service="$domain/com.apple.ReportCrash"
+            if ! /bin/launchctl print "$service" >/dev/null 2>&1; then
+              /bin/launchctl bootstrap "$domain" /System/Library/LaunchAgents/com.apple.ReportCrash.plist
+            fi
+            /bin/launchctl print "$service" >/dev/null 2>&1
+            rm "$marker"
+            echo 'REPORTCRASH_TRIAL restored=current-user'
+          fi
       - name: Upload active-loss evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -130,7 +185,6 @@ jobs:
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 7
-
   genuine-build-failure:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-26
@@ -189,7 +243,6 @@ jobs:
           path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 7
-
   setup-loss:
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-26
