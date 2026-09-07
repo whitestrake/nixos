@@ -532,12 +532,33 @@ def upload_component(repo, release_id, component, directory):
 
 def seal(repo, release_id, output):
     release, generation = candidate(repo, release_id)
+    expected_coverage = fingerprint(generation["coverage"])
+    actual_coverage = {"roots": [], "inputs": {}, "tools": {}}
     for component in COMPONENTS:
         matches = [a for a in release["assets"] if a["name"] == component + ".json"]
         require(len(matches) == 1, "missing component")
         pin = identity(matches[0])
         manifest = json.loads(asset_body(release, pin))
         validate_manifest(manifest)
+        coverage = manifest.get("coverage")
+        fingerprint(coverage)
+        require(
+            set(coverage["roots"]) <= set(generation["coverage"]["roots"]),
+            "component roots exceed generation coverage",
+        )
+        actual_coverage["roots"].extend(coverage["roots"])
+        for field in ("inputs", "tools"):
+            for key, value in coverage[field].items():
+                require(
+                    key in generation["coverage"][field]
+                    and generation["coverage"][field][key] == value
+                    and (
+                        key not in actual_coverage[field]
+                        or actual_coverage[field][key] == value
+                    ),
+                    "conflicting component coverage identity",
+                )
+                actual_coverage[field][key] = value
         require(
             manifest["releaseId"] == release_id
             and manifest.get("component") == component,
@@ -556,6 +577,10 @@ def seal(repo, release_id, output):
                 "component payload missing",
             )
         generation["components"][component] = pin
+    require(
+        fingerprint(actual_coverage) == expected_coverage,
+        "generation coverage is not the complete component union",
+    )
     validate_generation(generation)
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / MANIFEST

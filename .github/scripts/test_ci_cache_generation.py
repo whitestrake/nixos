@@ -44,6 +44,94 @@ def generation(release_id=7):
 
 
 class GenerationTest(unittest.TestCase):
+    def test_seal_rejects_unrealised_coverage_and_component_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "image"
+            source.write_bytes(b"abcdefgh")
+            I.pack_image(source, root / "packed")
+            draft = json.loads((root / "packed" / I.DRAFT_NAME).read_text())
+            shard = draft["shards"][0]
+            shard["assetId"] = 900
+            payload = {
+                "id": 900,
+                "name": shard["name"],
+                "size": shard["size"],
+                "digest": "sha256:" + shard["sha256"],
+            }
+            for case in (
+                "extra-root",
+                "extra-input",
+                "extra-tool",
+                "component-root",
+                "input-conflict",
+                "tool-conflict",
+            ):
+                with self.subTest(case=case):
+                    value = generation()
+                    manifests = {}
+                    assets = [payload]
+                    for component, pin in value["components"].items():
+                        manifest = copy.deepcopy(draft)
+                        manifest.update(
+                            releaseId=7,
+                            component=component,
+                            coverage=copy.deepcopy(value["coverage"]),
+                        )
+                        if component == "darwin-image-aarch64-darwin":
+                            manifest["filesystemGate"] = {
+                                key: draft["imageSha256"]
+                                for key in (
+                                    "imageSha256",
+                                    "imageSha256Before",
+                                    "imageSha256After",
+                                )
+                            }
+                            manifest["filesystemGate"].update(
+                                fsck="fsck_hfs -fn", fsckStatus=0
+                            )
+                        manifests[pin["assetId"]] = manifest
+                        assets.append(
+                            {
+                                "id": pin["assetId"],
+                                "name": pin["name"],
+                                "size": pin["size"],
+                                "digest": "sha256:" + pin["sha256"],
+                            }
+                        )
+                    if case == "extra-root":
+                        value["coverage"]["roots"].append("/nix/store/absent")
+                    elif case in ("extra-input", "extra-tool"):
+                        field = "inputs" if case == "extra-input" else "tools"
+                        value["coverage"][field]["absent"] = "missing"
+                    else:
+                        coverage = manifests[
+                            value["components"][G.COMPONENTS[-1]]["assetId"]
+                        ]["coverage"]
+                        if case == "component-root":
+                            coverage["roots"].append("/nix/store/unclaimed")
+                        else:
+                            field = "inputs" if case == "input-conflict" else "tools"
+                            coverage[field][next(iter(coverage[field]))] = "conflicting"
+                    release = {"id": 7, "assets": assets}
+                    with (
+                        patch.object(G, "candidate", return_value=(release, value)),
+                        patch.object(
+                            G,
+                            "asset_body",
+                            side_effect=lambda _release, pin: json.dumps(
+                                manifests[pin["assetId"]]
+                            ).encode(),
+                        ),
+                        patch.object(G, "upload") as upload,
+                        patch.object(G, "gh_api") as api,
+                        patch.object(G, "resolve"),
+                    ):
+                        with self.assertRaises(ValueError):
+                            G.seal("owner/repo", 7, root / "selection.json")
+                        upload.assert_not_called()
+                        api.assert_not_called()
+
     def test_oidc_context_rejects_spoofed_run_pr_and_foreign_endpoint(self):
         claims = {
             "iss": "https://token.actions.githubusercontent.com",
