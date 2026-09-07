@@ -1,0 +1,696 @@
+name: Linux Release-backed Image Probe
+
+on:
+  push:
+    branches: [feat/ci-optimisation]
+    paths:
+      - .github/workflows/linux-release-playground.yml
+  workflow_dispatch:
+    inputs:
+      reader_pairs:
+        description: Number of fresh cache/Release reader pairs
+        type: choice
+        options: ['1', '3']
+        default: '1'
+      sources_json:
+        description: Compact three-lane descriptor from a prior successful producer (empty publishes once)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-release-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_CACHE_REF: refs/heads/feat/ci-optimisation
+  RELEASE_TARGET_SHA: f83419c1bab7e3940635ffc3c7aaa22ce9c451fd
+  SEED_EXPECTED_RECORDS: >-
+    [{"attr":"nixosConfigurations.jaeger","kind":"nixosConfiguration","name":"jaeger","storePath":"/nix/store/cjjvff3v8596a77n38ly3cin3f15r6q1-nixos-system-jaeger-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.kronos","kind":"nixosConfiguration","name":"kronos","storePath":"/nix/store/izdbjympkbp686vfb1plin2xgbvfk4yw-nixos-system-kronos-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.legion","kind":"nixosConfiguration","name":"legion","storePath":"/nix/store/64cxdp85b0bkmkzb148bcs5rw47626x8-nixos-system-legion-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.oculus","kind":"nixosConfiguration","name":"oculus","storePath":"/nix/store/i1a9bkz0kn65ypyw3978pw35a2bi8bp4-nixos-system-oculus-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.omnius","kind":"nixosConfiguration","name":"omnius","storePath":"/nix/store/mj7djrkp9aar0ldxmappndi75sn4chbw-nixos-system-omnius-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.onager","kind":"nixosConfiguration","name":"onager","storePath":"/nix/store/mp4r0hs06ab4j5a3l036rc69yw4n3s0h-nixos-system-onager-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.orthus","kind":"nixosConfiguration","name":"orthus","storePath":"/nix/store/984fxv1w17xg4ls7vcayxdprghbqcdnl-nixos-system-orthus-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.pascal","kind":"nixosConfiguration","name":"pascal","storePath":"/nix/store/pr782mxybaph3ml3hsx7s7zdkcv7c7vl-nixos-system-pascal-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.rapier","kind":"nixosConfiguration","name":"rapier","storePath":"/nix/store/whbxds4g00f6rl26gmky2brz709pxxkm-nixos-system-rapier-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.sortie","kind":"nixosConfiguration","name":"sortie","storePath":"/nix/store/v8wjkw93vg12my5bn8ykfdwb0mcs3c55-nixos-system-sortie-26.05.20260903.a5cc6f2"}]
+  FULL_X86_EXPECTED_RECORDS: >-
+    [{"attr":"nixosConfigurations.kronos","kind":"nixosConfiguration","name":"kronos","storePath":"/nix/store/zikcpw259h32dq1x5zla7lh9mlwp3n1i-nixos-system-kronos-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.legion","kind":"nixosConfiguration","name":"legion","storePath":"/nix/store/64cxdp85b0bkmkzb148bcs5rw47626x8-nixos-system-legion-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.oculus","kind":"nixosConfiguration","name":"oculus","storePath":"/nix/store/i1a9bkz0kn65ypyw3978pw35a2bi8bp4-nixos-system-oculus-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.omnius","kind":"nixosConfiguration","name":"omnius","storePath":"/nix/store/mj7djrkp9aar0ldxmappndi75sn4chbw-nixos-system-omnius-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.onager","kind":"nixosConfiguration","name":"onager","storePath":"/nix/store/zc17d1010215zl7hambkb5slyxqpir62-nixos-system-onager-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.orthus","kind":"nixosConfiguration","name":"orthus","storePath":"/nix/store/984fxv1w17xg4ls7vcayxdprghbqcdnl-nixos-system-orthus-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.pascal","kind":"nixosConfiguration","name":"pascal","storePath":"/nix/store/m444n36364a5nk8479a1xx32g04jjyp9-nixos-system-pascal-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.rapier","kind":"nixosConfiguration","name":"rapier","storePath":"/nix/store/whbxds4g00f6rl26gmky2brz709pxxkm-nixos-system-rapier-26.05.20260903.a5cc6f2"},{"attr":"nixosConfigurations.sortie","kind":"nixosConfiguration","name":"sortie","storePath":"/nix/store/v92xbjqhry9vx699zqvphb81fvyh092f-nixos-system-sortie-26.05.20260903.a5cc6f2"}]
+  FULL_ARM_EXPECTED_RECORDS: >-
+    [{"attr":"nixosConfigurations.jaeger","kind":"nixosConfiguration","name":"jaeger","storePath":"/nix/store/cjjvff3v8596a77n38ly3cin3f15r6q1-nixos-system-jaeger-26.05.20260903.a5cc6f2"}]
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      reuse: ${{ steps.inputs.outputs.reuse }}
+    steps:
+      - name: Validate bounded experiment inputs
+        id: inputs
+        env:
+          SOURCES_JSON: ${{ inputs.sources_json }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "$SOURCE_CACHE_REF"
+          if [ -z "$SOURCES_JSON" ]; then
+            echo 'reuse=false' >> "$GITHUB_OUTPUT"
+          else
+            jq -e 'type == "object" and (keys | sort) == ["full-arm","full-x86","seed-x86"]' <<< "$SOURCES_JSON" >/dev/null
+            echo 'reuse=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  produce:
+    needs: validate
+    if: needs.validate.outputs.reuse == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: seed-x86
+            runner: ubuntu-24.04
+            system: x86_64-linux
+            format: erofs
+            cache-dir: fast-ci-erofs
+            fixture: f83419c1bab7e3940635ffc3c7aaa22ce9c451fd
+            cache-id: '7381379136'
+            cache-key: fast-ci-native-seed-v1-34027062459-x86_64-linux
+            cache-version: aa73b3a5744ea59cde86707b50f43655f33d316f0540fb4de4666d563f3ec881
+            cache-bytes: '255096432'
+            image-bytes: '287719424'
+          - lane: full-x86
+            runner: ubuntu-24.04
+            system: x86_64-linux
+            format: squashfs
+            cache-dir: linux-lifecycle-squashfs
+            fixture: aed47803728f84ad1076f48223f143ecb3ccc012
+            cache-id: '7382033145'
+            cache-key: linux-lifecycle-v1-34028875523-1-aed47803728f84ad1076f48223f143ecb3ccc012-x86_64-linux-squashfs-nolinks-baseline
+            cache-version: d91d760c94103c87d276de8fc23ab2cc7ae096acb8335841b5d252502f38cb6a
+            cache-bytes: '2864478447'
+            image-bytes: '2869526528'
+          - lane: full-arm
+            runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            format: squashfs
+            cache-dir: linux-lifecycle-squashfs
+            fixture: aed47803728f84ad1076f48223f143ecb3ccc012
+            cache-id: '7382298096'
+            cache-key: linux-lifecycle-v1-34029634607-1-aed47803728f84ad1076f48223f143ecb3ccc012-aarch64-linux-squashfs-nolinks-baseline
+            cache-version: d91d760c94103c87d276de8fc23ab2cc7ae096acb8335841b5d252502f38cb6a
+            cache-bytes: '1635806254'
+            image-bytes: '1640198144'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ matrix.fixture }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Stage publisher outside fixture
+        run: |
+          set -euo pipefail
+          cp .harness/.github/scripts/darwin-release-image.py "$RUNNER_TEMP/darwin-release-image.py"
+          rm -rf .harness
+          test ! -e .harness
+          mkdir -p "$RUNNER_TEMP/e51-evidence"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/restore-start.txt"
+      - name: Pin retained source cache identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ matrix.fixture }}"
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$SOURCE_CACHE_REF" --key "${{ matrix.cache-key }}" \
+            --limit 10 --json id,key,ref,sizeInBytes,version > "$RUNNER_TEMP/e51-evidence/cache.json"
+          jq -e --arg id "${{ matrix.cache-id }}" --arg key "${{ matrix.cache-key }}" \
+            --arg ref "$SOURCE_CACHE_REF" --arg size "${{ matrix.cache-bytes }}" \
+            --arg version "${{ matrix.cache-version }}" '
+              length == 1 and (.[0].id | tostring) == $id and .[0].key == $key and .[0].ref == $ref
+              and (.[0].sizeInBytes | tostring) == $size and .[0].version == $version
+            ' "$RUNNER_TEMP/e51-evidence/cache.json"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: source
+        with:
+          path: ${{ runner.temp }}/${{ matrix.cache-dir }}
+          key: ${{ matrix.cache-key }}
+          fail-on-cache-miss: true
+      - name: Verify source and embed authenticated metadata
+        env:
+          CACHE_HIT: ${{ steps.source.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.source.outputs.cache-matched-key }}
+          LANE: ${{ matrix.lane }}
+          SYSTEM: ${{ matrix.system }}
+          FORMAT: ${{ matrix.format }}
+        run: |
+          set -euo pipefail
+          test "$CACHE_HIT" = true
+          test "$MATCHED_KEY" = "${{ matrix.cache-key }}"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/restore-end.txt"
+          source_dir="$RUNNER_TEMP/${{ matrix.cache-dir }}"
+          cd "$source_dir"
+          sha256sum --check image.sha256
+          image_sha="$(sha256sum image | cut -d ' ' -f 1)"
+          test "$(stat -c %s image)" = "${{ matrix.image-bytes }}"
+          if [ "$LANE" = seed-x86 ]; then
+            test "$image_sha" = 81a95cf64848988ffa2e1112d1656b6f20dafebb14222a2833ac909ad9e794bf
+            nfb="$(cat nfb-path.txt)"
+            test "$nfb" = /nix/store/x91gglhspa4cywi01dx2k2y5jmsn22v6-nix-fast-build-1.6.0
+            expected="$SEED_EXPECTED_RECORDS"
+            workload=linux-hosts
+            sidecars="$(jq -cn --arg checksum "$(cat image.sha256)" \
+              --arg checksumSha "$(sha256sum image.sha256 | cut -d ' ' -f 1)" \
+              --arg nfb "$(cat nfb-path.txt)" --arg nfbSha "$(sha256sum nfb-path.txt | cut -d ' ' -f 1)" \
+              '{"image.sha256":{content:$checksum,sha256:$checksumSha},"nfb-path.txt":{content:$nfb,sha256:$nfbSha}}')"
+          else
+            expected="$([ "$LANE" = full-x86 ] && printf '%s' "$FULL_X86_EXPECTED_RECORDS" || printf '%s' "$FULL_ARM_EXPECTED_RECORDS")"
+            workload="ci.$SYSTEM"
+            sidecars="$(jq -cn --arg checksum "$(cat image.sha256)" \
+              --arg checksumSha "$(sha256sum image.sha256 | cut -d ' ' -f 1)" \
+              '{"image.sha256":{content:$checksum,sha256:$checksumSha}}')"
+            mkdir -p "$RUNNER_TEMP/e51-source-lower"
+            sudo modprobe squashfs
+            sudo mount -t squashfs -o loop,ro image "$RUNNER_TEMP/e51-source-lower"
+            nfb="$(readlink "$RUNNER_TEMP/e51-source-lower/var/nix/gcroots/github-ci/$SYSTEM/nix-fast-build")"
+            sudo umount "$RUNNER_TEMP/e51-source-lower"
+          fi
+          [[ "$nfb" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]
+          expected="$(jq -ce 'map({attr,kind,name,storePath}) | sort_by(.attr)' <<< "$expected")"
+          roots="$(jq -ce 'map(.storePath) | sort | unique' <<< "$expected")"
+          jq -cn --arg schema linux-release-e51-source-v1 --arg lane "$LANE" --arg system "$SYSTEM" \
+            --arg format "$FORMAT" --arg fixture "${{ matrix.fixture }}" --arg workload "$workload" \
+            --arg cacheId "${{ matrix.cache-id }}" --arg cacheKey "${{ matrix.cache-key }}" \
+            --arg cacheRef "$SOURCE_CACHE_REF" --arg cacheVersion "${{ matrix.cache-version }}" \
+            --argjson cacheBytes "${{ matrix.cache-bytes }}" --argjson imageBytes "${{ matrix.image-bytes }}" \
+            --arg imageSha "$image_sha" --arg nfb "$nfb" --argjson records "$expected" \
+            --argjson roots "$roots" --argjson sidecars "$sidecars" \
+            '{schema:$schema,lane:$lane,system:$system,format:$format,fixtureRevision:$fixture,workload:$workload,
+              sourceCache:{id:$cacheId,key:$cacheKey,ref:$cacheRef,version:$cacheVersion,archiveBytes:$cacheBytes},
+              image:{bytes:$imageBytes,sha256:$imageSha},nixFastBuild:{path:$nfb},
+              expectedRecords:$records,expectedRoots:$roots,sidecars:$sidecars}' \
+            > "$RUNNER_TEMP/e51-source.json"
+          cd "$GITHUB_WORKSPACE"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/pack-start.txt"
+          python3 "$RUNNER_TEMP/darwin-release-image.py" pack \
+            --image "$source_dir/image" --output "$RUNNER_TEMP/e51-assets" \
+            > "$RUNNER_TEMP/e51-evidence/pack.json"
+          metadata="$(mktemp)"
+          jq --slurpfile source "$RUNNER_TEMP/e51-source.json" '. + {source:$source[0]}' \
+            "$RUNNER_TEMP/e51-assets/draft-manifest.json" > "$metadata"
+          mv "$metadata" "$RUNNER_TEMP/e51-assets/draft-manifest.json"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/pack-end.txt"
+      - name: Publish unique complete non-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="linux-release-e51-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.lane }}"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/publish-start.txt"
+          python3 "$RUNNER_TEMP/darwin-release-image.py" publish \
+            --repo "$GITHUB_REPOSITORY" --tag "$tag" --target "$RELEASE_TARGET_SHA" \
+            --directory "$RUNNER_TEMP/e51-assets" > "$RUNNER_TEMP/e51-evidence/publish.json"
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/publish-end.txt"
+          release_id="$(jq -r .releaseId "$RUNNER_TEMP/e51-evidence/publish.json")"
+          manifest_sha="$(jq -r .manifestSha256 "$RUNNER_TEMP/e51-evidence/publish.json")"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RUNNER_TEMP/e51-evidence/release.json"
+          jq -e --argjson id "$release_id" --arg tag "$tag" --arg target "$RELEASE_TARGET_SHA" \
+            --arg digest "sha256:$manifest_sha" '
+              .id == $id and .tag_name == $tag and .target_commitish == $target
+              and .draft == false and .prerelease == false and (.immutable | type == "boolean")
+              and ([.assets[] | select(.name == "manifest.json" and .digest == $digest)] | length) == 1
+            ' "$RUNNER_TEMP/e51-evidence/release.json"
+          jq -c --argjson release "$release_id" --arg manifest "$manifest_sha" \
+            '.source + {releaseId:$release,manifestSha256:$manifest}' \
+            "$RUNNER_TEMP/e51-assets/manifest.json" \
+            > "$RUNNER_TEMP/e51-evidence/source-pointer-${{ matrix.lane }}.json"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          jq -n --arg lane "${{ matrix.lane }}" \
+            --argjson sourceRestoreSeconds "$(duration "$RUNNER_TEMP/e51-evidence/restore-start.txt" "$RUNNER_TEMP/e51-evidence/restore-end.txt")" \
+            --argjson releasePackSeconds "$(duration "$RUNNER_TEMP/e51-evidence/pack-start.txt" "$RUNNER_TEMP/e51-evidence/pack-end.txt")" \
+            --argjson releasePublishSeconds "$(duration "$RUNNER_TEMP/e51-evidence/publish-start.txt" "$RUNNER_TEMP/e51-evidence/publish-end.txt")" \
+            --argjson releaseImmutable "$(jq -r .immutable "$RUNNER_TEMP/e51-evidence/release.json")" \
+            --argjson cacheArchiveBytes "${{ matrix.cache-bytes }}" --argjson imageBytes "${{ matrix.image-bytes }}" \
+            '{lane:$lane,seconds:{sourceRestore:$sourceRestoreSeconds,releasePack:$releasePackSeconds,
+              releasePublish:$releasePublishSeconds},releaseImmutable:$releaseImmutable,
+              releasePolicy:"pinned, unmodified experimental generation",cacheArchiveBytes:$cacheArchiveBytes,imageBytes:$imageBytes}' \
+            | tee "$RUNNER_TEMP/e51-evidence/producer-costs.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: linux-release-e51-source-${{ matrix.lane }}
+          path: ${{ runner.temp }}/e51-evidence
+
+  collect:
+    needs: [validate, produce]
+    if: ${{ always() && needs.validate.result == 'success' && (needs.produce.result == 'success' || (needs.produce.result == 'skipped' && needs.validate.outputs.reuse == 'true')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sources: ${{ steps.collect.outputs.sources }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: needs.produce.result == 'success'
+        with:
+          pattern: linux-release-e51-source-*
+          path: ${{ runner.temp }}/sources
+      - name: Collect or reuse the complete three-source descriptor
+        id: collect
+        env:
+          REUSED_SOURCES: ${{ inputs.sources_json }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REUSED_SOURCES" ]; then
+            sources="$(jq -cS . <<< "$REUSED_SOURCES")"
+          else
+            mapfile -d '' pointers < <(find "$RUNNER_TEMP/sources" -name 'source-pointer-*.json' -print0 | sort -z)
+            test "${#pointers[@]}" -eq 3
+            sources="$(jq -cs 'map({key:.lane,value:.}) | from_entries' "${pointers[@]}")"
+          fi
+          jq -e '
+            type == "object" and (keys | sort) == ["full-arm","full-x86","seed-x86"]
+            and all(to_entries[]; .value.schema == "linux-release-e51-source-v1"
+              and .value.lane == .key and (.value.releaseId | type == "number" and . > 0)
+              and (.value.manifestSha256 | test("^[0-9a-f]{64}$"))
+              and (.value.image.sha256 | test("^[0-9a-f]{64}$"))
+              and (.value.nixFastBuild.path | test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-"))
+              and .value.expectedRoots == ([.value.expectedRecords[].storePath] | sort | unique))
+            and .["seed-x86"].fixtureRevision == "f83419c1bab7e3940635ffc3c7aaa22ce9c451fd"
+            and .["seed-x86"].format == "erofs" and (.["seed-x86"].expectedRecords | length) == 10
+            and .["full-x86"].fixtureRevision == "aed47803728f84ad1076f48223f143ecb3ccc012"
+            and .["full-x86"].format == "squashfs" and (.["full-x86"].expectedRecords | length) == 9
+            and .["full-arm"].fixtureRevision == "aed47803728f84ad1076f48223f143ecb3ccc012"
+            and .["full-arm"].format == "squashfs" and (.["full-arm"].expectedRecords | length) == 1
+          ' <<< "$sources" >/dev/null
+          printf 'sources=%s\n' "$sources" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$sources" > "$RUNNER_TEMP/sources.json"
+          {
+            echo '### Reusable E51 source descriptor'
+            echo
+            # shellcheck disable=SC2016
+            echo 'Pass this compact JSON as `sources_json` to run three fresh pairs without republishing:'
+            echo
+            # shellcheck disable=SC2016
+            printf '```json\n%s\n```\n' "$sources"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-release-e51-sources
+          path: ${{ runner.temp }}/sources.json
+
+  reader_first:
+    name: Reader ${{ matrix.order.pair }} ${{ matrix.order.transport }} ${{ matrix.lane.name }}
+    needs: collect
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - name: seed-x86
+            runner: ubuntu-24.04
+            cache-dir: fast-ci-erofs
+          - name: full-x86
+            runner: ubuntu-24.04
+            cache-dir: linux-lifecycle-squashfs
+          - name: full-arm
+            runner: ubuntu-24.04-arm
+            cache-dir: linux-lifecycle-squashfs
+        order: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"transport":"cache"}]' || '[{"pair":1,"transport":"cache"},{"pair":2,"transport":"release"},{"pair":3,"transport":"cache"}]') }}
+    runs-on: ${{ matrix.lane.runner }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps: &reader_steps
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ fromJSON(needs.collect.outputs.sources)[matrix.lane.name].fixtureRevision }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: .harness
+          persist-credentials: false
+      - name: Stage reader helpers outside fixture
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/e51-harness" "$RUNNER_TEMP/e51-evidence"
+          cp .harness/.github/scripts/darwin-release-image.py "$RUNNER_TEMP/e51-harness/"
+          cp .harness/.github/scripts/linux-lifecycle-image.sh "$RUNNER_TEMP/e51-harness/"
+          cp .harness/.github/scripts/fast-ci-measure.py "$RUNNER_TEMP/e51-harness/"
+          cp .harness/.github/scripts/nix-fast-build-records.jq "$RUNNER_TEMP/e51-harness/"
+          rm -rf .harness
+          test ! -e .harness
+          date +%s%N > "$RUNNER_TEMP/e51-evidence/runner-start-epoch-ns.txt"
+          lscpu --json > "$RUNNER_TEMP/e51-evidence/lscpu.json"
+      - name: Load trusted descriptor and preflight control identity
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ matrix.lane.name }}
+          SOURCES: ${{ needs.collect.outputs.sources }}
+          TRANSPORT: ${{ matrix.order.transport }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e51-evidence"
+          date +%s.%N > "$root/descriptor-start.txt"
+          jq -ce --arg lane "$LANE" '.[$lane]' <<< "$SOURCES" > "$root/source.json"
+          jq -e --arg lane "$LANE" '
+            .schema == "linux-release-e51-source-v1" and .lane == $lane
+            and (.releaseId | type == "number" and . > 0)
+            and (.manifestSha256 | test("^[0-9a-f]{64}$"))
+            and .expectedRoots == ([.expectedRecords[].storePath] | sort | unique)
+          ' "$root/source.json" >/dev/null
+          date +%s.%N > "$root/descriptor-end.txt"
+          if [ "$TRANSPORT" = cache ]; then
+            date +%s.%N > "$root/control-preflight-start.txt"
+            key="$(jq -r .sourceCache.key "$root/source.json")"
+            ref="$(jq -r .sourceCache.ref "$root/source.json")"
+            gh cache list --repo "$GITHUB_REPOSITORY" --ref "$ref" --key "$key" --limit 10 \
+              --json id,key,ref,sizeInBytes,version > "$root/control-cache.json"
+            jq -e --slurpfile source "$root/source.json" '
+              ($source[0].sourceCache) as $want
+              | length == 1 and (.[0].id | tostring) == $want.id and .[0].key == $want.key
+                and .[0].ref == $want.ref and .[0].version == $want.version
+                and .[0].sizeInBytes == $want.archiveBytes
+            ' "$root/control-cache.json" >/dev/null
+            date +%s.%N > "$root/control-preflight-end.txt"
+          fi
+          {
+            echo "cache-key=$(jq -r .sourceCache.key "$root/source.json")"
+            echo "release-id=$(jq -r .releaseId "$root/source.json")"
+            echo "manifest-sha=$(jq -r .manifestSha256 "$root/source.json")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Start complete transport endpoint
+        run: |
+          root="$RUNNER_TEMP/e51-evidence"
+          date +%s.%N > "$root/complete-start.txt"
+          date +%s.%N > "$root/transport-start.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/transport-cpu-start.txt"
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$root/transport-rx-start.txt"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: control
+        if: matrix.order.transport == 'cache'
+        with:
+          path: ${{ runner.temp }}/${{ matrix.lane.cache-dir }}
+          key: ${{ steps.source.outputs.cache-key }}
+          fail-on-cache-miss: true
+      - name: Restore and assemble verified Release image
+        if: matrix.order.transport == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.source.outputs.release-id }}
+          MANIFEST_SHA: ${{ steps.source.outputs.manifest-sha }}
+        run: |
+          python3 "$RUNNER_TEMP/e51-harness/darwin-release-image.py" eager --workers 4 \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --manifest-sha "$MANIFEST_SHA" \
+            --directory "$RUNNER_TEMP/e51-release" > "$RUNNER_TEMP/e51-evidence/eager.json"
+      - name: Finish exact transport and whole-image verification
+        env:
+          CACHE_HIT: ${{ steps.control.outputs.cache-hit }}
+          MATCHED_KEY: ${{ steps.control.outputs.cache-matched-key }}
+          TRANSPORT: ${{ matrix.order.transport }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e51-evidence"
+          if [ "$TRANSPORT" = cache ]; then
+            test "$CACHE_HIT" = true
+            test "$MATCHED_KEY" = "$(jq -r .sourceCache.key "$root/source.json")"
+            cache_dir="$RUNNER_TEMP/${{ matrix.lane.cache-dir }}"
+            mv "$cache_dir" "$RUNNER_TEMP/e51-transport"
+            image="$RUNNER_TEMP/e51-transport/image"
+            test "$(sha256sum "$RUNNER_TEMP/e51-transport/image.sha256" | cut -d ' ' -f 1)" = \
+              "$(jq -r '.sidecars["image.sha256"].sha256' "$root/source.json")"
+            test "$(cat "$RUNNER_TEMP/e51-transport/image.sha256")" = \
+              "$(jq -r '.sidecars["image.sha256"].content' "$root/source.json")"
+            if [ "${{ matrix.lane.name }}" = seed-x86 ]; then
+              test "$(sha256sum "$RUNNER_TEMP/e51-transport/nfb-path.txt" | cut -d ' ' -f 1)" = \
+                "$(jq -r '.sidecars["nfb-path.txt"].sha256' "$root/source.json")"
+              test "$(cat "$RUNNER_TEMP/e51-transport/nfb-path.txt")" = "$(jq -r .nixFastBuild.path "$root/source.json")"
+            fi
+          else
+            mv "$RUNNER_TEMP/e51-release" "$RUNNER_TEMP/e51-transport"
+            mv "$RUNNER_TEMP/e51-transport/image.dmg" "$RUNNER_TEMP/e51-transport/image"
+            printf '%s\n' "$(jq -r '.sidecars["image.sha256"].content' "$root/source.json")" \
+              > "$RUNNER_TEMP/e51-transport/image.sha256"
+            image="$RUNNER_TEMP/e51-transport/image"
+            jq -e --argjson release "$(jq -r .releaseId "$root/source.json")" \
+              --arg manifest "$(jq -r .manifestSha256 "$root/source.json")" '
+                .releaseId == $release and .manifestSha256 == $manifest and .workers == 4
+                and (.selectionSeconds | type == "number" and . >= 0)
+                and (.restoreSeconds | type == "number" and . >= 0)
+              ' "$root/eager.json" >/dev/null
+            test "$(jq -cS .source "$RUNNER_TEMP/e51-transport/manifest.json")" = \
+              "$(jq -cS 'del(.releaseId,.manifestSha256)' "$root/source.json")"
+            test "$(sha256sum "$RUNNER_TEMP/e51-transport/image.sha256" | cut -d ' ' -f 1)" = \
+              "$(jq -r '.sidecars["image.sha256"].sha256' "$root/source.json")"
+          fi
+          test "$(stat -c %s "$image")" = "$(jq -r .image.bytes "$root/source.json")"
+          test "$(sha256sum "$image" | cut -d ' ' -f 1)" = "$(jq -r .image.sha256 "$root/source.json")"
+          echo "E51_IMAGE=$image" >> "$GITHUB_ENV"
+          date +%s.%N > "$root/transport-end.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/transport-cpu-end.txt"
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$root/transport-rx-end.txt"
+      - name: Mount pinned image with writable overlay
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e51-evidence"
+          format="$(jq -r .format "$root/source.json")"
+          date +%s.%N > "$root/mount-start.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/mount-cpu-start.txt"
+          bash "$RUNNER_TEMP/e51-harness/linux-lifecycle-image.sh" mount-overlay "$format" "$E51_IMAGE"
+          if [ "${{ matrix.lane.name }}" = seed-x86 ]; then
+            nfb="$(jq -r .nixFastBuild.path "$root/source.json")"
+          else
+            system="$(jq -r .system "$root/source.json")"
+            test -d /nix/store/.links
+            test "$(find /nix/store/.links -mindepth 1 -maxdepth 1 -printf . | wc -c)" -eq 0
+            nfb="$(readlink "/nix/var/nix/gcroots/github-ci/$system/nix-fast-build")"
+          fi
+          test "$nfb" = "$(jq -r .nixFastBuild.path "$root/source.json")"
+          test -x "$nfb/bin/nix-fast-build"
+          "$nfb/bin/nix-fast-build" --help >/dev/null
+          printf '%s\n' "$nfb" > "$root/nfb-path.txt"
+          echo "E51_NFB=$nfb/bin/nix-fast-build" >> "$GITHUB_ENV"
+          date +%s.%N > "$root/mount-end.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/mount-cpu-end.txt"
+      - name: Start Nix installation timing
+        run: |
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/install-start.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$RUNNER_TEMP/e51-evidence/install-cpu-start.txt"
+      - uses: ./.github/actions/install-nix
+        with:
+          extra-nix-conf: |
+            max-jobs = auto
+            ${{ matrix.lane.name != 'seed-x86' && 'auto-optimise-store = false' || '' }}
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - name: Finish Nix installation timing
+        run: |
+          date +%s.%N > "$RUNNER_TEMP/e51-evidence/install-end.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$RUNNER_TEMP/e51-evidence/install-cpu-end.txt"
+          if [ "${{ matrix.lane.name }}" != seed-x86 ]; then
+            test "$(nix config show auto-optimise-store)" = false
+          fi
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+        if: matrix.lane.name == 'seed-x86'
+        with:
+          nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
+          settings: |
+            caches = cachix://whitestrake
+            access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Run exact workload and publish proof
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          FAST_CI_FORWARD_EVENTS: '1'
+          FAST_CI_SAMPLE_MEMORY: '1'
+          LANE: ${{ matrix.lane.name }}
+          PAIR: ${{ matrix.order.pair }}
+          TRANSPORT: ${{ matrix.order.transport }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e51-evidence"
+          date +%s.%N > "$root/workload-start.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/workload-cpu-start.txt"
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$root/workload-rx-start.txt"
+          system="$(jq -r .system "$root/source.json")"
+          if [ "$LANE" = seed-x86 ]; then
+            args=(--flake .#ci.linux-hosts --systems 'x86_64-linux aarch64-linux' --eval-workers 3
+              --store ssh-ng://eu.nixbuild.net --option max-jobs 2 --retries 2)
+          else
+            args=(--flake ".#ci.$system" --systems "$system" --eval-workers 4
+              --option builders '' --option max-jobs 2 --cachix-cache whitestrake --retries 2 --no-nom --no-link)
+          fi
+          timeout --signal=TERM --kill-after=30s 1200 \
+            python3 "$RUNNER_TEMP/e51-harness/fast-ci-measure.py" "$root" -- \
+            "$E51_NFB" "${args[@]}" --result-file "$root/results.json" -j 50 --stream-json-lines
+          jq -ce -f "$RUNNER_TEMP/e51-harness/nix-fast-build-records.jq" "$root/results.json" > "$root/records.json"
+          test "$(jq -cS 'map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/records.json")" = \
+            "$(jq -cS '.expectedRecords | map({attr,kind,name,storePath}) | sort_by(.attr)' "$root/source.json")"
+          while IFS= read -r path; do
+            if [ "$LANE" != seed-x86 ]; then nix path-info "$path" >/dev/null; fi
+            nix path-info --store https://whitestrake.cachix.org "$path" >/dev/null
+          done < <(jq -r '.[].storePath' "$root/records.json")
+          jq -cnS --arg schema linux-release-e51-proof-v1 --arg scope "$LANE" \
+            --arg revision "$(jq -r .fixtureRevision "$root/source.json")" \
+            --argjson records "$(jq -c 'map({attr,storePath}) | sort_by(.attr)' "$root/records.json")" \
+            '{schema:$schema,scope:$scope,revision:$revision,records:$records}' > "$root/proof.json"
+          proof_path="$(nix store add --mode flat --name linux-release-e51-proof.json "$root/proof.json")"
+          cachix push whitestrake "$proof_path"
+          nix path-info --store https://whitestrake.cachix.org "$proof_path" >/dev/null
+          printf '%s\n' "$proof_path" > "$root/proof-path.txt"
+          date +%s.%N > "$root/workload-end.txt"
+          date +%s.%N > "$root/complete-end.txt"
+          awk '/^cpu / {print $2+$3+$4+$7+$8}' /proc/stat > "$root/workload-cpu-end.txt"
+          awk 'NR > 2 && $1 != "lo:" {sum += $2} END {printf "%.0f\n", sum}' /proc/net/dev > "$root/workload-rx-end.txt"
+      - name: Record comparable measurements
+        if: always()
+        env:
+          LANE: ${{ matrix.lane.name }}
+          PAIR: ${{ matrix.order.pair }}
+          TRANSPORT: ${{ matrix.order.transport }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/e51-evidence"
+          duration() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          delta() { awk 'NR == FNR {start=$1; next} {print $1-start}' "$1" "$2"; }
+          test -f "$root/complete-end.txt"
+          selection=null
+          restore=null
+          response=0
+          if [ "$TRANSPORT" = release ]; then
+            selection="$(jq -r .selectionSeconds "$root/eager.json")"
+            restore="$(jq -r .restoreSeconds "$root/eager.json")"
+            response="$(jq -r .responseBytes "$root/eager.json")"
+          fi
+          preflight=null
+          if [ -f "$root/control-preflight-end.txt" ]; then
+            preflight="$(duration "$root/control-preflight-start.txt" "$root/control-preflight-end.txt")"
+          fi
+          cpu_model="$(jq -r '[.lscpu[] | select(.field == "Model name:" or .field == "Model:"
+            or .field == "Vendor ID:" or .field == "Architecture:") | .data | select(length > 0)] | join(" | ")' "$root/lscpu.json")"
+          test -n "$cpu_model"
+          jq -n --arg lane "$LANE" --argjson pair "$PAIR" --arg transport "$TRANSPORT" \
+            --argjson runnerStartEpochNs "$(cat "$root/runner-start-epoch-ns.txt")" \
+            --arg fixture "$(jq -r .fixtureRevision "$root/source.json")" \
+            --arg system "$(jq -r .system "$root/source.json")" --arg format "$(jq -r .format "$root/source.json")" \
+            --arg imageSha "$(jq -r .image.sha256 "$root/source.json")" \
+            --arg nfb "$(cat "$root/nfb-path.txt")" --arg proof "$(cat "$root/proof-path.txt")" \
+            --argjson imageBytes "$(jq -r .image.bytes "$root/source.json")" \
+            --argjson cacheArchiveBytes "$(jq -r .sourceCache.archiveBytes "$root/source.json")" \
+            --argjson releaseResponseBytes "$response" --argjson descriptorSeconds "$(duration "$root/descriptor-start.txt" "$root/descriptor-end.txt")" \
+            --argjson controlPreflightSeconds "$preflight" --argjson completeSeconds "$(duration "$root/complete-start.txt" "$root/complete-end.txt")" \
+            --argjson transportSeconds "$(duration "$root/transport-start.txt" "$root/transport-end.txt")" \
+            --argjson selectionApiSeconds "$selection" --argjson restoreAssemblySeconds "$restore" \
+            --argjson mountSeconds "$(duration "$root/mount-start.txt" "$root/mount-end.txt")" \
+            --argjson installSeconds "$(duration "$root/install-start.txt" "$root/install-end.txt")" \
+            --argjson workloadPublicationSeconds "$(duration "$root/workload-start.txt" "$root/workload-end.txt")" \
+            --argjson transportCpuJiffies "$(delta "$root/transport-cpu-start.txt" "$root/transport-cpu-end.txt")" \
+            --argjson mountCpuJiffies "$(delta "$root/mount-cpu-start.txt" "$root/mount-cpu-end.txt")" \
+            --argjson installCpuJiffies "$(delta "$root/install-cpu-start.txt" "$root/install-cpu-end.txt")" \
+            --argjson workloadCpuJiffies "$(delta "$root/workload-cpu-start.txt" "$root/workload-cpu-end.txt")" \
+            --argjson transportRxBytes "$(delta "$root/transport-rx-start.txt" "$root/transport-rx-end.txt")" \
+            --argjson workloadRxBytes "$(delta "$root/workload-rx-start.txt" "$root/workload-rx-end.txt")" \
+            --arg cpuModel "$cpu_model" \
+            --argjson cpuCount "$(getconf _NPROCESSORS_ONLN)" --argjson clockTicks "$(getconf CLK_TCK)" \
+            --arg runnerImage "${ImageVersion:-unknown}" --slurpfile records "$root/records.json" '
+              {schema:"linux-release-e51-result-v1",lane:$lane,pair:$pair,transport:$transport,
+               runnerStartEpochNs:$runnerStartEpochNs,fixtureRevision:$fixture,system:$system,format:$format,
+               imageSha256:$imageSha,imageBytes:$imageBytes,cacheArchiveBytes:$cacheArchiveBytes,
+               releaseResponseBytes:$releaseResponseBytes,nixFastBuild:$nfb,proofStorePath:$proof,
+               records:$records[0],runnerImage:$runnerImage,cpu:{model:$cpuModel,count:$cpuCount,
+                 unit:"runner-wide busy jiffies",clockTicksPerSecond:$clockTicks,
+                 transport:$transportCpuJiffies,mount:$mountCpuJiffies,install:$installCpuJiffies,workloadPublication:$workloadCpuJiffies},
+               network:{unit:"received payload bytes",transportInterface:$transportRxBytes,
+                 releaseVerifiedResponse:$releaseResponseBytes,cacheArchiveMetadata:$cacheArchiveBytes,
+                 workloadInterface:$workloadRxBytes},
+               seconds:{descriptorSetup:$descriptorSeconds,controlIdentityPreflight:$controlPreflightSeconds,
+                 completeEndpoint:$completeSeconds,transportTotal:$transportSeconds,
+                 releaseSelectionApi:$selectionApiSeconds,releaseRestoreAssemblyVerification:$restoreAssemblySeconds,
+                 mount:$mountSeconds,nixInstall:$installSeconds,workloadAndProofPublication:$workloadPublicationSeconds},
+               scope:"one E51 Linux lane; not full all-platform CI"}' > "$root/result.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: linux-release-e51-reader-${{ matrix.order.pair }}-${{ matrix.order.transport }}-${{ matrix.lane.name }}
+          path: ${{ runner.temp }}/e51-evidence
+      - name: Unmount disposable image
+        if: always()
+        run: |
+          format="$(jq -r .format "$RUNNER_TEMP/e51-evidence/source.json" 2>/dev/null || true)"
+          if [ -n "$format" ] && mountpoint -q /nix; then
+            bash "$RUNNER_TEMP/e51-harness/linux-lifecycle-image.sh" unmount-overlay "$format" || true
+          fi
+
+  reader_second:
+    name: Reader ${{ matrix.order.pair }} ${{ matrix.order.transport }} ${{ matrix.lane.name }}
+    needs: [collect, reader_first]
+    strategy:
+      fail-fast: false
+      matrix:
+        lane:
+          - name: seed-x86
+            runner: ubuntu-24.04
+            cache-dir: fast-ci-erofs
+          - name: full-x86
+            runner: ubuntu-24.04
+            cache-dir: linux-lifecycle-squashfs
+          - name: full-arm
+            runner: ubuntu-24.04-arm
+            cache-dir: linux-lifecycle-squashfs
+        order: ${{ fromJSON((github.event_name == 'push' || inputs.reader_pairs == '1') && '[{"pair":1,"transport":"release"}]' || '[{"pair":1,"transport":"release"},{"pair":2,"transport":"cache"},{"pair":3,"transport":"release"}]') }}
+    runs-on: ${{ matrix.lane.runner }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps: *reader_steps
+
+  compare:
+    needs: [reader_first, reader_second]
+    if: always() && needs.reader_first.result == 'success' && needs.reader_second.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: linux-release-e51-reader-*
+          path: ${{ runner.temp }}/readers
+      - name: Require complete ordered pairs and exact lane equivalence
+        env:
+          PAIRS: ${{ (github.event_name == 'push' || inputs.reader_pairs == '1') && '1' || '3' }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' results < <(find "$RUNNER_TEMP/readers" -name result.json -print0 | sort -z)
+          expected="$((PAIRS * 3 * 2))"
+          test "${#results[@]}" -eq "$expected"
+          for pair in $(seq 1 "$PAIRS"); do
+            for lane in seed-x86 full-x86 full-arm; do
+              cache="$(find "$RUNNER_TEMP/readers" -path "*/linux-release-e51-reader-$pair-cache-$lane/result.json" -print -quit)"
+              release="$(find "$RUNNER_TEMP/readers" -path "*/linux-release-e51-reader-$pair-release-$lane/result.json" -print -quit)"
+              test -n "$cache" -a -n "$release"
+              test "$(jq -cS .records "$cache")" = "$(jq -cS .records "$release")"
+              test "$(jq -r .proofStorePath "$cache")" = "$(jq -r .proofStorePath "$release")"
+              test "$(jq -r .imageSha256 "$cache")" = "$(jq -r .imageSha256 "$release")"
+              test "$(jq -r .nixFastBuild "$cache")" = "$(jq -r .nixFastBuild "$release")"
+              first=cache
+              [ "$pair" -ne 2 ] || first=release
+              first_file="$cache"
+              second_file="$release"
+              [ "$first" = cache ] || { first_file="$release"; second_file="$cache"; }
+              test "$(jq -r .runnerStartEpochNs "$first_file")" -lt "$(jq -r .runnerStartEpochNs "$second_file")"
+            done
+          done
+          jq -s --argjson expected "$expected" '
+            {schema:"linux-release-e51-summary-v1",complete:true,readers:length,expectedReaders:$expected,
+             proofScope:"three Linux lanes only; not full all-platform CI",
+             lanes:(group_by(.lane) | map({lane:.[0].lane,results:map({pair,transport,seconds,cpu,network,imageBytes,cacheArchiveBytes,releaseResponseBytes})}))}
+          ' "${results[@]}" | tee "$RUNNER_TEMP/summary.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-release-e51-summary
+          path: ${{ runner.temp }}/summary.json

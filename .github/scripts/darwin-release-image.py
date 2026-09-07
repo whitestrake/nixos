@@ -2,6 +2,7 @@
 """Pack, publish, and read a block-verified disk image through GitHub Releases."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -45,6 +46,11 @@ def is_sha256(value):
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
 
 
 def pack_image(image, output, shard_size=SHARD_SIZE, block_size=BLOCK_SIZE):
@@ -116,54 +122,82 @@ def pack_image(image, output, shard_size=SHARD_SIZE, block_size=BLOCK_SIZE):
 
 
 def validate_manifest(manifest, require_assets=True):
-    assert manifest.get("schema") == SCHEMA
-    assert isinstance(manifest.get("imageBytes"), int) and manifest["imageBytes"] > 0
-    assert is_sha256(manifest.get("imageSha256"))
+    require(manifest.get("schema") == SCHEMA, "invalid manifest schema")
+    require(
+        isinstance(manifest.get("imageBytes"), int) and manifest["imageBytes"] > 0,
+        "invalid image size",
+    )
+    require(is_sha256(manifest.get("imageSha256")), "invalid image digest")
     block_size = manifest.get("blockSize")
     shard_size = manifest.get("shardSize")
-    assert isinstance(block_size, int) and block_size > 0
-    assert isinstance(shard_size, int) and shard_size >= block_size
-    assert shard_size % block_size == 0
+    require(isinstance(block_size, int) and block_size > 0, "invalid block size")
+    require(
+        isinstance(shard_size, int) and shard_size >= block_size,
+        "invalid shard size",
+    )
+    require(shard_size % block_size == 0, "shard size is not block aligned")
     shards = manifest.get("shards")
-    assert isinstance(shards, list) and shards
+    require(isinstance(shards, list) and shards, "manifest has no shards")
     if require_assets:
-        assert isinstance(manifest.get("releaseId"), int) and manifest["releaseId"] > 0
+        require(
+            isinstance(manifest.get("releaseId"), int) and manifest["releaseId"] > 0,
+            "invalid release ID",
+        )
     image_offset = 0
     asset_ids = set()
     for shard_index, shard in enumerate(shards):
-        assert shard.get("offset") == image_offset
-        assert isinstance(shard.get("size"), int) and 0 < shard["size"] <= shard_size
-        assert shard_index == len(shards) - 1 or shard["size"] == shard_size
-        assert Path(shard.get("name", "")).name == shard.get("name")
-        assert is_sha256(shard.get("sha256"))
+        require(shard.get("offset") == image_offset, "non-contiguous shard offset")
+        require(
+            isinstance(shard.get("size"), int) and 0 < shard["size"] <= shard_size,
+            "invalid shard size",
+        )
+        require(
+            shard_index == len(shards) - 1 or shard["size"] == shard_size,
+            "short non-final shard",
+        )
+        require(
+            Path(shard.get("name", "")).name == shard.get("name"),
+            "invalid shard name",
+        )
+        require(is_sha256(shard.get("sha256")), "invalid shard digest")
         if require_assets:
             asset_id = shard.get("assetId")
-            assert (
-                isinstance(asset_id, int) and asset_id > 0 and asset_id not in asset_ids
+            require(
+                isinstance(asset_id, int)
+                and asset_id > 0
+                and asset_id not in asset_ids,
+                "invalid or duplicate asset ID",
             )
             asset_ids.add(asset_id)
         blocks = shard.get("blocks")
-        assert isinstance(blocks, list) and blocks
+        require(isinstance(blocks, list) and blocks, "shard has no blocks")
         block_offset = image_offset
         for block_index, block in enumerate(blocks):
-            assert block.get("offset") == block_offset
-            assert (
-                isinstance(block.get("size"), int) and 0 < block["size"] <= block_size
+            require(block.get("offset") == block_offset, "non-contiguous block offset")
+            require(
+                isinstance(block.get("size"), int) and 0 < block["size"] <= block_size,
+                "invalid block size",
             )
-            assert block_index == len(blocks) - 1 or block["size"] == block_size
-            assert is_sha256(block.get("sha256"))
+            require(
+                block_index == len(blocks) - 1 or block["size"] == block_size,
+                "short non-final block",
+            )
+            require(is_sha256(block.get("sha256")), "invalid block digest")
             block_offset += block["size"]
-        assert block_offset == image_offset + shard["size"]
+        require(
+            block_offset == image_offset + shard["size"],
+            "block sizes do not match shard size",
+        )
         image_offset += shard["size"]
-    assert image_offset == manifest["imageBytes"]
+    require(image_offset == manifest["imageBytes"], "shards do not match image size")
 
 
 def pack_hot(image, manifest_path, profile, output):
     image = Path(image)
     manifest = json.loads(Path(manifest_path).read_text())
     validate_manifest(manifest)
-    assert image.stat().st_size == manifest["imageBytes"]
-    assert file_sha256(image) == manifest["imageSha256"]
+    require(image.stat().st_size == manifest["imageBytes"], "image size mismatch")
+    require(file_sha256(image) == manifest["imageSha256"], "image digest mismatch")
     shards = {shard["assetId"]: shard for shard in manifest["shards"]}
     selected = set()
     with Path(profile).open() as stream:
@@ -178,18 +212,24 @@ def pack_hot(image, manifest_path, profile, output):
             asset_id = record.get("assetId")
             start = record.get("start")
             end = record.get("end")
-            assert asset_id in shards
+            require(asset_id in shards, "profile references unknown asset")
             shard = shards[asset_id]
-            assert isinstance(start, int) and isinstance(end, int)
-            assert 0 <= start <= end < shard["size"]
+            require(
+                isinstance(start, int) and isinstance(end, int),
+                "profile range is not numeric",
+            )
+            require(0 <= start <= end < shard["size"], "invalid profile range")
             first = (shard["offset"] + start) // manifest["blockSize"]
             last = (shard["offset"] + end) // manifest["blockSize"]
             selected.update(range(first, last + 1))
     blocks = [block for shard in manifest["shards"] for block in shard["blocks"]]
     indices = sorted(selected)
-    assert indices and indices[-1] < len(blocks)
+    require(indices and indices[-1] < len(blocks), "profile selects no valid blocks")
     payload_bytes = sum(blocks[index]["size"] for index in indices)
-    assert 0 < payload_bytes <= manifest["imageBytes"]
+    require(
+        0 < payload_bytes <= manifest["imageBytes"],
+        "invalid hot-pack payload size",
+    )
     header = json.dumps(
         {
             "schema": HOT_SCHEMA,
@@ -201,9 +241,9 @@ def pack_hot(image, manifest_path, profile, output):
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    assert len(header) <= MAX_HOT_HEADER
+    require(len(header) <= MAX_HOT_HEADER, "hot-pack header is too large")
     output = Path(output)
-    assert not output.exists()
+    require(not output.exists(), "hot-pack output already exists")
     temporary = output.with_suffix(output.suffix + ".tmp")
     with image.open("rb") as source, temporary.open("xb") as target:
         target.write(HOT_MAGIC)
@@ -213,7 +253,10 @@ def pack_hot(image, manifest_path, profile, output):
             block = blocks[index]
             source.seek(block["offset"])
             data = source.read(block["size"])
-            assert len(data) == block["size"] and sha256(data) == block["sha256"]
+            require(
+                len(data) == block["size"] and sha256(data) == block["sha256"],
+                "source block digest mismatch",
+            )
             target.write(data)
     os.replace(temporary, output)
     return {
@@ -229,39 +272,60 @@ def pack_hot(image, manifest_path, profile, output):
 def import_hot_pack(path, store):
     path = Path(path)
     with path.open("rb") as stream:
-        assert stream.read(len(HOT_MAGIC)) == HOT_MAGIC
+        require(stream.read(len(HOT_MAGIC)) == HOT_MAGIC, "invalid hot-pack magic")
         encoded_length = stream.read(4)
-        assert len(encoded_length) == 4
+        require(len(encoded_length) == 4, "truncated hot-pack header length")
         header_length = struct.unpack(">I", encoded_length)[0]
-        assert 0 < header_length <= MAX_HOT_HEADER
+        require(0 < header_length <= MAX_HOT_HEADER, "invalid hot-pack header size")
         encoded_header = stream.read(header_length)
-        assert len(encoded_header) == header_length
+        require(len(encoded_header) == header_length, "truncated hot-pack header")
         header = json.loads(encoded_header)
-        assert header.get("schema") == HOT_SCHEMA
-        assert header.get("imageSha256") == store.manifest["imageSha256"]
-        assert header.get("blockSize") == store.manifest["blockSize"]
+        require(header.get("schema") == HOT_SCHEMA, "invalid hot-pack schema")
+        require(
+            header.get("imageSha256") == store.manifest["imageSha256"],
+            "hot-pack image digest mismatch",
+        )
+        require(
+            header.get("blockSize") == store.manifest["blockSize"],
+            "hot-pack block size mismatch",
+        )
         indices = header.get("blocks")
-        assert isinstance(indices, list) and indices
-        assert indices == sorted(set(indices))
-        assert all(
-            isinstance(index, int) and 0 <= index < len(store.blocks)
-            for index in indices
+        require(isinstance(indices, list) and indices, "hot-pack has no blocks")
+        require(indices == sorted(set(indices)), "hot-pack blocks are not unique")
+        require(
+            all(
+                isinstance(index, int) and 0 <= index < len(store.blocks)
+                for index in indices
+            ),
+            "hot-pack block index is out of range",
         )
         payload_bytes = sum(store.blocks[index][1]["size"] for index in indices)
-        assert header.get("payloadBytes") == payload_bytes
+        require(
+            header.get("payloadBytes") == payload_bytes,
+            "hot-pack payload size mismatch",
+        )
         payload_offset = len(HOT_MAGIC) + 4 + header_length
-        assert path.stat().st_size == payload_offset + payload_bytes
+        require(
+            path.stat().st_size == payload_offset + payload_bytes,
+            "hot-pack file size mismatch",
+        )
         for index in indices:
             block = store.blocks[index][1]
             data = stream.read(block["size"])
-            assert len(data) == block["size"] and sha256(data) == block["sha256"]
-        assert stream.read(1) == b""
+            require(
+                len(data) == block["size"] and sha256(data) == block["sha256"],
+                "hot-pack block digest mismatch",
+            )
+        require(stream.read(1) == b"", "hot-pack has trailing data")
         stream.seek(payload_offset)
         with store.lock:
             for index in indices:
                 block = store.blocks[index][1]
                 data = stream.read(block["size"])
-                assert len(data) == block["size"] and sha256(data) == block["sha256"]
+                require(
+                    len(data) == block["size"] and sha256(data) == block["sha256"],
+                    "hot-pack block changed during import",
+                )
                 path = store._path(index)
                 temporary = path.with_suffix(".tmp")
                 temporary.write_bytes(data)
@@ -306,7 +370,7 @@ def publish(repo, tag, target, directory):
             "tag_name": tag,
             "target_commitish": target,
             "name": tag,
-            "body": "Complete Darwin Nix-store snapshot for PR #158 HTTP image experiments. Not selected for production CI.",
+            "body": "Complete Nix-store image for PR #158 cache transport experiments. Not selected for production CI.",
             "draft": True,
             "prerelease": False,
             "make_latest": "false",
@@ -314,17 +378,21 @@ def publish(repo, tag, target, directory):
     )
     for shard in manifest["shards"]:
         path = directory / shard["name"]
-        assert (
+        require(
             path.stat().st_size == shard["size"]
-            and file_sha256(path) == shard["sha256"]
+            and file_sha256(path) == shard["sha256"],
+            "local shard integrity mismatch",
         )
         gh_upload(repo, tag, path)
     release = gh_api(repo, f"releases/{release['id']}")
     assets = {asset["name"]: asset for asset in release["assets"]}
     for shard in manifest["shards"]:
         asset = assets[shard["name"]]
-        assert asset["size"] == shard["size"]
-        assert asset["digest"] == "sha256:" + shard["sha256"]
+        require(asset["size"] == shard["size"], "uploaded shard size mismatch")
+        require(
+            asset["digest"] == "sha256:" + shard["sha256"],
+            "uploaded shard digest mismatch",
+        )
         shard["assetId"] = asset["id"]
     manifest["releaseId"] = release["id"]
     manifest_path = directory / MANIFEST_NAME
@@ -335,8 +403,14 @@ def publish(repo, tag, target, directory):
     manifest_asset = next(
         asset for asset in release["assets"] if asset["name"] == MANIFEST_NAME
     )
-    assert manifest_asset["size"] == manifest_path.stat().st_size
-    assert manifest_asset["digest"] == "sha256:" + manifest_sha
+    require(
+        manifest_asset["size"] == manifest_path.stat().st_size,
+        "uploaded manifest size mismatch",
+    )
+    require(
+        manifest_asset["digest"] == "sha256:" + manifest_sha,
+        "uploaded manifest digest mismatch",
+    )
     gh_api(
         repo,
         f"releases/{release['id']}",
@@ -355,31 +429,47 @@ def publish(repo, tag, target, directory):
 
 
 def download_whole(asset, limit=64 * 1024 * 1024):
-    assert 0 < asset["size"] <= limit
+    require(0 < asset["size"] <= limit, "asset exceeds download limit")
     with urllib.request.urlopen(asset["browser_download_url"], timeout=60) as response:
         body = response.read(asset["size"] + 1)
-    assert len(body) == asset["size"]
+    require(len(body) == asset["size"], "asset size mismatch")
     return body
 
 
 def load_manifest(repo, release_id, manifest_sha, directory):
-    assert isinstance(release_id, int) and release_id > 0 and is_sha256(manifest_sha)
+    require(
+        isinstance(release_id, int) and release_id > 0 and is_sha256(manifest_sha),
+        "invalid pinned release or manifest digest",
+    )
     release = gh_api(repo, f"releases/{release_id}")
-    assert release["id"] == release_id
-    manifest_asset = next(
-        asset for asset in release["assets"] if asset["name"] == MANIFEST_NAME
+    require(release.get("id") == release_id, "release ID changed")
+    manifest_assets = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == MANIFEST_NAME
+    ]
+    require(len(manifest_assets) == 1, "release must contain one manifest")
+    manifest_asset = manifest_assets[0]
+    require(
+        manifest_asset.get("id") is not None
+        and manifest_asset.get("digest") == "sha256:" + manifest_sha,
+        "manifest asset identity mismatch",
     )
     body = download_whole(manifest_asset)
-    assert sha256(body) == manifest_sha
+    require(sha256(body) == manifest_sha, "manifest digest mismatch")
     manifest = json.loads(body)
     validate_manifest(manifest)
-    assert manifest["releaseId"] == release_id
+    require(manifest["releaseId"] == release_id, "manifest release ID mismatch")
     assets = {asset["id"]: asset for asset in release["assets"]}
     for shard in manifest["shards"]:
-        asset = assets[shard["assetId"]]
-        assert asset["name"] == shard["name"]
-        assert asset["size"] == shard["size"]
-        assert asset["digest"] == "sha256:" + shard["sha256"]
+        asset = assets.get(shard["assetId"])
+        require(asset is not None, "pinned shard asset is missing")
+        require(asset.get("name") == shard["name"], "shard asset name mismatch")
+        require(asset.get("size") == shard["size"], "shard asset size mismatch")
+        require(
+            asset.get("digest") == "sha256:" + shard["sha256"],
+            "shard asset digest mismatch",
+        )
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     (directory / MANIFEST_NAME).write_bytes(body)
@@ -413,6 +503,7 @@ class RangeFetcher:
         self.wire_log = wire_log or WireLog()
         self.api_call = api_call
         self.records = []
+        self.lock = threading.Lock()
 
     def _record(self, asset_id, start, end, status, size, started, refreshed, valid):
         record = {
@@ -426,13 +517,15 @@ class RangeFetcher:
             "refreshed": refreshed,
             "valid": valid,
         }
-        self.records.append(record)
+        with self.lock:
+            self.records.append(record)
         self.wire_log.write(record)
         return record
 
-    def fetch(self, asset_id, start, end):
-        asset = self.assets[asset_id]
-        assert 0 <= start <= end < asset["size"]
+    def _fetch(self, asset_id, start, end, target=None):
+        asset = self.assets.get(asset_id)
+        require(asset is not None, "unknown pinned asset ID")
+        require(0 <= start <= end < asset["size"], "invalid asset byte range")
         refreshed = 0
         for attempt in range(2):
             started = time.monotonic_ns()
@@ -441,7 +534,18 @@ class RangeFetcher:
             )
             try:
                 with urllib.request.urlopen(request, timeout=60) as response:
-                    body = response.read(end - start + 2)
+                    expected = end - start + 1
+                    if target is None:
+                        body = response.read(expected + 1)
+                        size = len(body)
+                    else:
+                        size = 0
+                        with Path(target).open("xb") as stream:
+                            while chunk := response.read(
+                                min(1024 * 1024, expected - size + 1)
+                            ):
+                                stream.write(chunk)
+                                size += len(chunk)
                     status = response.status
                     content_range = response.headers.get("Content-Range")
                     content_length = response.headers.get("Content-Length")
@@ -449,31 +553,43 @@ class RangeFetcher:
                 valid = int(
                     status == 206
                     and content_range == f"bytes {start}-{end}/{asset['size']}"
-                    and content_length == str(end - start + 1)
-                    and len(body) == end - start + 1
+                    and content_length == str(expected)
+                    and size == expected
                 )
                 record = self._record(
                     asset_id,
                     start,
                     end,
                     status,
-                    len(body),
+                    size,
                     started,
                     refreshed,
                     valid,
                 )
-                assert valid, record
+                if not valid:
+                    if target is not None:
+                        Path(target).unlink(missing_ok=True)
+                    raise ValueError(f"invalid range response: {record}")
                 self.urls[asset_id] = final_url
-                return body
+                return body if target is None else size
             except urllib.error.HTTPError as error:
                 self._record(asset_id, start, end, error.code, 0, started, refreshed, 0)
                 if error.code not in (401, 403, 618) or attempt:
                     raise
                 fresh = self.api_call(self.repo, f"releases/assets/{asset_id}")
-                assert fresh["id"] == asset_id
-                assert fresh["name"] == asset["name"]
-                assert fresh["size"] == asset["size"]
-                assert fresh["digest"] == asset["digest"]
+                require(fresh.get("id") == asset_id, "refreshed asset ID mismatch")
+                require(
+                    fresh.get("name") == asset["name"],
+                    "refreshed asset name mismatch",
+                )
+                require(
+                    fresh.get("size") == asset["size"],
+                    "refreshed asset size mismatch",
+                )
+                require(
+                    fresh.get("digest") == asset["digest"],
+                    "refreshed asset digest mismatch",
+                )
                 self.assets[asset_id] = fresh
                 asset = fresh
                 self.urls[asset_id] = fresh["browser_download_url"]
@@ -483,9 +599,17 @@ class RangeFetcher:
                 raise
         raise AssertionError("unreachable")
 
+    def fetch(self, asset_id, start, end):
+        return self._fetch(asset_id, start, end)
+
+    def fetch_to(self, asset_id, start, end, target):
+        return self._fetch(asset_id, start, end, target)
+
     def summary(self):
+        with self.lock:
+            records = list(self.records)
         intervals = {}
-        for record in self.records:
+        for record in records:
             if record["status"] != 206:
                 continue
             intervals.setdefault(record["assetId"], []).append(
@@ -501,8 +625,8 @@ class RangeFetcher:
                     merged.append([start, end])
             unique += sum(end - start + 1 for start, end in merged)
         return {
-            "requestCount": len(self.records),
-            "responseBytes": sum(record["bytes"] for record in self.records),
+            "requestCount": len(records),
+            "responseBytes": sum(record["bytes"] for record in records),
             "uniqueResponseBytes": unique,
         }
 
@@ -510,7 +634,7 @@ class RangeFetcher:
 class BlockStore:
     def __init__(self, repo, release_id, manifest, assets, directory, wire_log=None):
         validate_manifest(manifest)
-        assert manifest["releaseId"] == release_id
+        require(manifest["releaseId"] == release_id, "manifest release ID mismatch")
         self.manifest = manifest
         self.directory = Path(directory)
         self.cache = self.directory / "blocks"
@@ -518,7 +642,7 @@ class BlockStore:
         self.fetcher = RangeFetcher(repo, assets, wire_log)
         self.blocks = []
         for shard in manifest["shards"]:
-            assert shard["assetId"] in assets
+            require(shard["assetId"] in assets, "pinned shard asset is missing")
             for block in shard["blocks"]:
                 self.blocks.append((shard, block))
         # ponytail: one lock coalesces duplicate blocks; use per-block locks if concurrency matters.
@@ -549,18 +673,24 @@ class BlockStore:
         for index in indices:
             block = self.blocks[index][1]
             data = payload[position : position + block["size"]]
-            assert len(data) == block["size"] and sha256(data) == block["sha256"]
+            require(
+                len(data) == block["size"] and sha256(data) == block["sha256"],
+                "downloaded block digest mismatch",
+            )
             path = self._path(index)
             temporary = path.with_suffix(".tmp")
             temporary.write_bytes(data)
             os.replace(temporary, path)
             data_by_index[index] = data
             position += block["size"]
-        assert position == len(payload)
+        require(position == len(payload), "range response has trailing data")
 
     def read(self, start, length):
-        assert 0 <= start <= self.manifest["imageBytes"]
-        assert 0 <= length <= self.manifest["imageBytes"] - start
+        require(0 <= start <= self.manifest["imageBytes"], "invalid image offset")
+        require(
+            0 <= length <= self.manifest["imageBytes"] - start,
+            "invalid image read length",
+        )
         if not length:
             return b""
         block_size = self.manifest["blockSize"]
@@ -591,32 +721,67 @@ class BlockStore:
         return data[offset : offset + length]
 
 
-def eager(repo, release_id, manifest_sha, directory):
+def eager(repo, release_id, manifest_sha, directory, workers=1):
+    require(isinstance(workers, int) and 1 <= workers <= 4, "workers must be 1..4")
+    selection_started = time.monotonic()
     manifest, assets = load_manifest(repo, release_id, manifest_sha, directory)
+    selection_seconds = time.monotonic() - selection_started
     fetcher = RangeFetcher(repo, assets)
     directory = Path(directory)
     temporary = directory / "image.dmg.tmp"
-    image_digest = hashlib.sha256()
-    with temporary.open("wb") as image:
-        for shard in manifest["shards"]:
-            data = fetcher.fetch(shard["assetId"], 0, shard["size"] - 1)
-            assert sha256(data) == shard["sha256"]
-            for block in shard["blocks"]:
-                start = block["offset"] - shard["offset"]
-                part = data[start : start + block["size"]]
-                assert len(part) == block["size"] and sha256(part) == block["sha256"]
-            image.write(data)
-            image_digest.update(data)
-    assert temporary.stat().st_size == manifest["imageBytes"]
-    assert image_digest.hexdigest() == manifest["imageSha256"]
     image_path = directory / "image.dmg"
-    os.replace(temporary, image_path)
+    shard_paths = [
+        directory / f"image.dmg.{index:05d}.part"
+        for index in range(len(manifest["shards"]))
+    ]
+
+    def download(item):
+        index, shard = item
+        path = shard_paths[index]
+        fetcher.fetch_to(shard["assetId"], 0, shard["size"] - 1, path)
+        require(file_sha256(path) == shard["sha256"], "shard digest mismatch")
+
+    restore_started = time.monotonic()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            list(executor.map(download, enumerate(manifest["shards"])))
+        image_digest = hashlib.sha256()
+        with temporary.open("xb") as image:
+            for shard, path in zip(manifest["shards"], shard_paths):
+                with path.open("rb") as source:
+                    for block in shard["blocks"]:
+                        part = source.read(block["size"])
+                        require(
+                            len(part) == block["size"]
+                            and sha256(part) == block["sha256"],
+                            "shard block digest mismatch",
+                        )
+                        image.write(part)
+                        image_digest.update(part)
+                    require(source.read(1) == b"", "shard has trailing data")
+        require(
+            temporary.stat().st_size == manifest["imageBytes"],
+            "assembled image size mismatch",
+        )
+        require(
+            image_digest.hexdigest() == manifest["imageSha256"],
+            "assembled image digest mismatch",
+        )
+        os.replace(temporary, image_path)
+        restore_seconds = time.monotonic() - restore_started
+    finally:
+        temporary.unlink(missing_ok=True)
+        for path in shard_paths:
+            path.unlink(missing_ok=True)
     return {
         "releaseId": release_id,
         "manifestSha256": manifest_sha,
         "image": str(image_path),
         "imageBytes": manifest["imageBytes"],
         "imageSha256": manifest["imageSha256"],
+        "workers": workers,
+        "selectionSeconds": selection_seconds,
+        "restoreSeconds": restore_seconds,
         **fetcher.summary(),
     }
 
@@ -791,6 +956,8 @@ def main():
         command.add_argument("--release-id", required=True, type=int)
         command.add_argument("--manifest-sha", required=True)
         command.add_argument("--directory", required=True, type=Path)
+        if name == "eager":
+            command.add_argument("--workers", type=int, choices=range(1, 5), default=1)
         if name == "serve":
             command.add_argument("--ready", required=True, type=Path)
             command.add_argument("--log", required=True, type=Path)
@@ -803,7 +970,13 @@ def main():
     elif args.command == "publish":
         result = publish(args.repo, args.tag, args.target, args.directory)
     elif args.command == "eager":
-        result = eager(args.repo, args.release_id, args.manifest_sha, args.directory)
+        result = eager(
+            args.repo,
+            args.release_id,
+            args.manifest_sha,
+            args.directory,
+            args.workers,
+        )
     else:
         result = serve(
             args.repo,

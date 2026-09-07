@@ -23,9 +23,15 @@ def digest(data):
 
 
 class Origin:
-    def __init__(self, data):
+    def __init__(self, data, parts=None, delay=0, faults=None):
         self.data = data
+        self.parts = parts or {}
+        self.delay = delay
+        self.faults = faults or {}
         self.ranges = []
+        self.active = 0
+        self.max_active = 0
+        self.lock = threading.Lock()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -37,22 +43,36 @@ class Origin:
                     self.send_error(618)
                     return
                 byte_range = self.headers.get("Range")
+                data = outer.parts.get(self.path.lstrip("/"), outer.data)
                 if byte_range is None:
                     self.send_response(200)
-                    self.send_header("Content-Length", str(len(outer.data)))
+                    self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
-                    self.wfile.write(outer.data)
+                    self.wfile.write(data)
                     return
                 start, end = map(int, byte_range[6:].split("-"))
                 outer.ranges.append((start, end))
-                body = outer.data[start : end + 1]
-                self.send_response(206)
-                self.send_header(
-                    "Content-Range", f"bytes {start}-{end}/{len(outer.data)}"
-                )
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                with outer.lock:
+                    outer.active += 1
+                    outer.max_active = max(outer.max_active, outer.active)
+                try:
+                    if outer.delay:
+                        time.sleep(outer.delay)
+                    body = data[start : end + 1]
+                    if outer.faults.get(self.path.lstrip("/")) == "corrupt":
+                        body = bytes([body[0] ^ 1]) + body[1:]
+                    elif outer.faults.get(self.path.lstrip("/")) == "truncate":
+                        body = body[:-1]
+                    self.send_response(206)
+                    self.send_header(
+                        "Content-Range", f"bytes {start}-{end}/{len(data)}"
+                    )
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                finally:
+                    with outer.lock:
+                        outer.active -= 1
 
             def log_message(self, *_args):
                 pass
@@ -103,6 +123,45 @@ def fixture(data, url):
         }
     }
     return manifest, assets
+
+
+def shard_fixture(parts, origin):
+    data = b"".join(parts)
+    shards = []
+    assets = {}
+    offset = 0
+    for index, part in enumerate(parts):
+        asset_id = 9 + index
+        name = f"part-{index}.bin"
+        shards.append(
+            {
+                "name": name,
+                "offset": offset,
+                "size": len(part),
+                "sha256": digest(part),
+                "assetId": asset_id,
+                "blocks": [
+                    {"offset": offset, "size": len(part), "sha256": digest(part)}
+                ],
+            }
+        )
+        assets[asset_id] = {
+            "id": asset_id,
+            "name": name,
+            "size": len(part),
+            "digest": "sha256:" + digest(part),
+            "browser_download_url": origin.url(name),
+        }
+        offset += len(part)
+    return {
+        "schema": "darwin-release-image-v1",
+        "releaseId": 7,
+        "imageBytes": len(data),
+        "imageSha256": digest(data),
+        "blockSize": 4,
+        "shardSize": 4,
+        "shards": shards,
+    }, assets
 
 
 class ReleaseImageTest(unittest.TestCase):
@@ -160,7 +219,7 @@ class ReleaseImageTest(unittest.TestCase):
                 corrupt = IMAGE.BlockStore(
                     "owner/repo", 7, manifest, assets, Path(directory) / "corrupt"
                 )
-                with self.assertRaises(AssertionError):
+                with self.assertRaises(ValueError):
                     corrupt.read(4, 1)
         finally:
             origin.close()
@@ -182,7 +241,7 @@ class ReleaseImageTest(unittest.TestCase):
                 ],
             }
             with tempfile.TemporaryDirectory() as directory:
-                with self.assertRaises(AssertionError):
+                with self.assertRaises(ValueError):
                     IMAGE.load_manifest(
                         "owner/repo", 7, "0" * 64, Path(directory) / "reader"
                     )
@@ -241,10 +300,15 @@ class ReleaseImageTest(unittest.TestCase):
             origin.close()
 
     def test_eager_reassembles_and_verifies_the_full_image(self):
-        origin = Origin(b"abcdefgh")
+        parts = [b"abcd", b"efgh"]
+        origin = Origin(
+            b"",
+            parts={f"part-{i}.bin": part for i, part in enumerate(parts)},
+            delay=0.05,
+        )
         original = IMAGE.load_manifest
         try:
-            manifest, assets = fixture(b"abcdefgh", origin.url())
+            manifest, assets = shard_fixture(parts, origin)
 
             def load(_repo, _release_id, _manifest_sha, directory):
                 Path(directory).mkdir(parents=True)
@@ -253,14 +317,66 @@ class ReleaseImageTest(unittest.TestCase):
             IMAGE.load_manifest = load
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / "reader"
-                result = IMAGE.eager("owner/repo", 7, "0" * 64, root)
+                result = IMAGE.eager("owner/repo", 7, "0" * 64, root, workers=2)
                 self.assertEqual(Path(result["image"]).read_bytes(), b"abcdefgh")
                 self.assertEqual(
-                    (result["requestCount"], result["responseBytes"]), (1, 8)
+                    (result["requestCount"], result["responseBytes"]), (2, 8)
                 )
+                self.assertEqual(result["workers"], 2)
+                self.assertGreaterEqual(result["selectionSeconds"], 0)
+                self.assertGreaterEqual(result["restoreSeconds"], 0.05)
+                self.assertGreaterEqual(origin.max_active, 2)
+                self.assertEqual(list(root.glob("image.dmg.*")), [])
         finally:
             IMAGE.load_manifest = original
             origin.close()
+
+    def test_eager_rejects_corrupt_or_truncated_shards_without_promoting_image(self):
+        original = IMAGE.load_manifest
+        try:
+            for fault in ("corrupt", "truncate"):
+                with self.subTest(fault=fault):
+                    parts = [b"abcd", b"efgh"]
+                    origin = Origin(
+                        b"",
+                        parts={f"part-{i}.bin": part for i, part in enumerate(parts)},
+                        faults={"part-1.bin": fault},
+                    )
+                    manifest, assets = shard_fixture(parts, origin)
+
+                    def load(_repo, _release_id, _manifest_sha, directory):
+                        Path(directory).mkdir(parents=True)
+                        return manifest, assets
+
+                    IMAGE.load_manifest = load
+                    try:
+                        with tempfile.TemporaryDirectory() as directory:
+                            root = Path(directory) / "reader"
+                            with self.assertRaises(ValueError):
+                                IMAGE.eager("owner/repo", 7, "0" * 64, root, workers=2)
+                            self.assertFalse((root / "image.dmg").exists())
+                    finally:
+                        origin.close()
+        finally:
+            IMAGE.load_manifest = original
+
+    def test_manifest_and_range_integrity_checks_survive_python_optimisation(self):
+        manifest, _assets = fixture(b"abcdefgh", "http://127.0.0.1/unused")
+        manifest["imageBytes"] += 1
+        with self.assertRaises(ValueError):
+            IMAGE.validate_manifest(manifest)
+
+        assets = {
+            9: {
+                "id": 9,
+                "name": "part.bin",
+                "size": 8,
+                "digest": "sha256:" + digest(b"abcdefgh"),
+                "browser_download_url": "http://127.0.0.1/unused",
+            }
+        }
+        with self.assertRaises(ValueError):
+            IMAGE.RangeFetcher("owner/repo", assets).fetch(9, 0, 8)
 
     def test_expired_redirect_refreshes_only_the_pinned_asset(self):
         origin = Origin(b"abcdefgh")
@@ -331,7 +447,7 @@ class ReleaseImageTest(unittest.TestCase):
 
             image.write_bytes(b"abcdefgX")
             profile.write_text("")
-            with self.assertRaises(AssertionError):
+            with self.assertRaises(ValueError):
                 IMAGE.pack_hot(image, manifest_path, profile, root / "wrong.bin")
 
             image.write_bytes(b"abcdefgh")
@@ -348,7 +464,7 @@ class ReleaseImageTest(unittest.TestCase):
                 )
                 + "\n"
             )
-            with self.assertRaises(AssertionError):
+            with self.assertRaises(ValueError):
                 IMAGE.pack_hot(image, manifest_path, profile, root / "range.bin")
 
             profile.write_text(
@@ -369,10 +485,10 @@ class ReleaseImageTest(unittest.TestCase):
             original = hot.read_bytes()
             store = IMAGE.BlockStore("owner/repo", 7, manifest, assets, root / "cache")
             hot.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
-            with self.assertRaises(AssertionError):
+            with self.assertRaises(ValueError):
                 IMAGE.import_hot_pack(hot, store)
             hot.write_bytes(original[:-1])
-            with self.assertRaises(AssertionError):
+            with self.assertRaises(ValueError):
                 IMAGE.import_hot_pack(hot, store)
 
 
