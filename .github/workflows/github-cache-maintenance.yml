@@ -181,10 +181,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "records=$(cat "$CI_EXPECTED_RECORDS")" >> "$GITHUB_OUTPUT"
+          echo "inputs=$(jq -ce '[.inputs[]] | unique' "$RUNNER_TEMP/plan/coverage.json")" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/nix-root-build
         with:
           system: ${{ matrix.system }}
           builds-json: ${{ steps.records.outputs.records }}
+          input-paths-json: ${{ steps.records.outputs.inputs }}
       - name: Produce and upload Linux images
         env:
           SYSTEM: ${{ matrix.system }}

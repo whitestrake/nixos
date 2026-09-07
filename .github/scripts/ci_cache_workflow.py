@@ -6,12 +6,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import ci_cache_generation as generation
 import ci_cache_image as image
 
 SYSTEMS = ("x86_64-linux", "aarch64-linux", "aarch64-darwin")
+STORE_PATH = re.compile(
+    r"/nix/store/([0123456789abcdfghijklmnpqrsvwxyz]{32})-[A-Za-z0-9+._?=-]+"
+)
 
 
 def run(*argv):
@@ -28,6 +32,17 @@ def input_paths(archive, prefix=""):
         key = prefix + name
         result[key] = entry["path"]
         result.update(input_paths(entry, key + "/"))
+    return result
+
+
+def evaluator_inputs(before, after, excluded):
+    result = {}
+    for path in sorted(set(after) - set(before) - set(excluded)):
+        if path.endswith(".drv"):
+            continue
+        match = STORE_PATH.fullmatch(path)
+        image.require(match is not None, "unsafe evaluator input path: " + path)
+        result["evaluator/" + match[1]] = path
     return result
 
 
@@ -81,16 +96,30 @@ def plan(directory, proof_path, run_id, release_id=None):
     )
     archive = json.loads(run("nix", "flake", "archive", "--json", "path:."))
     inputs = input_paths(archive)
+    checkout = json.loads(run("nix", "flake", "metadata", "--json", "."))["path"]
+    checkout_roots = {archive["path"], checkout}
     image.require(
-        inputs and archive["path"] not in inputs.values(),
+        inputs
+        and not checkout_roots.intersection(inputs.values())
+        and all(
+            STORE_PATH.fullmatch(path) for path in [*inputs.values(), *checkout_roots]
+        ),
         "invalid external input roots",
     )
+    before = run("nix-store", "--query", "--all").splitlines()
     nfb = {
         system: run(
             "nix", "eval", "--raw", f".#packages.{system}.nix-fast-build.outPath"
         )
         for system in SYSTEMS
     }
+    after = run("nix-store", "--query", "--all").splitlines()
+    realised = evaluator_inputs(before, after, [*inputs.values(), *checkout_roots])
+    image.require(not inputs.keys() & realised.keys(), "evaluator input name collision")
+    inputs.update(realised)
+    print(f"NIX_EVALUATOR_INPUTS_CAPTURED count={len(realised)}")
+    for path in realised.values():
+        print(f"NIX_EVALUATOR_INPUT path={path}")
     definitions = {
         path: run("git", "rev-parse", "HEAD:" + path)
         for path in (

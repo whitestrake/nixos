@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +11,94 @@ import ci_cache_workflow as workflow
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_evaluator_inventory_retains_only_new_external_non_derivations(self):
+        unrelated, declared, git, archive, source, drv = [
+            "/nix/store/" + char * 32 + "-" + name
+            for char, name in zip(
+                "012345",
+                ("unrelated", "declared", "git", "archive", "source", "eval.drv"),
+            )
+        ]
+        self.assertEqual(
+            workflow.evaluator_inputs(
+                [unrelated],
+                [drv, git, source, declared, archive, unrelated],
+                [declared, git, archive],
+            ),
+            {"evaluator/" + "4" * 32: source},
+        )
+        with self.assertRaisesRegex(ValueError, "unsafe evaluator input"):
+            workflow.evaluator_inputs([], [source + "/child"], [])
+
+    def test_planned_inputs_validate_before_root_transaction(self):
+        action = Path(__file__).parents[1] / "actions/nix-root-build/action.yml"
+        script = textwrap.dedent(action.read_text().split("      run: |\n", 1)[1])
+        script = script[script.index("flake_input_paths=()") :]
+        declared = "/nix/store/" + "1" * 32 + "-declared"
+        source = "/nix/store/" + "2" * 32 + "-source"
+        for planned, missing, message in (
+            ("", False, None),
+            (json.dumps([source, declared, source]), False, None),
+            (json.dumps([source]), False, "omit locally declared"),
+            (json.dumps([declared, source + "/child"]), False, "unsafe store path"),
+            (json.dumps([declared, source + "\n"]), False, "unsafe store path"),
+            (json.dumps([declared, 7]), False, "non-string path"),
+            ("{}", False, "must be an array"),
+            (json.dumps([source, declared]), True, "missing planned path"),
+        ):
+            with (
+                self.subTest(planned=planned, missing=missing),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                root = Path(tmp)
+                nix = root / "nix"
+                nix.write_text("""#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1:3] == ['flake', 'archive']:
+    print(json.dumps({'inputs': {'declared': {'path': os.environ['DECLARED']}}}))
+else:
+    paths = sys.argv[sys.argv.index('1') + 1:]
+    if os.environ['MISSING'] == 'true':
+        sys.exit('missing planned path')
+    print(json.dumps({p: {'narSize': 1} for p in paths}))
+""")
+                nix.chmod(0o755)
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        "set -Eeuo pipefail\n"
+                        'root_dir="$RUNNER_TEMP/roots"\n'
+                        'legacy_root_dir="$RUNNER_TEMP/legacy"\n'
+                        'record_lines=$(printf "nixos\\thost\\t%s" "$DECLARED")\n'
+                        'nix_fast_build_path="$DECLARED"\n'
+                        "staged_links=()\nstarted=$SECONDS\n" + script,
+                    ],
+                    env={
+                        **os.environ,
+                        "PATH": tmp + os.pathsep + os.environ["PATH"],
+                        "RUNNER_TEMP": tmp,
+                        "GHCI_LANE_SYSTEM": "x86_64-linux",
+                        "GHCI_INPUT_PATHS_JSON": planned,
+                        "DECLARED": declared,
+                        "MISSING": str(missing).lower(),
+                    },
+                    text=True,
+                    capture_output=True,
+                )
+                if message:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertFalse((root / "roots").exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    retained = {
+                        os.readlink(p) for p in (root / "roots").glob("flake-input-*")
+                    }
+                    self.assertEqual(
+                        retained, {declared, source} if planned else {declared}
+                    )
+
     def test_missing_original_closure_fails_before_workload(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -58,6 +147,9 @@ class WorkflowTests(unittest.TestCase):
             }
         }
         inputs = workflow.input_paths(archive)
+        inputs.update(
+            workflow.evaluator_inputs([], ["/nix/store/" + "4" * 32 + "-source"], [])
+        )
         self.assertEqual(inputs["nixpkgs/nested"], "/nix/store/nested")
         total, parts = workflow.coverages(proof, inputs, nfb, {"definition": "sha"})
         self.assertEqual(
@@ -146,17 +238,26 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             directory = root / "plan"
+            calls = []
+            source_input = "/nix/store/" + "3" * 32 + "-source"
 
             def run(*argv):
+                calls.append(argv)
                 if argv == ("git", "rev-parse", "HEAD"):
                     return revision
                 if argv[:3] == ("nix", "flake", "archive"):
                     return json.dumps(
                         {
-                            "path": "/nix/store/checkout",
-                            "inputs": {"nixpkgs": {"path": "/nix/store/input"}},
+                            "path": "/nix/store/" + "0" * 32 + "-checkout",
+                            "inputs": {
+                                "nixpkgs": {"path": "/nix/store/" + "1" * 32 + "-input"}
+                            },
                         }
                     )
+                if argv[:3] == ("nix", "flake", "metadata"):
+                    return json.dumps({"path": "/nix/store/" + "2" * 32 + "-git"})
+                if argv[0] == "nix-store":
+                    return "" if calls.count(argv) == 1 else source_input
                 return "/nix/store/tool" if argv[0] == "nix" else "definition"
 
             def resolve(*_args):
@@ -184,6 +285,30 @@ class WorkflowTests(unittest.TestCase):
                 patch.object(workflow.generation, "resolve", side_effect=resolve),
             ):
                 workflow.plan(directory, "/nix/store/" + "a" * 32 + "-proof", 11)
+            self.assertEqual(
+                [call for call in calls if call[0] in ("nix", "nix-store")],
+                [
+                    ("nix", "flake", "archive", "--json", "path:."),
+                    ("nix", "flake", "metadata", "--json", "."),
+                    ("nix-store", "--query", "--all"),
+                    *(
+                        (
+                            "nix",
+                            "eval",
+                            "--raw",
+                            f".#packages.{system}.nix-fast-build.outPath",
+                        )
+                        for system in workflow.SYSTEMS
+                    ),
+                    ("nix-store", "--query", "--all"),
+                ],
+            )
+            self.assertEqual(
+                json.loads((directory / "coverage.json").read_text())["inputs"][
+                    "evaluator/" + "3" * 32
+                ],
+                source_input,
+            )
             self.assertEqual((root / "output").read_text(), "refresh=false\n")
             source = json.loads((directory / "source.json").read_text())
             self.assertEqual(source["revision"], revision)

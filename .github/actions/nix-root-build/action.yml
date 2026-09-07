@@ -9,6 +9,10 @@ inputs:
   system:
     description: "Nix system label for telemetry and gcroot placement."
     required: true
+  input-paths-json:
+    description: "Optional exact JSON array of planned input paths, including all declared flake inputs."
+    required: false
+    default: ""
   package-report:
     description: "Generate package reports from successful nix-fast-build events."
     required: false
@@ -33,6 +37,7 @@ runs:
       env:
         GHCI_BUILDS_JSON: ${{ inputs.builds-json }}
         GHCI_LANE_SYSTEM: ${{ inputs.system }}
+        GHCI_INPUT_PATHS_JSON: ${{ inputs.input-paths-json }}
         GHCI_PACKAGE_REPORT: ${{ inputs.package-report }}
         GHCI_BASELINE_RECORDS_JSON: ${{ inputs.baseline-records-json }}
         GHCI_PROOF_STORE_PATH: ${{ inputs.proof-store-path }}
@@ -278,16 +283,29 @@ runs:
         archive_started="$SECONDS"
         archive_json="$(nix flake archive --json path:.)"
         flake_input_paths_json="$(
-          jq -ce '
+          jq -ce --arg planned "$GHCI_INPUT_PATHS_JSON" '
             [.inputs | .. | objects | select(has("path")) | .path]
             | if length == 0 then
                 error("flake archive contains no paths")
               elif any(.[]; type != "string") then
                 error("flake archive contains a non-string path")
-              elif any(.[]; test("^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$") | not) then
+              elif any(.[]; test("\\A/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+\\z") | not) then
                 error("flake archive contains an unsafe store path")
               else
                 sort | unique
+              end
+            | . as $declared
+            | if $planned == "" then . else
+                ($planned | fromjson)
+                | if type != "array" then
+                    error("planned input paths must be an array")
+                  elif any(.[]; type != "string") then
+                    error("planned input paths contain a non-string path")
+                  elif any(.[]; test("\\A/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+\\z") | not) then
+                    error("planned input paths contain an unsafe store path")
+                  elif ($declared - . | length) != 0 then
+                    error("planned input paths omit locally declared inputs")
+                  else sort | unique end
               end
           ' <<< "$archive_json"
         )"
@@ -299,7 +317,7 @@ runs:
         flake_input_nar_bytes="$(
           jq -er --argjson expectedPaths "$flake_input_paths_json" '
             if type != "object" or (keys | sort) != $expectedPaths then
-              error("flake input path info does not match archived paths")
+              error("flake input path info does not match selected paths")
             elif any(.[]; (.narSize | type) != "number") then
               error("flake input path info is missing NAR sizes")
             else
