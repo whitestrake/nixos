@@ -24,6 +24,7 @@ runs:
           experimental-features = nix-command flakes
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
+          auto-optimise-store = false
           build-dir = /tmp/nix-builds
           connect-timeout = 10
           download-attempts = 2

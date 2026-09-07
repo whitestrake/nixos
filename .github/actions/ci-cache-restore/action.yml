@@ -1,0 +1,156 @@
+name: "Prepare Linux CI store"
+description: "Restore an optional frozen Linux image or install a clean Nix store."
+
+inputs:
+  repository:
+    description: "GitHub owner/repository containing the cache release."
+    required: true
+  selection:
+    description: "Frozen generation selection JSON."
+    required: true
+  component:
+    description: "Frozen Linux component name."
+    required: true
+  format:
+    description: "Image filesystem: erofs or squashfs."
+    required: true
+  directory:
+    description: "Restore directory beneath RUNNER_TEMP."
+    required: false
+    default: ""
+  workers:
+    description: "Concurrent eager download workers."
+    required: false
+    default: "4"
+  extra-nix-conf:
+    description: "Additional nix.conf lines for the ordinary Nix installer."
+    required: false
+    default: ""
+
+outputs:
+  restored:
+    description: "true only when the selected image remains mounted after validation."
+    value: ${{ steps.final.outputs.restored }}
+  image:
+    description: "Verified mounted image path, or empty after cold installation."
+    value: ${{ steps.final.outputs.image }}
+  nix-fast-build:
+    description: "Cached nix-fast-build executable, or empty after cold installation."
+    value: ${{ steps.final.outputs.nix-fast-build }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Restore and mount optional Linux image
+      id: restore
+      shell: bash
+      env:
+        CI_LINUX_COMPONENT: ${{ inputs.component }}
+        CI_LINUX_DIRECTORY: ${{ inputs.directory }}
+        CI_LINUX_FORMAT: ${{ inputs.format }}
+        CI_LINUX_REPOSITORY: ${{ inputs.repository }}
+        CI_LINUX_SELECTION: ${{ inputs.selection }}
+        CI_LINUX_WORKERS: ${{ inputs.workers }}
+      run: |
+        set -euo pipefail
+        [ ! -e /nix ] || { echo "::error ::/nix already exists before Linux store preparation"; exit 1; }
+        directory="${CI_LINUX_DIRECTORY:-$RUNNER_TEMP/ci-linux-$CI_LINUX_COMPONENT}"
+        result="$RUNNER_TEMP/ci-linux-restore-$$.json"
+        if bash .github/scripts/ci-linux-image.sh restore-mount \
+          "$CI_LINUX_REPOSITORY" "$CI_LINUX_SELECTION" "$CI_LINUX_COMPONENT" \
+          "$CI_LINUX_FORMAT" "$directory" "$CI_LINUX_WORKERS" > "$result"; then
+          {
+            echo "restored=true"
+            echo "image=$(jq -er .image "$result")"
+            echo "nix-fast-build=$(jq -er .nixFastBuild "$result")"
+            echo "directory=$directory"
+          } >> "$GITHUB_OUTPUT"
+        else
+          bash .github/scripts/ci-linux-image.sh cleanup "$CI_LINUX_FORMAT"
+          case "$directory" in "$RUNNER_TEMP"/*) rm -rf "$directory" ;; *) exit 1 ;; esac
+          {
+            echo "restored=false"
+            echo "image="
+            echo "nix-fast-build="
+            echo "directory=$directory"
+          } >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$result"
+
+    - name: Install Nix
+      id: install
+      uses: ./.github/actions/install-nix
+      continue-on-error: ${{ steps.restore.outputs.restored == 'true' }}
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+
+    - name: Validate restored Linux store
+      id: validate
+      if: steps.restore.outputs.restored == 'true' && steps.install.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        CI_LINUX_COMPONENT: ${{ inputs.component }}
+        CI_LINUX_FORMAT: ${{ inputs.format }}
+      run: |
+        set -euo pipefail
+        case "$CI_LINUX_COMPONENT" in
+          linux-seed-x86_64-linux | linux-full-x86_64-linux) system=x86_64-linux ;;
+          linux-full-aarch64-linux) system=aarch64-linux ;;
+          *) exit 64 ;;
+        esac
+        bash .github/scripts/ci-linux-image.sh validate-mounted "$system" "$CI_LINUX_FORMAT"
+
+    - name: Discard unusable restored Linux store
+      if: >-
+        steps.restore.outputs.restored == 'true' &&
+        (steps.install.outcome == 'failure' || steps.validate.outcome == 'failure')
+      shell: bash
+      env:
+        CI_LINUX_DIRECTORY: ${{ steps.restore.outputs.directory }}
+        CI_LINUX_FORMAT: ${{ inputs.format }}
+      run: |
+        set -euo pipefail
+        bash .github/scripts/ci-linux-image.sh cleanup "$CI_LINUX_FORMAT"
+        case "$CI_LINUX_DIRECTORY" in
+          "$RUNNER_TEMP"/*) rm -rf "$CI_LINUX_DIRECTORY" ;;
+          *) echo "::error ::unsafe Linux restore directory: $CI_LINUX_DIRECTORY"; exit 1 ;;
+        esac
+
+    - name: Install Nix after rejected image
+      if: >-
+        steps.restore.outputs.restored == 'true' &&
+        (steps.install.outcome == 'failure' || steps.validate.outcome == 'failure')
+      uses: ./.github/actions/install-nix
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+
+    - name: Publish final Linux store state
+      id: final
+      shell: bash
+      env:
+        CI_LINUX_IMAGE: ${{ steps.restore.outputs.image }}
+        CI_LINUX_NFB: ${{ steps.restore.outputs.nix-fast-build }}
+        CI_LINUX_RESTORED: ${{ steps.restore.outputs.restored }}
+        CI_LINUX_VALIDATION: ${{ steps.validate.outcome }}
+      run: |
+        set -euo pipefail
+        if [ "$CI_LINUX_RESTORED" = true ] && [ "$CI_LINUX_VALIDATION" = success ]; then
+          restored=true
+          image="$CI_LINUX_IMAGE"
+          nfb="$CI_LINUX_NFB"
+        else
+          restored=false
+          image=
+          nfb=
+        fi
+        {
+          echo "restored=$restored"
+          echo "image=$image"
+          echo "nix-fast-build=$nfb"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "CI_LINUX_CACHE_RESTORED=$restored"
+          echo "CI_LINUX_CACHE_IMAGE=$image"
+          echo "NIX_FAST_BUILD=$nfb"
+        } >> "$GITHUB_ENV"
