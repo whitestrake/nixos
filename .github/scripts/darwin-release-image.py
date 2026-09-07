@@ -786,6 +786,108 @@ def eager(repo, release_id, manifest_sha, directory, workers=1):
     }
 
 
+def eager_single(
+    repo,
+    release_id,
+    manifest_sha,
+    directory,
+    zstd=False,
+    decoded_sha256=None,
+    decoded_size=None,
+):
+    require(
+        (
+            zstd
+            and is_sha256(decoded_sha256)
+            and isinstance(decoded_size, int)
+            and decoded_size > 0
+        )
+        or (not zstd and decoded_sha256 is None and decoded_size is None),
+        "decoded size and digest are required only with zstd",
+    )
+    selection_started = time.monotonic()
+    manifest, assets = load_manifest(repo, release_id, manifest_sha, directory)
+    selection_seconds = time.monotonic() - selection_started
+    require(len(manifest["shards"]) == 1, "single eager mode requires one shard")
+    shard = manifest["shards"][0]
+    require(
+        shard["offset"] == 0 and shard["size"] == manifest["imageBytes"],
+        "single shard does not cover the encoded image",
+    )
+    fetcher = RangeFetcher(repo, assets)
+    directory = Path(directory)
+    image_path = directory / "image.dmg"
+    encoded_path = directory / ("image.dmg.encoded.tmp" if zstd else "image.dmg.tmp")
+    decoded_path = directory / "image.dmg.tmp" if zstd else None
+    restore_started = time.monotonic()
+    download_seconds = verification_seconds = decompression_seconds = 0
+    try:
+        started = time.monotonic()
+        fetcher.fetch_to(shard["assetId"], 0, shard["size"] - 1, encoded_path)
+        download_seconds = time.monotonic() - started
+
+        started = time.monotonic()
+        require(
+            encoded_path.stat().st_size == manifest["imageBytes"],
+            "encoded image size mismatch",
+        )
+        encoded_digest = file_sha256(encoded_path)
+        require(
+            encoded_digest == shard["sha256"]
+            and encoded_digest == manifest["imageSha256"],
+            "encoded image digest mismatch",
+        )
+        verification_seconds = time.monotonic() - started
+
+        if zstd:
+            started = time.monotonic()
+            with decoded_path.open("xb") as output:
+                subprocess.run(
+                    ["zstd", "-d", "-q", "-c", str(encoded_path)],
+                    stdout=output,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                    timeout=600,
+                )
+            decompression_seconds = time.monotonic() - started
+            started = time.monotonic()
+            require(
+                decoded_path.stat().st_size == decoded_size,
+                "decoded image size mismatch",
+            )
+            require(
+                file_sha256(decoded_path) == decoded_sha256,
+                "decoded image digest mismatch",
+            )
+            verification_seconds += time.monotonic() - started
+            os.replace(decoded_path, image_path)
+            image_bytes, image_digest = decoded_size, decoded_sha256
+        else:
+            os.replace(encoded_path, image_path)
+            image_bytes, image_digest = manifest["imageBytes"], encoded_digest
+        restore_seconds = time.monotonic() - restore_started
+    finally:
+        encoded_path.unlink(missing_ok=True)
+        if decoded_path:
+            decoded_path.unlink(missing_ok=True)
+    return {
+        "releaseId": release_id,
+        "manifestSha256": manifest_sha,
+        "image": str(image_path),
+        "imageBytes": image_bytes,
+        "imageSha256": image_digest,
+        "encodedBytes": manifest["imageBytes"],
+        "encodedSha256": manifest["imageSha256"],
+        "workers": 1,
+        "selectionSeconds": selection_seconds,
+        "restoreSeconds": restore_seconds,
+        "downloadSeconds": download_seconds,
+        "verificationSeconds": verification_seconds,
+        "decompressionSeconds": decompression_seconds,
+        **fetcher.summary(),
+    }
+
+
 def parse_range(value, size):
     if value is None:
         return None
@@ -950,7 +1052,7 @@ def main():
     publish_parser.add_argument("--tag", required=True)
     publish_parser.add_argument("--target", required=True)
     publish_parser.add_argument("--directory", required=True, type=Path)
-    for name in ("eager", "serve"):
+    for name in ("eager", "eager-single", "serve"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
         command.add_argument("--release-id", required=True, type=int)
@@ -958,6 +1060,10 @@ def main():
         command.add_argument("--directory", required=True, type=Path)
         if name == "eager":
             command.add_argument("--workers", type=int, choices=range(1, 5), default=1)
+        if name == "eager-single":
+            command.add_argument("--zstd", action="store_true")
+            command.add_argument("--decoded-sha256")
+            command.add_argument("--decoded-size", type=int)
         if name == "serve":
             command.add_argument("--ready", required=True, type=Path)
             command.add_argument("--log", required=True, type=Path)
@@ -976,6 +1082,16 @@ def main():
             args.manifest_sha,
             args.directory,
             args.workers,
+        )
+    elif args.command == "eager-single":
+        result = eager_single(
+            args.repo,
+            args.release_id,
+            args.manifest_sha,
+            args.directory,
+            args.zstd,
+            args.decoded_sha256,
+            args.decoded_size,
         )
     else:
         result = serve(

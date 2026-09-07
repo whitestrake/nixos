@@ -4,6 +4,8 @@ import http.client
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -162,6 +164,48 @@ def shard_fixture(parts, origin):
         "shardSize": 4,
         "shards": shards,
     }, assets
+
+
+def single_fixture(data, url):
+    block_size = 4
+    blocks = [
+        data[offset : offset + block_size] for offset in range(0, len(data), block_size)
+    ]
+    manifest = {
+        "schema": "darwin-release-image-v1",
+        "releaseId": 7,
+        "imageBytes": len(data),
+        "imageSha256": digest(data),
+        "blockSize": block_size,
+        "shardSize": ((len(data) + block_size - 1) // block_size) * block_size,
+        "shards": [
+            {
+                "name": "image.bin",
+                "offset": 0,
+                "size": len(data),
+                "sha256": digest(data),
+                "assetId": 9,
+                "blocks": [
+                    {
+                        "offset": offset,
+                        "size": len(block),
+                        "sha256": digest(block),
+                    }
+                    for offset, block in zip(range(0, len(data), block_size), blocks)
+                ],
+            }
+        ],
+    }
+    assets = {
+        9: {
+            "id": 9,
+            "name": "image.bin",
+            "size": len(data),
+            "digest": "sha256:" + digest(data),
+            "browser_download_url": url,
+        }
+    }
+    return manifest, assets
 
 
 class ReleaseImageTest(unittest.TestCase):
@@ -359,6 +403,178 @@ class ReleaseImageTest(unittest.TestCase):
                         origin.close()
         finally:
             IMAGE.load_manifest = original
+
+    def test_eager_single_promotes_one_verified_asset_without_copying(self):
+        origin = Origin(b"abcdefgh")
+        manifest, assets = single_fixture(b"abcdefgh", origin.url())
+        original_fetch_to = IMAGE.RangeFetcher.fetch_to
+        downloaded_inode = None
+
+        def fetch_to(fetcher, asset_id, start, end, target):
+            nonlocal downloaded_inode
+            result = original_fetch_to(fetcher, asset_id, start, end, target)
+            downloaded_inode = Path(target).stat().st_ino
+            return result
+
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "reader"
+                with (
+                    patch.object(
+                        IMAGE,
+                        "load_manifest",
+                        side_effect=lambda *_args: (root.mkdir(), (manifest, assets))[
+                            1
+                        ],
+                    ),
+                    patch.object(
+                        IMAGE, "file_sha256", wraps=IMAGE.file_sha256
+                    ) as file_digest,
+                    patch.object(IMAGE.RangeFetcher, "fetch_to", fetch_to),
+                ):
+                    result = IMAGE.eager_single("owner/repo", 7, "0" * 64, root)
+
+                self.assertEqual(Path(result["image"]).read_bytes(), b"abcdefgh")
+                self.assertEqual(Path(result["image"]).stat().st_ino, downloaded_inode)
+                self.assertEqual(file_digest.call_count, 1)
+                self.assertEqual(origin.ranges, [(0, 7)])
+                self.assertEqual(
+                    (result["encodedBytes"], result["encodedSha256"]),
+                    (8, digest(b"abcdefgh")),
+                )
+                self.assertEqual(
+                    (result["imageBytes"], result["imageSha256"]),
+                    (8, digest(b"abcdefgh")),
+                )
+                self.assertEqual(result["workers"], 1)
+                for timing in (
+                    "selectionSeconds",
+                    "restoreSeconds",
+                    "downloadSeconds",
+                    "verificationSeconds",
+                    "decompressionSeconds",
+                ):
+                    self.assertGreaterEqual(result[timing], 0)
+                self.assertEqual(list(root.glob("image.dmg.*")), [])
+        finally:
+            origin.close()
+
+    def test_eager_single_rejects_bad_payloads_without_promoting_image(self):
+        cases = ("corrupt", "truncate", "image-digest")
+        for fault in cases:
+            with self.subTest(fault=fault):
+                origin = Origin(b"abcdefgh", faults={"image.bin": fault})
+                manifest, assets = single_fixture(b"abcdefgh", origin.url("image.bin"))
+                if fault == "image-digest":
+                    manifest["imageSha256"] = digest(b"abcdwxyz")
+                    origin.faults.clear()
+                try:
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory) / "reader"
+                        with patch.object(
+                            IMAGE,
+                            "load_manifest",
+                            side_effect=lambda *_args: (
+                                root.mkdir(),
+                                (manifest, assets),
+                            )[1],
+                        ):
+                            with self.assertRaises(ValueError):
+                                IMAGE.eager_single("owner/repo", 7, "0" * 64, root)
+                        self.assertFalse((root / "image.dmg").exists())
+                        self.assertEqual(list(root.glob("image.dmg.*")), [])
+                finally:
+                    origin.close()
+
+    @unittest.skipUnless(shutil.which("zstd"), "native zstd is unavailable")
+    def test_eager_single_zstd_rejects_stream_and_decoded_digest_failures(self):
+        raw = b"raw disk image\0" * 32
+        compressed = subprocess.run(
+            ["zstd", "-q", "-c"],
+            input=raw,
+            stdout=subprocess.PIPE,
+            check=True,
+            timeout=10,
+        ).stdout
+        for label, encoded, expected_digest, expected_size in (
+            ("invalid", b"not a zstd stream", digest(raw), len(raw)),
+            ("truncated", compressed[:-1], digest(raw), len(raw)),
+            ("wrong-digest", compressed, "0" * 64, len(raw)),
+            ("wrong-size", compressed, digest(raw), len(raw) + 1),
+        ):
+            with self.subTest(label=label):
+                origin = Origin(encoded)
+                manifest, assets = single_fixture(encoded, origin.url())
+                try:
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory) / "reader"
+                        with patch.object(
+                            IMAGE,
+                            "load_manifest",
+                            side_effect=lambda *_args: (
+                                root.mkdir(),
+                                (manifest, assets),
+                            )[1],
+                        ):
+                            with self.assertRaises(
+                                (ValueError, subprocess.CalledProcessError)
+                            ):
+                                IMAGE.eager_single(
+                                    "owner/repo",
+                                    7,
+                                    "0" * 64,
+                                    root,
+                                    zstd=True,
+                                    decoded_sha256=expected_digest,
+                                    decoded_size=expected_size,
+                                )
+                        self.assertFalse((root / "image.dmg").exists())
+                        self.assertEqual(list(root.glob("image.dmg.*")), [])
+                finally:
+                    origin.close()
+
+    @unittest.skipUnless(shutil.which("zstd"), "native zstd is unavailable")
+    def test_eager_single_zstd_verifies_and_promotes_decoded_image(self):
+        raw = b"raw disk image\0" * 32
+        compressed = subprocess.run(
+            ["zstd", "-q", "-c"],
+            input=raw,
+            stdout=subprocess.PIPE,
+            check=True,
+            timeout=10,
+        ).stdout
+        origin = Origin(compressed)
+        manifest, assets = single_fixture(compressed, origin.url())
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "reader"
+                with patch.object(
+                    IMAGE,
+                    "load_manifest",
+                    side_effect=lambda *_args: (root.mkdir(), (manifest, assets))[1],
+                ):
+                    result = IMAGE.eager_single(
+                        "owner/repo",
+                        7,
+                        "0" * 64,
+                        root,
+                        zstd=True,
+                        decoded_sha256=digest(raw),
+                        decoded_size=len(raw),
+                    )
+
+                self.assertEqual(Path(result["image"]).read_bytes(), raw)
+                self.assertEqual(
+                    (result["encodedBytes"], result["encodedSha256"]),
+                    (len(compressed), digest(compressed)),
+                )
+                self.assertEqual(
+                    (result["imageBytes"], result["imageSha256"]),
+                    (len(raw), digest(raw)),
+                )
+                self.assertEqual(list(root.glob("image.dmg.*")), [])
+        finally:
+            origin.close()
 
     def test_manifest_and_range_integrity_checks_survive_python_optimisation(self):
         manifest, _assets = fixture(b"abcdefgh", "http://127.0.0.1/unused")
