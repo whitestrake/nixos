@@ -142,7 +142,7 @@ class CacheCheck(unittest.TestCase):
         current.update(releaseId=5, previousId=4, promotedAt=at_grace)
         self.assertEqual(generation.retirement_plan(releases, current, at_grace), [])
 
-    def test_draft_cleanup_requires_owned_finished_work_and_grace(self):
+    def test_candidate_cleanup_requires_owned_finished_work_and_grace(self):
         updated = "2026-09-08T00:00:00Z"
         release = {
             "tag_name": "ci-cache-v1-123001",
@@ -166,12 +166,22 @@ class CacheCheck(unittest.TestCase):
         )
 
         def ready(r, w, t=boundary):
-            return generation.draft_ready(r, w, "owner/repo", t)
+            return generation.candidate_ready(r, w, "owner/repo", t)
 
         self.assertTrue(
             ready(release, run)
         )  # Successful rerun leaves the older draft eligible.
         self.assertFalse(ready(release, run, boundary - 1))
+        sealed = {**release, "draft": False, "prerelease": True}
+        master_run = {**run, "head_branch": "master"}
+        self.assertTrue(ready(sealed, master_run))
+        self.assertFalse(ready(sealed, master_run, boundary - 1))
+        self.assertFalse(ready(sealed, run))
+        self.assertFalse(ready(sealed, {**master_run, "status": "in_progress"}))
+        self.assertFalse(ready({**sealed, "prerelease": False}, master_run))
+        self.assertFalse(
+            ready({**sealed, "assets": [{"name": "promotion.json"}]}, master_run)
+        )
         for field, value in (
             ("draft", False),
             ("author", {"login": "someone"}),

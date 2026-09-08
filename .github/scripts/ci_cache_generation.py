@@ -10,7 +10,6 @@ import re
 import subprocess
 import tempfile
 import time
-import urllib.request
 
 from ci_cache_image import (
     DRAFT_NAME,
@@ -202,10 +201,23 @@ def verify_proof(source, production=False):
     ).stdout
     proof = json.loads(canonical)
     if production:
-        with urllib.request.urlopen(
-            "https://app.cachix.org/api/v1/cache/whitestrake/pin", timeout=60
-        ) as response:
-            pins = json.loads(response.read(1024 * 1024))
+        pins = json.loads(
+            subprocess.check_output(
+                [
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    'source "$1"; cachix_fetch_pins whitestrake',
+                    "cachix-pins",
+                    str(
+                        Path(__file__).resolve().parents[2]
+                        / "modules/deployment/scripts/cachix-pin-functions.sh"
+                    ),
+                ],
+                timeout=60,
+            )
+        )
         matches = [pin for pin in pins if pin.get("name") == "successful-master-build"]
         require(
             len(matches) == 1
@@ -239,6 +251,10 @@ def load_generation(repo, release_id=None, production=None):
         repo, f"releases/{release_id}" if release_id else "releases/latest"
     )
     require(owned(release) and not release.get("draft"), "no complete owned generation")
+    require(
+        release_id is not None or not release.get("prerelease"),
+        "latest is an unpromoted candidate",
+    )
     if release_id is not None:
         require(release.get("id") == release_id, "release identity changed")
     require(
@@ -526,7 +542,7 @@ def seal(repo, release_id):
         repo,
         f"releases/{release_id}",
         "PATCH",
-        {"draft": False, "make_latest": "false"},
+        {"draft": False, "prerelease": True, "make_latest": "false"},
     )
     load_generation(repo, release_id, production=False)
     return {"releaseId": release_id}
@@ -609,6 +625,7 @@ def promote(repo, release_id):
         promotion_record(repo, latest, current)
         previous = latest["id"]
     require(previous != release["id"], "already promoted")
+    require(release.get("prerelease"), "candidate is not a prerelease")
     require(
         not any(a["name"] == "promotion.json" for a in release["assets"]),
         "promotion receipt already exists",
@@ -628,7 +645,12 @@ def promote(repo, release_id):
         (observed["id"] if observed else None) == (latest["id"] if latest else None),
         "latest changed before promotion",
     )
-    gh_api(repo, f"releases/{release['id']}", "PATCH", {"make_latest": "true"})
+    gh_api(
+        repo,
+        f"releases/{release['id']}",
+        "PATCH",
+        {"prerelease": False, "make_latest": "true"},
+    )
     return finish_promotion(repo, release)
 
 
@@ -657,11 +679,20 @@ def release_inventory(repo):
     raise ValueError("release inventory exceeds bound")
 
 
-def draft_ready(release, run, repo, now):
+def candidate_ready(release, run, repo, now):
     tag = re.fullmatch(r"ci-cache-v1-([0-9]+)([0-9]{3})", release.get("tag_name", ""))
     if not (
         tag
-        and release.get("draft")
+        and (
+            release.get("draft")
+            or (
+                release.get("prerelease")
+                and run.get("head_branch") == "master"
+                and not any(
+                    a["name"] == "promotion.json" for a in release.get("assets", [])
+                )
+            )
+        )
         and release.get("author", {}).get("login") in AUTHORS
     ):
         return False
@@ -690,20 +721,27 @@ def tag_ref(repo, tag):
         return None
 
 
-def prune_drafts(repo, execute=False):
+def prune_candidates(repo, execute=False):
     publisher = publisher_context(repo, os.environ["GITHUB_SHA"], False)
     removed = []
     for release in release_inventory(repo):
         tag = re.fullmatch(r"ci-cache-v1-([0-9]+)([0-9]{3})", release["tag_name"])
-        if not tag or not release["draft"] or int(tag[1]) == publisher:
+        if (
+            not tag
+            or not (release["draft"] or release["prerelease"])
+            or int(tag[1]) == publisher
+        ):
             continue
         try:
             # Read the latest attempt: an active rerun protects every draft of that run.
             run = gh_api(repo, f"actions/runs/{int(tag[1])}")
             release = gh_api(repo, f"releases/{release['id']}")
-            if not draft_ready(release, run, repo, time.time()):
+            if not candidate_ready(release, run, repo, time.time()):
                 continue
             candidates = [a for a in release["assets"] if a["name"] == "candidate.json"]
+            require(
+                release["draft"] or len(candidates) == 1, "missing candidate identity"
+            )
             if candidates:
                 require(len(candidates) == 1, "duplicate candidate identity")
                 candidate = json.loads(
@@ -713,31 +751,37 @@ def prune_drafts(repo, execute=False):
                     candidate["releaseId"] == release["id"]
                     and candidate["publisherRunId"] == run["id"]
                     and candidate["source"]["revision"] == run["head_sha"],
-                    "draft candidate identity mismatch",
+                    "candidate identity mismatch",
                 )
         except (ValueError, KeyError, subprocess.CalledProcessError) as error:
             print(
-                f"::warning ::Leaving unverifiable cache draft {release['id']}: {type(error).__name__}"
+                f"::warning ::Leaving unverifiable cache candidate {release['id']}: {type(error).__name__}"
             )
             continue
         if execute:
-            # Drafts are never promoted readers. Remove an exact tag first so a
+            # These candidates are not current. Remove the exact tag first so a
             # failed release deletion remains discoverable on the next sweep.
             ref = tag_ref(repo, release["tag_name"])
             if ref is not None:
                 require(
                     ref["object"]["type"] == "commit"
                     and ref["object"]["sha"] == run["head_sha"],
-                    "draft tag target changed",
+                    "candidate tag target changed",
                 )
                 gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
+            fresh = gh_api(repo, f"releases/{release['id']}")
             require(
-                gh_api(repo, f"releases/{release['id']}")["draft"],
-                "draft was published during cleanup",
+                fresh["draft"]
+                or (
+                    release["prerelease"]
+                    and fresh["prerelease"]
+                    and not any(a["name"] == "promotion.json" for a in fresh["assets"])
+                ),
+                "candidate was promoted during cleanup",
             )
             gh_api(repo, f"releases/{release['id']}", "DELETE")
         removed.append(release["id"])
-    return {"draftIds": removed, "executed": execute}
+    return {"candidateIds": removed, "executed": execute}
 
 
 def prune(repo, source, execute=False):
@@ -811,7 +855,7 @@ def main():
         "seal",
         "promote",
         "prune",
-        "prune-drafts",
+        "prune-candidates",
     ):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
@@ -847,8 +891,8 @@ def main():
         result = seal(args.repo, args.release_id)
     elif args.command == "promote":
         result = promote(args.repo, args.release_id)
-    elif args.command == "prune-drafts":
-        result = prune_drafts(args.repo, args.execute)
+    elif args.command == "prune-candidates":
+        result = prune_candidates(args.repo, args.execute)
     else:
         result = prune(args.repo, json.loads(args.source.read_text()), args.execute)
     print(json.dumps(result, separators=(",", ":")))

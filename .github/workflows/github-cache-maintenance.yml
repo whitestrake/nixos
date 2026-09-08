@@ -76,8 +76,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Retire abandoned cache drafts
-        run: python3 .github/scripts/ci_cache_generation.py prune-drafts --repo "$GITHUB_REPOSITORY" --execute
+      - name: Retire abandoned cache candidates
+        run: python3 .github/scripts/ci_cache_generation.py prune-candidates --repo "$GITHUB_REPOSITORY" --execute
       - uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
