@@ -57,7 +57,7 @@ jobs:
         id: records
         run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"
   source-checks:
-    name: Source checks
+    name: Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:

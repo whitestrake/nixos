@@ -35,30 +35,35 @@ PUBLISHER = ".github/workflows/github-cache-maintenance.yml"
 SOURCE_WORKFLOW = ".github/workflows/continuous-integration.yml"
 READERS = (
     {
+        "name": "Check x86_64-linux minimal",
         "component": "linux-seed-x86_64-linux",
         "system": "x86_64-linux",
         "runner": "ubuntu-24.04",
         "mode": "",
     },
     {
+        "name": "Check x86_64-linux full",
         "component": "linux-full-x86_64-linux",
         "system": "x86_64-linux",
         "runner": "ubuntu-24.04",
         "mode": "",
     },
     {
+        "name": "Check aarch64-linux full",
         "component": "linux-full-aarch64-linux",
         "system": "aarch64-linux",
         "runner": "ubuntu-24.04-arm",
         "mode": "",
     },
     {
+        "name": "Check aarch64-darwin dmg",
         "component": "darwin-image-aarch64-darwin",
         "system": "aarch64-darwin",
         "runner": "macos-26",
         "mode": "hot",
     },
     {
+        "name": "Check aarch64-darwin sparsebundle",
         "component": "darwin-maintenance-aarch64-darwin",
         "system": "aarch64-darwin",
         "runner": "macos-26",

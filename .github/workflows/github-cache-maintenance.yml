@@ -36,6 +36,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   planning:
+    name: Planning
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'master' && github.event.workflow_run.head_repository.full_name == github.repository)
@@ -133,6 +134,7 @@ jobs:
           path: ${{ runner.temp }}/plan
           retention-days: 7
   produce:
+    name: Build ${{ matrix.system }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 355
     needs: planning
@@ -233,6 +235,7 @@ jobs:
             "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
           fi
   seal:
+    name: Publishing
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs:
@@ -254,6 +257,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py seal --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" >/dev/null
   readers:
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     needs:
@@ -324,6 +328,7 @@ jobs:
             "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
           fi
   promote:
+    name: Promotion
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs:
