@@ -18,12 +18,24 @@ runs:
         sudo mkdir -p /tmp/nix-builds
         sudo chmod 1777 /tmp/nix-builds
 
+        if [ "$RUNNER_OS" = macOS ]; then
+          # The pinned installer's retry bound requires Bash 4.1+ errexit semantics.
+          bash_bin="$(brew --prefix bash)/bin"
+          case "$bash_bin" in /nix/*) exit 1 ;; esac
+          if [ ! -x "$bash_bin/bash" ]; then
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
+          fi
+          "$bash_bin/bash" -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 1) ))'
+          echo "$bash_bin" >> "$GITHUB_PATH"
+        fi
+
     - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
       with:
         nix_conf: |
           experimental-features = nix-command flakes
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
+          auto-optimise-store = false
           build-dir = /tmp/nix-builds
           connect-timeout = 10
           download-attempts = 2

@@ -1,0 +1,113 @@
+name: Prepare Darwin CI store
+description: Mount the selected native image or reconstruct a cold sparsebundle.
+inputs:
+  mode:
+    description: hot, eager or maintenance
+    default: hot
+  extra-nix-conf:
+    description: Additional ordinary installer configuration
+    default: ""
+  configure-cachix:
+    description: Run the ordinary Cachix action
+    default: "false"
+  cachix-auth-token:
+    description: Optional Cachix authentication
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Disable Apple crash reporters before mounting
+      shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" != macOS ] || [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+          exit 0
+        fi
+        # ReportCrash can retain failed processes and prevent clean /nix detachment.
+        user_service="gui/$(id -u)/com.apple.ReportCrash"
+        root_service="system/com.apple.ReportCrash.Root"
+        /bin/launchctl print "$user_service" >/dev/null
+        sudo /bin/launchctl print "$root_service" >/dev/null
+        /bin/launchctl bootout "$user_service"
+        sudo /bin/launchctl bootout "$root_service"
+        if /bin/launchctl print "$user_service" >/dev/null 2>&1 ||
+          sudo /bin/launchctl print "$root_service" >/dev/null 2>&1; then
+          echo "::error ::Apple crash reporter remained loaded"
+          exit 1
+        fi
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DARWIN_MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        trap 'echo "CI_DARWIN_PREPARE_COMPLETE durationSeconds=$SECONDS"' EXIT
+        host_python="$(command -v python3)"
+        case "$host_python" in /nix/*) exit 1 ;; esac
+        echo "HOST_PYTHON=$host_python" >> "$GITHUB_ENV"
+        for tool in gh gtar zstd; do
+          if ! command -v "$tool" >/dev/null; then
+            case "$tool" in gtar) brew install gnu-tar ;; *) brew install "$tool" ;; esac
+          fi
+          case "$(command -v "$tool")" in /nix/*) exit 1 ;; esac
+        done
+        if [ -f "$RUNNER_TEMP/selection.json" ]; then
+          "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" \
+            --repo "$GITHUB_REPOSITORY" --selection "$RUNNER_TEMP/selection.json" --mode "$DARWIN_MODE"
+        else
+          "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" --mode cold
+        fi
+    - name: Install Nix
+      id: install
+      continue-on-error: true
+      uses: ./.github/actions/install-nix
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+    - name: Select cached Cachix
+      id: cachix-bin
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
+      shell: bash
+      run: |
+        cached=/nix/var/nix/gcroots/github-ci/aarch64-darwin/cachix/bin/cachix
+        if [ -x "$cached" ] && cached="$(cd -P "${cached%/*}" && pwd)/cachix"; then
+          echo "path=$cached" >> "$GITHUB_OUTPUT"
+          echo "${cached%/*}" >> "$GITHUB_PATH"
+        fi
+    - name: Configure Cachix
+      id: cachix
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
+      continue-on-error: true
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: whitestrake
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipPush: true
+        cachixBin: ${{ steps.cachix-bin.outputs.path }}
+    - name: Classify setup and recover confirmed hot backing failure
+      id: recovery
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INSTALL_OUTCOME: ${{ steps.install.outcome }}
+        CACHIX_OUTCOME: ${{ steps.cachix.outcome }}
+        CONFIGURE_CACHIX: ${{ inputs.configure-cachix }}
+      run: |
+        set -euo pipefail
+        "$HOST_PYTHON" .github/scripts/ci_darwin.py recover-setup --state "$RUNNER_TEMP/darwin"
+    - name: Install Nix after clean recovery
+      if: steps.recovery.outputs.recovered == 'true'
+      uses: ./.github/actions/install-nix
+      with:
+        extra-nix-conf: ${{ inputs.extra-nix-conf }}
+    - name: Configure Cachix after clean recovery
+      if: steps.recovery.outputs.recovered == 'true' && inputs.configure-cachix == 'true'
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: whitestrake
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipPush: true
+        cachixBin: ${{ steps.cachix-bin.outputs.path }}
+    - name: Validate restored runtime after ordinary setup
+      if: steps.recovery.outputs.recovered == 'true'
+      shell: bash
+      run: '"$HOST_PYTHON" .github/scripts/ci_darwin.py ready --state "$RUNNER_TEMP/darwin"'

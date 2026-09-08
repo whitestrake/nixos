@@ -223,13 +223,14 @@ class CheckPublisher:
                 self.outstanding.pop(attr, None)
 
 
-def run(command, publisher, build_hook):
+def run(command, publisher, build_hook, deferred=None):
     process = subprocess.Popen(
         [*command, "--stream-json-lines"],
         stdout=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
+    events = []
     interrupted = False
     hook_failed = False
     active_hook = None
@@ -286,7 +287,9 @@ def run(command, publisher, build_hook):
                         file=sys.stderr,
                     )
                     continue
-                if publisher is not None:
+                if deferred is not None:
+                    events.append(event)
+                elif publisher is not None:
                     publisher.handle(event)
                 if (
                     build_hook is not None
@@ -314,31 +317,66 @@ def run(command, publisher, build_hook):
                         active_hook = None
         return_code = process.wait()
     finally:
+        # NFB and hooks may leave Cachix descendants after their leader exits.
+        for pgid in process_groups:
+            signal_process_group(pgid, signal.SIGTERM)
+        deadline = time.monotonic() + 1
+        while (
+            any(signal_process_group(pgid, 0) for pgid in process_groups)
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        for pgid in process_groups:
+            signal_process_group(pgid, signal.SIGKILL)
+        process.wait()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
     conclusion = (
-        "cancelled" if interrupted else "success" if return_code == 0 else "failure"
+        "cancelled"
+        if interrupted
+        else "success"
+        if return_code == 0 and not hook_failed
+        else "failure"
     )
-    if publisher is not None:
+    if deferred is not None:
+        with open(deferred, "x") as stream:
+            json.dump({"events": events, "conclusion": conclusion}, stream)
+    elif publisher is not None:
         publisher.finalize(conclusion)
     if hook_failed:
         print("::error::One or more nix-fast-build hooks failed", file=sys.stderr)
     return return_code, hook_failed
 
 
+def replay_checks(publisher, path):
+    with open(path) as stream:
+        journal = json.load(stream)
+    for event in journal["events"]:
+        publisher.handle(event)
+    publisher.finalize(journal["conclusion"])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-checks", action="store_true")
     parser.add_argument("--build-hook")
+    parser.add_argument("--defer-checks")
+    parser.add_argument("--replay-checks")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    if args.command[:1] != ["--"] or len(args.command) == 1:
+    if not args.replay_checks and (
+        args.command[:1] != ["--"] or len(args.command) == 1
+    ):
         parser.error("a nix-fast-build command is required after --")
     args.command = args.command[1:]
+    if args.publish_checks and os.environ.get("CI_DARWIN_ATTEMPT_DIR"):
+        args.defer_checks = os.path.join(
+            os.environ["CI_DARWIN_ATTEMPT_DIR"], "checks.json"
+        )
 
     publisher = None
-    if args.publish_checks:
+    if args.publish_checks or args.replay_checks:
         repository = os.environ.get("GITHUB_REPOSITORY", "")
         run_id = os.environ.get("GITHUB_RUN_ID", "")
         attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
@@ -354,7 +392,12 @@ def main():
             run_id,
             attempt,
         )
-    return_code, hook_failed = run(args.command, publisher, args.build_hook)
+    if args.replay_checks:
+        replay_checks(publisher, args.replay_checks)
+        return 0
+    return_code, hook_failed = run(
+        args.command, publisher, args.build_hook, args.defer_checks
+    )
     if return_code < 0:
         os.kill(os.getpid(), -return_code)
     return return_code or hook_failed

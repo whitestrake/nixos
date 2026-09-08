@@ -8,15 +8,56 @@ on:
       - opened
       - reopened
       - synchronize
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open same-repository pull request against master
+        required: true
+        type: string
+      cache_release_id:
+        description: Optional pinned Release ID for eager readers
+        default: ""
+        type: string
 
 concurrency:
-  group: package-report-pr-${{ github.event.pull_request.number }}
+  group: package-report-pr-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
+  context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      base: ${{ steps.pr.outputs.base }}
+      head: ${{ steps.pr.outputs.head }}
+      number: ${{ steps.pr.outputs.number }}
+    steps:
+      - name: Resolve and validate current pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg base "$EVENT_BASE" --arg head "$EVENT_HEAD" '
+            .state == "open" and .base.ref == "master" and .head.repo.full_name == $repo and
+            ($base == "" or .base.sha == $base) and ($head == "" or .head.sha == $head)
+          ' <<< "$pr" >/dev/null
+          {
+            echo "base=$(jq -r .base.sha <<< "$pr")"
+            echo "head=$(jq -r .head.sha <<< "$pr")"
+            echo "number=$PR_NUMBER"
+          } >> "$GITHUB_OUTPUT"
   compile:
     name: "Build ${{ matrix.system }}"
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: context
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 355
     permissions:
@@ -29,30 +70,15 @@ jobs:
         include:
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
-            cacheKind: ext4
-            imageSize: 32G
-            imageDir: nix-root-ci-aarch64-linux
-            cachePrefix: nix-root-ci-aarch64-linux-ext4-v1
           - system: x86_64-linux
             runner: ubuntu-24.04
-            cacheKind: ext4
-            imageSize: 32G
-            imageDir: nix-root-ci-x86_64-linux
-            cachePrefix: nix-root-ci-x86_64-linux-ext4-v1
           - system: aarch64-darwin
             runner: macos-26
-            cacheKind: sparsebundle
-            imageSize: 64g
-            imageDir: nix-root-ci-aarch64-darwin
-            cachePrefix: nix-root-ci-aarch64-darwin-sparsebundle-v1
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      NIX_ROOT_CACHE_KEY_PREFIX: ${{ matrix.cachePrefix }}
-      NIX_ROOT_IMAGE_DIR_NAME: ${{ matrix.imageDir }}
-      NIX_ROOT_IMAGE_SIZE: ${{ matrix.imageSize }}
+      BASE_SHA: ${{ needs.context.outputs.base }}
+      HEAD_SHA: ${{ needs.context.outputs.head }}
       NIX_ROOT_SYSTEM: ${{ matrix.system }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
       - name: Checkout pull request head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -81,39 +107,24 @@ jobs:
             exit 1
           fi
 
-      - name: Restore ext4 Nix root cache
-        if: ${{ matrix.cacheKind == 'ext4' }}
-        uses: ./.github/actions/nix-ext4-cache-restore
+      - uses: ./.github/actions/ci-cache-select
         with:
-          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Restore sparsebundle Nix root cache
-        if: ${{ matrix.cacheKind == 'sparsebundle' }}
-        uses: ./.github/actions/nix-sparsebundle-cache-restore
+          release-id: ${{ inputs.cache_release_id }}
+      - uses: ./.github/actions/ci-cache-restore
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
-          cache-key-prefix: ${{ env.NIX_ROOT_CACHE_KEY_PREFIX }}
-          image-dir-name: ${{ env.NIX_ROOT_IMAGE_DIR_NAME }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Mount ext4 Nix root
-        if: ${{ matrix.cacheKind == 'ext4' }}
-        uses: ./.github/actions/nix-ext4-mount
+          component: linux-full-${{ matrix.system }}
+          extra-nix-conf: |
+            narinfo-cache-negative-ttl = 0
+            max-jobs = auto
+            extra-substituters = https://whitestrake.cachix.org?priority=50
+            extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
+      - uses: ./.github/actions/ci-darwin-prepare
+        if: runner.os == 'macOS'
         with:
-          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Mount sparsebundle Nix root
-        if: ${{ matrix.cacheKind == 'sparsebundle' }}
-        uses: ./.github/actions/nix-sparsebundle-mount
-        with:
-          image-size: ${{ env.NIX_ROOT_IMAGE_SIZE }}
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-        with:
+          mode: eager
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0
             max-jobs = auto
@@ -147,14 +158,26 @@ jobs:
             printf 'records=%s\n' "$records"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare report tool and accepted baseline
+        timeout-minutes: 45
+        env:
+          BASELINE_RECORDS: ${{ steps.proof.outputs.records }}
+        run: |
+          set -euo pipefail
+          dix="$(nix build --inputs-from . --option builders '' --option max-jobs 0 --no-link --print-out-paths nixpkgs-unstable#dix)"
+          echo "DIX_BIN=$dix/bin/dix" >> "$GITHUB_ENV"
+          paths=()
+          while IFS= read -r path; do paths+=("$path"); done <<< "$(jq -er '.[].storePath' <<< "$BASELINE_RECORDS")"
+          nix-store --realise --option builders '' --option max-jobs 0 "${paths[@]}"
       - name: Build and report CI lane
-        uses: ./.github/actions/nix-root-build
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-          package-report: true
-          baseline-records-json: ${{ steps.proof.outputs.records }}
-          proof-store-path: ${{ steps.proof.outputs.proof_store_path }}
-          proof-revision: ${{ steps.proof.outputs.proof_revision }}
+        timeout-minutes: 30
+        env:
+          CI_LANE_SYSTEM: ${{ env.NIX_ROOT_SYSTEM }}
+          CI_BASELINE_RECORDS_JSON: ${{ steps.proof.outputs.records }}
+          CI_PROOF_STORE_PATH: ${{ steps.proof.outputs.proof_store_path }}
+          CI_PROOF_REVISION: ${{ steps.proof.outputs.proof_revision }}
+          CI_PACKAGE_REPORT_DIR: ${{ runner.temp }}/ci-package-reports
+        run: bash .github/scripts/ci-nfb.sh "$CI_LANE_SYSTEM" "$CI_LANE_SYSTEM"
 
       - name: Upload package reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -164,18 +187,25 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+      - name: Detach Darwin store
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -d "$RUNNER_TEMP/darwin" ]; then
+            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
+          fi
+
   publish:
     name: "Publish"
-    needs: compile
+    needs: [context, compile]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
       pull-requests: write
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ needs.context.outputs.base }}
+      HEAD_SHA: ${{ needs.context.outputs.head }}
+      PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
       - name: Checkout reporter
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
