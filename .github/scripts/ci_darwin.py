@@ -513,13 +513,7 @@ def filesystem_gate(path):
         command("hdiutil", "detach", whole, timeout=120)
     after = image.file_sha256(path)
     image.require(before == after, "filesystem validation changed image")
-    return {
-        "imageSha256": before,
-        "imageSha256Before": before,
-        "imageSha256After": after,
-        "fsck": "fsck_hfs -fn",
-        "fsckStatus": 0,
-    }
+    return {"imageSha256": before}
 
 
 def validate_hot(exported, manifest, hot, directory):

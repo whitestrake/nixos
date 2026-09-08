@@ -115,8 +115,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         with:
-          repository: ${{ github.repository }}
-          selection: ${{ runner.temp }}/selection.json
           component: linux-full-${{ matrix.system }}
           extra-nix-conf: |
             narinfo-cache-negative-ttl = 0

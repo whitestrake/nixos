@@ -44,8 +44,6 @@ jobs:
           release-id: ${{ inputs.cache_release_id }}
       - uses: ./.github/actions/ci-cache-restore
         with:
-          repository: ${{ github.repository }}
-          selection: ${{ runner.temp }}/selection.json
           component: linux-seed-x86_64-linux
       - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
@@ -80,8 +78,6 @@ jobs:
           release-id: ${{ inputs.cache_release_id }}
       - uses: ./.github/actions/ci-cache-restore
         with:
-          repository: ${{ github.repository }}
-          selection: ${{ runner.temp }}/selection.json
           component: linux-seed-x86_64-linux
       - name: Build Source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux

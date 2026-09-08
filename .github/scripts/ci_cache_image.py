@@ -182,13 +182,7 @@ def validate_manifest(manifest, require_assets=True):
     ):
         gate = manifest.get("filesystemGate", {})
         require(
-            all(
-                gate.get(key) == manifest["imageSha256"]
-                for key in ("imageSha256", "imageSha256Before", "imageSha256After")
-            )
-            and gate.get("fsck") == "fsck_hfs -fn"
-            and type(gate.get("fsckStatus")) is int
-            and gate["fsckStatus"] == 0,
+            gate.get("imageSha256") == manifest["imageSha256"],
             "missing exact-image filesystem gate",
         )
     block_size = manifest.get("blockSize")
@@ -872,11 +866,6 @@ def main():
     pack.add_argument("--image", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
     pack.add_argument("--coverage", required=True, type=Path)
-    hot = commands.add_parser("pack-hot")
-    hot.add_argument("--image", required=True, type=Path)
-    hot.add_argument("--manifest", required=True, type=Path)
-    hot.add_argument("--profile", required=True, type=Path)
-    hot.add_argument("--output", required=True, type=Path)
     for name in ("eager", "serve"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
@@ -893,8 +882,6 @@ def main():
         result = pack_image(
             args.image, args.output, coverage=json.loads(args.coverage.read_text())
         )
-    elif args.command == "pack-hot":
-        result = pack_hot(args.image, args.manifest, args.profile, args.output)
     elif args.command == "serve-local":
         result = serve_local(
             args.image, args.manifest, args.directory, args.ready, args.profile

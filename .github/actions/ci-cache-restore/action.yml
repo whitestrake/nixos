@@ -2,12 +2,6 @@ name: "Prepare Linux CI store"
 description: "Restore an optional frozen Linux image or install a clean Nix store."
 
 inputs:
-  repository:
-    description: "GitHub owner/repository containing the cache release."
-    required: true
-  selection:
-    description: "Frozen generation selection JSON."
-    required: true
   component:
     description: "Frozen Linux component name."
     required: true
@@ -24,8 +18,6 @@ runs:
       shell: bash
       env:
         CI_LINUX_COMPONENT: ${{ inputs.component }}
-        CI_LINUX_REPOSITORY: ${{ inputs.repository }}
-        CI_LINUX_SELECTION: ${{ inputs.selection }}
       run: |
         set -euo pipefail
         [ ! -e /nix ] || { echo "::error ::/nix already exists before Linux store preparation"; exit 1; }
@@ -34,8 +26,8 @@ runs:
           echo "::error ::Linux restore directory already exists: $directory"
           exit 1
         }
-        if [ -f "$CI_LINUX_SELECTION" ] && bash .github/scripts/ci-linux-image.sh restore-mount \
-          "$CI_LINUX_REPOSITORY" "$CI_LINUX_SELECTION" "$CI_LINUX_COMPONENT" \
+        if [ -f "$RUNNER_TEMP/selection.json" ] && bash .github/scripts/ci-linux-image.sh restore-mount \
+          "$GITHUB_REPOSITORY" "$RUNNER_TEMP/selection.json" "$CI_LINUX_COMPONENT" \
           "$directory"; then
           {
             echo "restored=true"

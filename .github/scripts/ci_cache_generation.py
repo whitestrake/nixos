@@ -676,6 +676,15 @@ def draft_ready(release, run, repo, now):
     )
 
 
+def tag_ref(repo, tag):
+    try:
+        return gh_api(repo, f"git/ref/tags/{tag}")
+    except subprocess.CalledProcessError as error:
+        if b"HTTP 404" not in (error.stderr or b""):
+            raise
+        return None
+
+
 def prune_drafts(repo, execute=False):
     publisher = publisher_context(repo, os.environ["GITHUB_SHA"], False)
     removed = []
@@ -709,12 +718,8 @@ def prune_drafts(repo, execute=False):
         if execute:
             # Drafts are never promoted readers. Remove an exact tag first so a
             # failed release deletion remains discoverable on the next sweep.
-            try:
-                ref = gh_api(repo, f"git/ref/tags/{release['tag_name']}")
-            except subprocess.CalledProcessError as error:
-                if b"HTTP 404" not in (error.stderr or b""):
-                    raise
-            else:
+            ref = tag_ref(repo, release["tag_name"])
+            if ref is not None:
                 require(
                     ref["object"]["type"] == "commit"
                     and ref["object"]["sha"] == run["head_sha"],
@@ -762,11 +767,14 @@ def prune(repo, source, execute=False):
         release = next(r for r in releases if r["id"] == release_id)
         record = promotion_record(repo, release, retired)
         require(record["promotedAt"] <= current["promotedAt"], "newer promotion found")
-        tag = gh_api(repo, f"git/ref/tags/{release['tag_name']}")
+        tag = tag_ref(repo, release["tag_name"])
         require(
-            tag.get("ref") == "refs/tags/" + release["tag_name"]
-            and tag.get("object", {}).get("type") == "commit"
-            and tag["object"]["sha"] == retired["source"]["revision"],
+            tag is None
+            or (
+                tag.get("ref") == "refs/tags/" + release["tag_name"]
+                and tag.get("object", {}).get("type") == "commit"
+                and tag["object"]["sha"] == retired["source"]["revision"]
+            ),
             "tag target does not match generation",
         )
         tag_targets[release_id] = tag
@@ -778,12 +786,13 @@ def prune(repo, source, execute=False):
             )
             release = next(r for r in releases if r["id"] == release_id)
             require(
-                gh_api(repo, f"git/ref/tags/{release['tag_name']}")
-                == tag_targets[release_id],
+                tag_ref(repo, release["tag_name"]) == tag_targets[release_id],
                 "tag changed before retirement",
             )
+            # Keep the Release discoverable if deletion is interrupted after its tag.
+            if tag_targets[release_id] is not None:
+                gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
             gh_api(repo, f"releases/{release_id}", "DELETE")
-            gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
     return {"releaseIds": planned, "executed": execute}
 
 

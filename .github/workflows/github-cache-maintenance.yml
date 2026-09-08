@@ -176,8 +176,6 @@ jobs:
       - if: runner.os == 'Linux'
         uses: ./.github/actions/ci-cache-restore
         with:
-          repository: ${{ github.repository }}
-          selection: ${{ runner.temp }}/selection.json
           component: linux-full-${{ matrix.system }}
           extra-nix-conf: |
             extra-substituters = https://whitestrake.cachix.org?priority=50
@@ -292,8 +290,6 @@ jobs:
       - if: runner.os == 'Linux'
         uses: ./.github/actions/ci-cache-restore
         with:
-          repository: ${{ github.repository }}
-          selection: ${{ runner.temp }}/selection.json
           component: ${{ matrix.component }}
       - if: runner.os == 'macOS'
         uses: ./.github/actions/ci-darwin-prepare
