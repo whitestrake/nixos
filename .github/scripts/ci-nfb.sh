@@ -29,13 +29,21 @@ wrapper=("${HOST_PYTHON:-python3}" .github/scripts/nix_fast_build.py)
 if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then wrapper+=(--publish-checks); fi
 if [ -n "${CI_PACKAGE_REPORT_DIR:-}" ]; then wrapper+=(--build-hook .github/scripts/nix_fast_build_package_report.py); fi
 options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto)
+flake=".#ci.$projection"
 case "$projection" in
-  linux-hosts) options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --option max-jobs 2) ;;
+  linux-hosts)
+    flake='.#ci.linux'
+    options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --option max-jobs 2 --select 'ci: { inherit (ci) nixosConfigurations; }')
+    ;;
+  linux-checks)
+    flake='.#ci.linux'
+    options+=(--select 'ci: { inherit (ci) checks; }')
+    ;;
   darwin)
     if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then options+=(--cachix-cache whitestrake); fi
     ;;
 esac
-"${wrapper[@]}" -- "${nfb[@]}" --flake ".#ci.$projection" "${options[@]}" \
+"${wrapper[@]}" -- "${nfb[@]}" --flake "$flake" "${options[@]}" \
   --retries 2 --result-file "$result_dir/results.json" -j 50
 [ "$projection" != linux-checks ] || exit 0
 jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_dir/results.json" > "$result_dir/records.json"
