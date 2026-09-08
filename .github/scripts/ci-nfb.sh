@@ -27,6 +27,7 @@ if [ "${#nfb[@]}" -eq 0 ]; then
 fi
 wrapper=("${HOST_PYTHON:-python3}" .github/scripts/nix_fast_build.py)
 if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then wrapper+=(--publish-checks); fi
+if [ -n "${CI_PACKAGE_REPORT_DIR:-}" ]; then wrapper+=(--build-hook .github/scripts/nix_fast_build_package_report.py); fi
 options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto)
 case "$projection" in
   linux-hosts) options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --option max-jobs 2) ;;

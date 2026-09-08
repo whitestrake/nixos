@@ -1,6 +1,8 @@
 name: CI
 on:
   push:
+    branches: ['**']
+    tags-ignore: ['ci-cache-v1-*']
   workflow_dispatch:
     inputs:
       cache_mode:

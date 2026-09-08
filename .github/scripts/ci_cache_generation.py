@@ -2,6 +2,7 @@
 """Immutable complete Release generations, authenticated through GitHub Actions."""
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -66,6 +67,7 @@ READERS = (
 )
 COMPONENTS = tuple(reader["component"] for reader in READERS)
 GRACE = 24 * 60 * 60
+AUTHORS = {"whitestrake[bot]", "github-actions[bot]"}
 
 
 def owned(release):
@@ -235,7 +237,7 @@ def load_generation(repo, release_id=None, production=None):
     if release_id is not None:
         require(release.get("id") == release_id, "release identity changed")
     require(
-        release.get("author", {}).get("login") == "github-actions[bot]",
+        release.get("author", {}).get("login") in AUTHORS,
         "unexpected release owner",
     )
     assets = [a for a in release["assets"] if a.get("name") == MANIFEST]
@@ -343,7 +345,7 @@ def candidate(repo, release_id):
         "not an owned draft",
     )
     require(
-        release.get("author", {}).get("login") == "github-actions[bot]",
+        release.get("author", {}).get("login") in AUTHORS,
         "unexpected release owner",
     )
     assets = [a for a in release["assets"] if a["name"] == "candidate.json"]
@@ -389,6 +391,7 @@ def begin(repo, source, coverage):
             "prerelease": False,
             "make_latest": "false",
         },
+        token=os.environ["RELEASE_TOKEN"],
     )
     plan["releaseId"] = release["id"]
     with tempfile.TemporaryDirectory() as temporary:
@@ -639,6 +642,94 @@ def retirement_plan(releases, current, now):
     )
 
 
+def release_inventory(repo):
+    releases = []
+    for page in range(1, 101):
+        batch = gh_api(repo, f"releases?per_page=100&page={page}")
+        releases.extend(batch)
+        if len(batch) < 100:
+            return releases
+    raise ValueError("release inventory exceeds bound")
+
+
+def draft_ready(release, run, repo, now):
+    tag = re.fullmatch(r"ci-cache-v1-([0-9]+)([0-9]{3})", release.get("tag_name", ""))
+    if not (
+        tag
+        and release.get("draft")
+        and release.get("author", {}).get("login") in AUTHORS
+    ):
+        return False
+    return (
+        run.get("id") == int(tag[1])
+        and run.get("run_attempt", 0) >= int(tag[2]) > 0
+        and run.get("status") == "completed"
+        and run.get("path") == PUBLISHER
+        and run.get("head_repository", {}).get("full_name") == repo
+        and run.get("head_sha") == release.get("target_commitish")
+        and now
+        - max(
+            datetime.fromisoformat(value).timestamp()
+            for value in (release["updated_at"], run["updated_at"])
+        )
+        >= GRACE
+    )
+
+
+def prune_drafts(repo, execute=False):
+    publisher = publisher_context(repo, os.environ["GITHUB_SHA"], False)
+    removed = []
+    for release in release_inventory(repo):
+        tag = re.fullmatch(r"ci-cache-v1-([0-9]+)([0-9]{3})", release["tag_name"])
+        if not tag or not release["draft"] or int(tag[1]) == publisher:
+            continue
+        try:
+            # Read the latest attempt: an active rerun protects every draft of that run.
+            run = gh_api(repo, f"actions/runs/{int(tag[1])}")
+            release = gh_api(repo, f"releases/{release['id']}")
+            if not draft_ready(release, run, repo, time.time()):
+                continue
+            candidates = [a for a in release["assets"] if a["name"] == "candidate.json"]
+            if candidates:
+                require(len(candidates) == 1, "duplicate candidate identity")
+                candidate = json.loads(
+                    asset_body(repo, release, identity(candidates[0]), 65536)
+                )
+                require(
+                    candidate["releaseId"] == release["id"]
+                    and candidate["publisherRunId"] == run["id"]
+                    and candidate["source"]["revision"] == run["head_sha"],
+                    "draft candidate identity mismatch",
+                )
+        except (ValueError, KeyError, subprocess.CalledProcessError) as error:
+            print(
+                f"::warning ::Leaving unverifiable cache draft {release['id']}: {type(error).__name__}"
+            )
+            continue
+        if execute:
+            # Drafts are never promoted readers. Remove an exact tag first so a
+            # failed release deletion remains discoverable on the next sweep.
+            try:
+                ref = gh_api(repo, f"git/ref/tags/{release['tag_name']}")
+            except subprocess.CalledProcessError as error:
+                if b"HTTP 404" not in (error.stderr or b""):
+                    raise
+            else:
+                require(
+                    ref["object"]["type"] == "commit"
+                    and ref["object"]["sha"] == run["head_sha"],
+                    "draft tag target changed",
+                )
+                gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
+            require(
+                gh_api(repo, f"releases/{release['id']}")["draft"],
+                "draft was published during cleanup",
+            )
+            gh_api(repo, f"releases/{release['id']}", "DELETE")
+        removed.append(release["id"])
+    return {"draftIds": removed, "executed": execute}
+
+
 def prune(repo, source, execute=False):
     validate_source(source)
     run_id = publisher_context(repo, source["revision"], True)
@@ -663,14 +754,7 @@ def prune(repo, source, execute=False):
             return {"releaseIds": [], "executed": False}
         finish_promotion(repo, latest, recovery_run=run_id)
     current = promotion_record(repo, latest, generation)
-    releases = []
-    for page in range(1, 101):
-        batch = gh_api(repo, f"releases?per_page=100&page={page}")
-        releases.extend(batch)
-        if len(batch) < 100:
-            break
-    else:
-        raise ValueError("release inventory exceeds bound")
+    releases = release_inventory(repo)
     planned = retirement_plan(releases, current, int(time.time()))
     tag_targets = {}
     for release_id in planned:
@@ -706,7 +790,15 @@ def prune(repo, source, execute=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("resolve", "begin", "upload-component", "seal", "promote", "prune"):
+    for name in (
+        "resolve",
+        "begin",
+        "upload-component",
+        "seal",
+        "promote",
+        "prune",
+        "prune-drafts",
+    ):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
         if name == "resolve":
@@ -721,7 +813,8 @@ def main():
                 command.add_argument("--component", required=True, choices=COMPONENTS)
                 command.add_argument("--directory", required=True, type=Path)
         else:
-            command.add_argument("--source", required=True, type=Path)
+            if name == "prune":
+                command.add_argument("--source", required=True, type=Path)
             command.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     if args.command == "resolve":
@@ -740,6 +833,8 @@ def main():
         result = seal(args.repo, args.release_id)
     elif args.command == "promote":
         result = promote(args.repo, args.release_id)
+    elif args.command == "prune-drafts":
+        result = prune_drafts(args.repo, args.execute)
     else:
         result = prune(args.repo, json.loads(args.source.read_text()), args.execute)
     print(json.dumps(result, separators=(",", ":")))

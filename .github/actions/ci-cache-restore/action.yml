@@ -34,13 +34,12 @@ runs:
           echo "::error ::Linux restore directory already exists: $directory"
           exit 1
         }
-        result="$RUNNER_TEMP/ci-linux-restore-$$.json"
         if [ -f "$CI_LINUX_SELECTION" ] && bash .github/scripts/ci-linux-image.sh restore-mount \
           "$CI_LINUX_REPOSITORY" "$CI_LINUX_SELECTION" "$CI_LINUX_COMPONENT" \
-          "$directory" > "$result"; then
+          "$directory"; then
           {
             echo "restored=true"
-            echo "image=$(jq -er .image "$result")"
+            echo "image=$directory/image.dmg"
             echo "directory=$directory"
           } >> "$GITHUB_OUTPUT"
         else
@@ -52,7 +51,6 @@ runs:
             echo "directory=$directory"
           } >> "$GITHUB_OUTPUT"
         fi
-        rm -f "$result"
 
     - name: Install Nix
       id: install

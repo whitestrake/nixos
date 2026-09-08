@@ -142,6 +142,51 @@ class CacheCheck(unittest.TestCase):
         current.update(releaseId=5, previousId=4, promotedAt=at_grace)
         self.assertEqual(generation.retirement_plan(releases, current, at_grace), [])
 
+    def test_draft_cleanup_requires_owned_finished_work_and_grace(self):
+        updated = "2026-09-08T00:00:00Z"
+        release = {
+            "tag_name": "ci-cache-v1-123001",
+            "draft": True,
+            "author": {"login": "whitestrake[bot]"},
+            "target_commitish": "a" * 40,
+            "updated_at": updated,
+        }
+        run = {
+            "id": 123,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "path": generation.PUBLISHER,
+            "head_repository": {"full_name": "owner/repo"},
+            "head_sha": "a" * 40,
+            "updated_at": updated,
+        }
+        boundary = (
+            generation.datetime.fromisoformat(updated).timestamp() + generation.GRACE
+        )
+
+        def ready(r, w, t=boundary):
+            return generation.draft_ready(r, w, "owner/repo", t)
+
+        self.assertTrue(
+            ready(release, run)
+        )  # Successful rerun leaves the older draft eligible.
+        self.assertFalse(ready(release, run, boundary - 1))
+        for field, value in (
+            ("draft", False),
+            ("author", {"login": "someone"}),
+            ("tag_name", "unrelated-123001"),
+            ("target_commitish", "b" * 40),
+        ):
+            self.assertFalse(ready({**release, field: value}, run))
+        for field, value in (
+            ("status", "in_progress"),
+            ("id", 124),
+            ("path", "other.yml"),
+            ("run_attempt", 0),
+        ):
+            self.assertFalse(ready(release, {**run, field: value}))
+
 
 if __name__ == "__main__":
     unittest.main()

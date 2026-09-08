@@ -139,7 +139,6 @@ def plan(directory, proof_path, run_id, release_id=None):
             ".github/scripts/ci-nfb.sh",
             ".github/actions/ci-darwin-prepare/action.yml",
             ".github/actions/install-nix/action.yml",
-            ".github/actions/nix-root-build/action.yml",
         )
     }
     definitions["cachix-action"] = "38b082610b782e7e93e209c35fd730d399dee866"
@@ -206,6 +205,67 @@ def verify(coverage, system, deep=False):
         )
 
 
+def retain(coverage, records, system):
+    roots = Path("/nix/var/nix/gcroots/github-ci") / system
+    desired = {}
+    for record in records:
+        name, path = record["name"], record["storePath"]
+        image.require(
+            re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", name)
+            and name != "nix-fast-build"
+            and not name.startswith("flake-input-")
+            and name not in desired
+            and STORE_PATH.fullmatch(path),
+            "unsafe or duplicate host root",
+        )
+        desired[name] = path
+    nfb = run(
+        "nix",
+        "build",
+        "--no-link",
+        "--print-out-paths",
+        "--option",
+        "builders",
+        "",
+        "--option",
+        "max-jobs",
+        "auto",
+        f".#packages.{system}.nix-fast-build",
+    )
+    image.require(
+        nfb == coverage["tools"]["nix-fast-build/" + system], "tool differs from plan"
+    )
+    desired["nix-fast-build"] = nfb
+    # Materialise the checkout's inputs; the authenticated plan owns their selection.
+    run("nix", "flake", "archive", "--json", "path:.")
+    for path in coverage["inputs"].values():
+        match = STORE_PATH.fullmatch(path)
+        image.require(match is not None, "unsafe planned input")
+        desired["flake-input-" + match[1]] = path
+    run("nix", "path-info", *desired.values())
+    roots.mkdir(parents=True, exist_ok=True)
+    for name, path in desired.items():
+        target = roots / name
+        image.require(
+            not target.exists() or target.is_symlink(),
+            "refusing to replace a non-symlink root",
+        )
+        temporary = roots / f".{name}.{os.getpid()}"
+        temporary.symlink_to(path)
+        temporary.replace(target)
+    for path in roots.iterdir():
+        if path.is_symlink() and path.name not in desired:
+            path.unlink()
+    legacy = Path("/nix/var/nix/gcroots/ghci-cache-lanes") / system
+    if legacy.is_dir():
+        for path in legacy.iterdir():
+            if path.is_symlink():
+                path.unlink()
+        if not any(legacy.iterdir()):
+            legacy.rmdir()
+    print(f"CI_ROOTS_RETAINED system={system} count={len(desired)}")
+
+
 def reader(selection_path, component, deep=False):
     selection = generation.read_selection(
         selection_path, os.environ["GITHUB_REPOSITORY"]
@@ -264,9 +324,10 @@ def main():
     p.add_argument("proof")
     p.add_argument("run_id", type=int)
     p.add_argument("--release-id", type=int)
-    p = sub.add_parser("bind")
-    p.add_argument("directory", type=Path)
+    p = sub.add_parser("retain")
     p.add_argument("coverage", type=Path)
+    p.add_argument("records", type=Path)
+    p.add_argument("system", choices=SYSTEMS)
     for operation in ("check-roots", "verify"):
         p = sub.add_parser(operation)
         p.add_argument("coverage", type=Path)
@@ -280,11 +341,12 @@ def main():
     args = parser.parse_args()
     if args.operation == "plan":
         plan(args.directory, args.proof, args.run_id, args.release_id)
-    elif args.operation == "bind":
-        manifest = args.directory / "draft-manifest.json"
-        value = json.loads(manifest.read_text())
-        value["coverage"] = json.loads(args.coverage.read_text())
-        write(manifest, value)
+    elif args.operation == "retain":
+        retain(
+            json.loads(args.coverage.read_text()),
+            json.loads(args.records.read_text()),
+            args.system,
+        )
     elif args.operation in ("check-roots", "verify"):
         verify(
             json.loads(args.coverage.read_text()),

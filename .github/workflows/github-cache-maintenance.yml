@@ -78,6 +78,8 @@ jobs:
         with:
           ref: ${{ steps.context.outputs.source_sha }}
           persist-credentials: false
+      - name: Retire abandoned cache drafts
+        run: python3 .github/scripts/ci_cache_generation.py prune-drafts --repo "$GITHUB_REPOSITORY" --execute
       - uses: ./.github/actions/install-nix
         with:
           extra-nix-conf: |
@@ -110,9 +112,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/plan/source.json" --execute
+      - name: Create Whitestrake Release token
+        id: release-token
+        if: steps.plan.outputs.refresh == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
       - name: Begin complete candidate
         id: begin
         if: steps.plan.outputs.refresh == 'true'
+        env:
+          RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: |
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py begin --repo "$GITHUB_REPOSITORY"  --source "$RUNNER_TEMP/plan/source.json" --coverage "$RUNNER_TEMP/plan/coverage.json" > "$RUNNER_TEMP/candidate.json"
@@ -179,18 +191,17 @@ jobs:
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
           configure-cachix: 'true'
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Select accepted platform records
-        id: records
+      - name: Build accepted platform outputs
+        timeout-minutes: 30
+        run: bash .github/scripts/ci-nfb.sh "$CI_LANE_SYSTEM" "$CI_LANE_SYSTEM"
+      - name: Prepare current tooling, inputs and roots
+        timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo "records=$(cat "$CI_EXPECTED_RECORDS")" >> "$GITHUB_OUTPUT"
-          echo "inputs=$(jq -ce '[.inputs[]] | unique' "$RUNNER_TEMP/plan/coverage.json")" >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/nix-root-build
-        with:
-          system: ${{ matrix.system }}
-          builds-json: ${{ steps.records.outputs.records }}
-          input-paths-json: ${{ steps.records.outputs.inputs }}
+          "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py retain \
+            "$RUNNER_TEMP/plan/coverage.json" "$RUNNER_TEMP/ci-results/records.json" "$CI_LANE_SYSTEM"
       - name: Produce and upload Linux images
+        timeout-minutes: 60
         env:
           SYSTEM: ${{ matrix.system }}
         if: runner.os == 'Linux'
@@ -202,22 +213,20 @@ jobs:
           if [ "$SYSTEM" = x86_64-linux ]; then
            nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
            bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
-           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed"
-           python3 .github/scripts/ci_cache_workflow.py bind "$RUNNER_TEMP/seed-packed" "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json"
+           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json"
            python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
            rm "$RUNNER_TEMP/erofs-tool"
           fi
           nix store gc
           bash .github/scripts/ci-linux-image.sh pack-full "$RUNNER_TEMP/full.squashfs" 2
-          python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/full.squashfs" --output "$RUNNER_TEMP/full-packed"
-          python3 .github/scripts/ci_cache_workflow.py bind "$RUNNER_TEMP/full-packed" "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json"
+          python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/full.squashfs" --output "$RUNNER_TEMP/full-packed" --coverage "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json"
           python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-full-$SYSTEM" --directory "$RUNNER_TEMP/full-packed"
       - name: Produce, profile and upload Darwin images
+        timeout-minutes: 60
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          "$HOST_PYTHON" .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" aarch64-darwin ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
-          "$HOST_PYTHON" .github/scripts/ci_darwin.py produce --state "$RUNNER_TEMP/darwin" --coverage "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" --output "$RUNNER_TEMP/darwin-produced" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py produce --state "$RUNNER_TEMP/darwin" --coverage "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" --output "$RUNNER_TEMP/darwin-produced" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }} -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
           for component in darwin-image-aarch64-darwin darwin-maintenance-aarch64-darwin; do
            "$HOST_PYTHON" .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "$component" --directory "$RUNNER_TEMP/darwin-produced/$component"
           done

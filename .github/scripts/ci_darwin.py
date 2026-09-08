@@ -17,11 +17,16 @@ import urllib.error
 
 import ci_cache_image as image
 from ci_cache_generation import read_selection
+from ci_cache_workflow import verify
 
 IMAGE = "darwin-image-aarch64-darwin"
 MAINTENANCE = "darwin-maintenance-aarch64-darwin"
 SCRIPTS = Path(__file__).resolve().parent
 ROOTS = Path("/nix/var/nix/gcroots/github-ci/aarch64-darwin")
+
+
+class CacheRestoreError(RuntimeError):
+    pass
 
 
 def command(*args, **kwargs):
@@ -161,42 +166,24 @@ def state_root(path):
 
 def safe_extract(archive, destination):
     destination.mkdir(mode=0o700)
-    process = subprocess.Popen(["zstd", "-dc", str(archive)], stdout=subprocess.PIPE)
-    try:
-        with tarfile.open(fileobj=process.stdout, mode="r|") as stream:
-            for entry in stream:
-                path = Path(entry.name)
-                image.require(
-                    not path.is_absolute()
-                    and ".." not in path.parts
-                    and path.parts
-                    and path.parts[0] == "nix-root.sparsebundle",
-                    "unsafe bundle archive path",
-                )
-                image.require(
-                    entry.isdir() or entry.isfile(), "unsafe bundle archive entry"
-                )
-                target = destination / path
-                if entry.isdir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with (
-                        target.open("xb") as output,
-                        stream.extractfile(entry) as source,
-                    ):
-                        for block in iter(lambda: source.read(1024 * 1024), b""):
-                            if block.count(0) == len(block):
-                                output.seek(len(block), 1)
-                            else:
-                                output.write(block)
-                        output.truncate(entry.size)
-        image.require(process.wait() == 0, "bundle decompression failed")
-    finally:
-        process.stdout.close()
-        if process.poll() is None:
-            process.terminate()
-        process.wait()
+    seen = set()
+
+    def confined(entry, target):
+        path = Path(entry.name)
+        image.require(
+            not path.is_absolute()
+            and ".." not in path.parts
+            and path.parts
+            and path.parts[0] == "nix-root.sparsebundle",
+            "unsafe bundle archive path",
+        )
+        image.require(entry.isdir() or entry.isfile(), "unsafe bundle archive entry")
+        image.require(path not in seen, "duplicate bundle archive entry")
+        seen.add(path)
+        return tarfile.data_filter(entry, target)
+
+    with tarfile.open(archive, mode="r|zst", bufsize=1024 * 1024) as stream:
+        stream.extractall(destination, filter=confined)
     bundle = destination / "nix-root.sparsebundle"
     image.require(
         (bundle / "Info.plist").is_file()
@@ -283,8 +270,7 @@ def start_helper(root, argv, profile=None):
         if fault or time.monotonic() >= deadline:
             stop_group(process.pid, process)
             process.wait()
-            (root / "startup-failure").write_text(fault or "helper-start-timeout")
-            raise RuntimeError(fault or "helper-start-timeout")
+            raise CacheRestoreError(fault or "helper-start-timeout")
         time.sleep(0.1)
     return ready.read_text().strip()
 
@@ -315,32 +301,7 @@ def cleanup(root):
                 break
             time.sleep(0.2)
         if users.returncode not in (0, 1) or users.stdout.strip():
-            pids = sorted({int(pid) for pid in users.stdout.split() if pid.isdecimal()})
-            diagnostic = {
-                "event": "store-cleanup-refused",
-                "lsofStatus": users.returncode,
-                "pids": pids,
-            }
-            if pids:
-                try:
-                    processes = subprocess.run(
-                        [
-                            "ps",
-                            "-o",
-                            "pid=,ppid=,pgid=,stat=,comm=",
-                            "-p",
-                            ",".join(map(str, pids)),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    diagnostic.update(
-                        psStatus=processes.returncode, processes=processes.stdout
-                    )
-                except (OSError, subprocess.TimeoutExpired) as error:
-                    diagnostic["psError"] = type(error).__name__
-            print(json.dumps(diagnostic), file=sys.stderr, flush=True)
+            subprocess.run(["sudo", "lsof", "+f", "--", "/nix"], timeout=5)
         image.require(
             users.returncode in (0, 1) and not users.stdout.strip(),
             "store users remain; refusing detach",
@@ -435,32 +396,19 @@ def mount(root, mode, repo):
             urllib.error.URLError,
             http.client.HTTPException,
             tarfile.TarError,
-        ):
-            (root / "startup-failure").write_text("payload-restore-failure")
-            raise
+        ) as error:
+            raise CacheRestoreError("payload-restore-failure") from error
     attach(root, source, shadow=mode in ("hot", "eager"))
     print(json.dumps({"mode": mode, "releaseId": selection["generation"]["releaseId"]}))
 
 
 def recovery_ready():
-    for executable in (
-        Path.home() / ".nix-profile/bin/nix",
-        ROOTS / "nix-fast-build/bin/nix-fast-build",
-    ):
-        image.require(
-            os.access(executable, os.X_OK),
-            f"missing recovery executable: {executable.name}",
-        )
-    image.require(
-        shutil.which("cachix") is not None, "missing recovery executable: cachix"
-    )
     image.require(
         not Path("/nix/var/nix/daemon-socket/socket").exists(),
         "recovery requires single-user Nix",
     )
     result = subprocess.run(["pgrep", "-x", "nix-daemon"], stdout=subprocess.DEVNULL)
     image.require(result.returncode == 1, "unexpected Nix daemon")
-    command("nix", "path-info", ROOTS / "nix-fast-build", stdout=subprocess.DEVNULL)
 
 
 def recover_setup(root):
@@ -572,17 +520,6 @@ def filesystem_gate(path):
     }
 
 
-def validate_roots(coverage):
-    retained = {str(path.resolve()) for path in ROOTS.iterdir() if path.is_symlink()}
-    for root in coverage["roots"]:
-        image.require(
-            root in retained and str(root).startswith("/nix/store/"),
-            f"missing canonical root: {root}",
-        )
-        command("nix", "path-info", "--recursive", root, stdout=subprocess.DEVNULL)
-    command("nix", "path-info", ROOTS / "nix-fast-build", stdout=subprocess.DEVNULL)
-
-
 def validate_hot(exported, manifest, hot, directory):
     # A fresh BlockStore authenticates every hot block against this exact image.
     store = image.BlockStore(
@@ -593,7 +530,7 @@ def validate_hot(exported, manifest, hot, directory):
     image.import_hot_pack(hot, store)
 
 
-def produce(root, output, coverage, argv):
+def produce(root, output, coverage, argv, deep=False):
     settings = json.loads((root / "mode.json").read_text())
     image.require(
         settings["mode"] in ("cold", "maintenance"),
@@ -607,7 +544,7 @@ def produce(root, output, coverage, argv):
             executable and not Path(executable).resolve().is_relative_to("/nix"),
             f"{tool} must be host-native outside /nix",
         )
-    validate_roots(coverage)
+    verify(coverage, "aarch64-darwin", deep=deep)
     cachix = Path(shutil.which("cachix") or "").resolve()
     image.require(
         str(cachix).startswith("/nix/store/") and cachix.name == "cachix",
@@ -649,11 +586,9 @@ def produce(root, output, coverage, argv):
     )
     gate = filesystem_gate(exported)
     packed = output / IMAGE
-    image.pack_image(exported, packed)
+    image.pack_image(exported, packed, coverage=coverage, filesystem_gate=gate)
     manifest_path = packed / "draft-manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest.update(coverage=coverage, filesystemGate=gate)
-    write_json(manifest_path, manifest)
     profile = output / "profile"
     profile.mkdir()
     block_profile = output / "profile.blocks"
@@ -664,7 +599,7 @@ def produce(root, output, coverage, argv):
             profile=block_profile,
         )
         attach(profile, source, shadow=True)
-        validate_roots(coverage)
+        verify(coverage, "aarch64-darwin")
         attempt = profile / "work"
         attempt.mkdir()
         for workload in ([str(ROOTS / "cachix/bin/cachix"), "--version"], argv):
@@ -677,7 +612,6 @@ def produce(root, output, coverage, argv):
             image.require(
                 status == 0 and fault is None, "exact-image profile workload failed"
             )
-        validate_roots(coverage)
     finally:
         cleanup(profile)
     hot = packed / "hot.zip"
@@ -694,11 +628,7 @@ def produce(root, output, coverage, argv):
         "profile changed immutable image",
     )
     maintenance = output / MAINTENANCE
-    image.pack_image(archive, maintenance)
-    path = maintenance / "draft-manifest.json"
-    descriptor = json.loads(path.read_text())
-    descriptor["coverage"] = coverage
-    write_json(path, descriptor)
+    image.pack_image(archive, maintenance, coverage=coverage)
 
 
 def main():
@@ -715,6 +645,7 @@ def main():
     parser.add_argument("--selection", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--coverage", type=Path)
+    parser.add_argument("--exhaustive-checks", action="store_true")
     arguments = sys.argv[1:]
     boundary = arguments.index("--") if "--" in arguments else len(arguments)
     argv = arguments[boundary + 1 :]
@@ -733,14 +664,14 @@ def main():
             shutil.copyfile(args.selection, root / "selection.json")
         try:
             mount(root, args.mode, args.repo)
-        except Exception:
+        except Exception as error:
             fault = (
                 helper_fault(helper_pid(root), root / "reader/backing-failure")
                 if args.mode == "hot"
                 else None
             )
-            if not fault and (root / "startup-failure").exists():
-                fault = (root / "startup-failure").read_text()
+            if not fault and isinstance(error, CacheRestoreError):
+                fault = str(error)
             if not fault:
                 raise
             cleanup(root)
@@ -749,7 +680,19 @@ def main():
                 root, "cold" if args.mode == "maintenance" else "maintenance", args.repo
             )
     elif args.operation == "recover-setup":
-        write_json(root / "setup-recovery.json", recover_setup(root))
+        result = recover_setup(root)
+        print(json.dumps(result))
+        with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+            stream.write(f"recovered={str(result['recovered']).lower()}\n")
+        if not result["recovered"]:
+            image.require(
+                os.environ["INSTALL_OUTCOME"] == "success", "genuine Nix setup failure"
+            )
+            if os.environ["CONFIGURE_CACHIX"] == "true":
+                image.require(
+                    os.environ["CACHIX_OUTCOME"] == "success",
+                    "genuine Cachix setup failure",
+                )
     elif args.operation == "ready":
         recovery_ready()
     elif args.operation == "cleanup":
@@ -763,7 +706,11 @@ def main():
             "producer coverage, output and validation command required",
         )
         produce(
-            root, state_root(args.output), json.loads(args.coverage.read_text()), argv
+            root,
+            state_root(args.output),
+            json.loads(args.coverage.read_text()),
+            argv,
+            args.exhaustive_checks,
         )
     return 0
 

@@ -84,7 +84,15 @@ def validate_identity(value):
     require(is_sha256(value["sha256"]), "invalid asset digest")
 
 
-def pack_image(image, output, shard_size=SHARD_SIZE, block_size=BLOCK_SIZE):
+def pack_image(
+    image,
+    output,
+    shard_size=SHARD_SIZE,
+    block_size=BLOCK_SIZE,
+    *,
+    coverage=None,
+    filesystem_gate=None,
+):
     image = Path(image)
     output = Path(output)
     image_bytes = image.stat().st_size
@@ -145,6 +153,10 @@ def pack_image(image, output, shard_size=SHARD_SIZE, block_size=BLOCK_SIZE):
         "shardSize": shard_size,
         "shards": shards,
     }
+    if coverage is not None:
+        manifest["coverage"] = coverage
+    if filesystem_gate is not None:
+        manifest["filesystemGate"] = filesystem_gate
     validate_manifest(manifest, require_assets=False)
     (output / DRAFT_NAME).write_text(json.dumps(manifest, indent=2) + "\n")
     return {
@@ -344,7 +356,7 @@ def import_hot_pack(path, store):
     return len(indices), payload_bytes
 
 
-def gh_api(repo, endpoint, method="GET", payload=None):
+def gh_api(repo, endpoint, method="GET", payload=None, *, token=None):
     require(
         re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo), "invalid repository"
     )
@@ -360,6 +372,7 @@ def gh_api(repo, endpoint, method="GET", payload=None):
         stderr=subprocess.PIPE,
         check=True,
         timeout=60,
+        env={**os.environ, "GH_TOKEN": token} if token else None,
     )
     return json.loads(result.stdout) if result.stdout.strip() else None
 
@@ -858,6 +871,7 @@ def main():
     pack = commands.add_parser("pack")
     pack.add_argument("--image", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
+    pack.add_argument("--coverage", required=True, type=Path)
     hot = commands.add_parser("pack-hot")
     hot.add_argument("--image", required=True, type=Path)
     hot.add_argument("--manifest", required=True, type=Path)
@@ -876,7 +890,9 @@ def main():
         local.add_argument("--" + flag, required=True, type=Path)
     args = parser.parse_args()
     if args.command == "pack":
-        result = pack_image(args.image, args.output)
+        result = pack_image(
+            args.image, args.output, coverage=json.loads(args.coverage.read_text())
+        )
     elif args.command == "pack-hot":
         result = pack_hot(args.image, args.manifest, args.profile, args.output)
     elif args.command == "serve-local":

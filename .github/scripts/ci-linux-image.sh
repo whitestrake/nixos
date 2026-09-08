@@ -10,20 +10,6 @@ mount_dir() {
   printf '%s/linux-ci-mount-%s\n' "${RUNNER_TEMP:?RUNNER_TEMP is required}" "$1"
 }
 
-valid_format() {
-  case "${1:-}" in
-    erofs | squashfs) ;;
-    *) return 1 ;;
-  esac
-}
-
-valid_system() {
-  case "${1:-}" in
-    x86_64-linux | aarch64-linux) ;;
-    *) return 1 ;;
-  esac
-}
-
 component_settings() {
   case "${1:-}" in
     linux-seed-x86_64-linux) system=x86_64-linux format=erofs ;;
@@ -72,7 +58,6 @@ checkpoint_database() {
 
 cleanup_overlay() {
   local format="$1" root mount root_pre_existing=false status=0
-  valid_format "$format" || die "format must be erofs or squashfs"
   root=/nix
   mount="$(mount_dir "$format")"
   [ -f "$mount/owned" ] || return 0
@@ -93,7 +78,6 @@ cleanup_overlay() {
 
 mount_overlay() {
   local format="$1" image="$2" root mount
-  valid_format "$format" || die "format must be erofs or squashfs"
   [ -f "$image" ] || die "verified image is missing: $image"
   root=/nix
   mount="$(mount_dir "$format")"
@@ -115,7 +99,6 @@ mount_overlay() {
 
 nfb_path() {
   local system="$1" root nfb
-  valid_system "$system" || die "unsupported Linux system: $system"
   root="/nix/var/nix/gcroots/github-ci/$system/nix-fast-build"
   [ -L "$root" ] || die "nix-fast-build root is missing: $root"
   nfb="$(readlink -e "$root")"
@@ -149,30 +132,23 @@ restore_mount() {
   component_settings "$component"
   directory="$(canonical_temp_path "$directory")" || die "restore directory must resolve beneath RUNNER_TEMP"
   [ ! -e "$directory" ] || die "restore directory already exists: $directory"
-  result="$RUNNER_TEMP/ci-linux-eager-$$.json"
-  rm -f "$result"
-
-  if ! python3 .github/scripts/ci_cache_image.py eager \
+  if ! result="$(python3 .github/scripts/ci_cache_image.py eager \
     --repo "$repo" --selection "$selection" --component "$component" \
-    --directory "$directory" > "$result"; then
-    rm -f "$result"
+    --directory "$directory")"; then
     remove_temp_path "$directory"
     return 1
   fi
   image="$directory/image.dmg"
   if ! mount_overlay "$format" "$image"; then
-    rm -f "$result"
     [ -f "$(mount_dir "$format")/owned" ] || remove_temp_path "$directory"
     return 1
   fi
   if ! validate_database; then
     cleanup_overlay "$format" || return
-    rm -f "$result"
     remove_temp_path "$directory"
     return 1
   fi
-  mv "$result" "$directory/eager.json"
-  jq -cn --arg image "$image" '{restored:true,image:$image}'
+  printf '%s\n' "$result" > "$directory/eager.json"
 }
 
 validate_mounted() {
@@ -220,18 +196,10 @@ pack_full() {
     -processors "$workers" -no-progress -wildcards -e 'store/.links/*'
 }
 
-copy_seed_store() {
-  local store="$1" nfb="$2"
-  shift 2
-  nix copy --no-check-sigs --option auto-optimise-store false --to "$store" "$@"
-  nix path-info --store "$store" --recursive "$nfb" >/dev/null
-}
-
 pack_seed() {
   local system="$1" output="$2" store="$3" packer="$4" full_roots checkout_root
   local nfb name path index destination_roots
   local -a names=() roots=()
-  valid_system "$system" || die "unsupported Linux system: $system"
   [ "$system" = x86_64-linux ] || die "the selected evaluator seed is x86_64-linux only"
   if ! output="$(canonical_temp_path "$output")" || ! store="$(canonical_temp_path "$store")"; then
     die "seed paths must be beneath RUNNER_TEMP"
@@ -261,7 +229,8 @@ pack_seed() {
   nix path-info "${roots[@]}" >/dev/null
 
   mkdir -p "$output"
-  copy_seed_store "$store" "$nfb" "${roots[@]}"
+  nix copy --no-check-sigs --option auto-optimise-store false --to "$store" "${roots[@]}"
+  nix path-info --store "$store" --recursive "$nfb" >/dev/null
   destination_roots="$store/nix/var/nix/gcroots/github-ci/$system"
   mkdir -p "$destination_roots"
   for index in "${!names[@]}"; do

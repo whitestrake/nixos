@@ -95,15 +95,6 @@ runs:
       run: |
         set -euo pipefail
         "$HOST_PYTHON" .github/scripts/ci_darwin.py recover-setup --state "$RUNNER_TEMP/darwin"
-        cat "$RUNNER_TEMP/darwin/setup-recovery.json"
-        recovered="$(jq -r .recovered "$RUNNER_TEMP/darwin/setup-recovery.json")"
-        echo "recovered=$recovered" >> "$GITHUB_OUTPUT"
-        if [ "$recovered" != true ]; then
-          [ "$INSTALL_OUTCOME" = success ] || { echo '::error ::Genuine Nix setup failure'; exit 1; }
-          if [ "$CONFIGURE_CACHIX" = true ]; then
-            [ "$CACHIX_OUTCOME" = success ] || { echo '::error ::Genuine Cachix setup failure'; exit 1; }
-          fi
-        fi
     - name: Install Nix after clean recovery
       if: steps.recovery.outputs.recovered == 'true'
       uses: ./.github/actions/install-nix

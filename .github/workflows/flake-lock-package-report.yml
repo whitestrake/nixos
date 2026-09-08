@@ -160,14 +160,26 @@ jobs:
             printf 'records=%s\n' "$records"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare report tool and accepted baseline
+        timeout-minutes: 45
+        env:
+          BASELINE_RECORDS: ${{ steps.proof.outputs.records }}
+        run: |
+          set -euo pipefail
+          dix="$(nix build --inputs-from . --option builders '' --option max-jobs 0 --no-link --print-out-paths nixpkgs-unstable#dix)"
+          echo "DIX_BIN=$dix/bin/dix" >> "$GITHUB_ENV"
+          paths=()
+          while IFS= read -r path; do paths+=("$path"); done <<< "$(jq -er '.[].storePath' <<< "$BASELINE_RECORDS")"
+          nix-store --realise --option builders '' --option max-jobs 0 "${paths[@]}"
       - name: Build and report CI lane
-        uses: ./.github/actions/nix-root-build
-        with:
-          system: ${{ env.NIX_ROOT_SYSTEM }}
-          package-report: true
-          baseline-records-json: ${{ steps.proof.outputs.records }}
-          proof-store-path: ${{ steps.proof.outputs.proof_store_path }}
-          proof-revision: ${{ steps.proof.outputs.proof_revision }}
+        timeout-minutes: 30
+        env:
+          CI_LANE_SYSTEM: ${{ env.NIX_ROOT_SYSTEM }}
+          CI_BASELINE_RECORDS_JSON: ${{ steps.proof.outputs.records }}
+          CI_PROOF_STORE_PATH: ${{ steps.proof.outputs.proof_store_path }}
+          CI_PROOF_REVISION: ${{ steps.proof.outputs.proof_revision }}
+          CI_PACKAGE_REPORT_DIR: ${{ runner.temp }}/ci-package-reports
+        run: bash .github/scripts/ci-nfb.sh "$CI_LANE_SYSTEM" "$CI_LANE_SYSTEM"
 
       - name: Upload package reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
