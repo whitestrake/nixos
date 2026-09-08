@@ -166,7 +166,7 @@ def state_root(path):
 
 def safe_extract(archive, destination):
     destination.mkdir(mode=0o700)
-    seen = set()
+    seen = {}
 
     def confined(entry, target):
         path = Path(entry.name)
@@ -178,8 +178,10 @@ def safe_extract(archive, destination):
             "unsafe bundle archive path",
         )
         image.require(entry.isdir() or entry.isfile(), "unsafe bundle archive entry")
-        image.require(path not in seen, "duplicate bundle archive entry")
-        seen.add(path)
+        # tarfile revisits the same directory entry when applying its metadata.
+        image.require(
+            seen.setdefault(path, entry) is entry, "duplicate bundle archive entry"
+        )
         return tarfile.data_filter(entry, target)
 
     with tarfile.open(archive, mode="r|zst", bufsize=1024 * 1024) as stream:
@@ -397,7 +399,7 @@ def mount(root, mode, repo):
             http.client.HTTPException,
             tarfile.TarError,
         ) as error:
-            raise CacheRestoreError("payload-restore-failure") from error
+            raise CacheRestoreError(f"payload-restore-failure: {error}") from error
     attach(root, source, shadow=mode in ("hot", "eager"))
     print(json.dumps({"mode": mode, "releaseId": selection["generation"]["releaseId"]}))
 
