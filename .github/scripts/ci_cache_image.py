@@ -40,11 +40,7 @@ def file_sha256(path):
 
 
 def is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def require(condition, message):
@@ -796,7 +792,6 @@ class ImageHandler(BaseHTTPRequestHandler):
                     except Exception:
                         self.close_connection = True
                         self.server.fault.write_text("cache-backing-failure\n")
-                        status = 502
                         break
                     self.wfile.write(data)
                     sent += len(data)
