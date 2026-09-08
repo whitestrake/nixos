@@ -184,7 +184,7 @@ def safe_extract(archive, destination):
         )
         return tarfile.data_filter(entry, target)
 
-    with tarfile.open(archive, mode="r|zst", bufsize=1024 * 1024) as stream:
+    with tarfile.open(archive, mode="r:zst") as stream:
         stream.extractall(destination, filter=confined)
     bundle = destination / "nix-root.sparsebundle"
     image.require(
