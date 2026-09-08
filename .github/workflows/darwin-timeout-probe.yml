@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           date +%s > "$RUNNER_TEMP/timeout-start"
-          "$HOST_PYTHON" .github/scripts/nix_fast_build.py -- \
+          exec "$HOST_PYTHON" .github/scripts/nix_fast_build.py -- \
             /nix/var/nix/gcroots/github-ci/aarch64-darwin/nix-fast-build/bin/nix-fast-build \
             --flake "$RUNNER_TEMP/timeout-flake#packages" --systems aarch64-darwin \
             --eval-workers 1 --option builders '' --option max-jobs auto
