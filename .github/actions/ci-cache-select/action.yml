@@ -18,11 +18,9 @@ runs:
         CACHE_RELEASE_ID: ${{ inputs.release-id }}
       run: |
         set -euo pipefail
-        METADATA_MODE="${CI_EXPERIMENT_METADATA:-baseline}"
-        trap 'echo "CI_CACHE_SELECTION_COMPLETE metadataMode=$METADATA_MODE durationSeconds=$SECONDS"' EXIT
+        trap 'echo "CI_CACHE_SELECTION_COMPLETE durationSeconds=$SECONDS"' EXIT
         [ ! -e "$RUNNER_TEMP/selection.json" ]
         case "$CACHE_MODE" in warm | cold | '') ;; *) exit 64 ;; esac
-        case "$METADATA_MODE" in baseline | parallel | reuse | both) ;; *) exit 64 ;; esac
         if [ -n "$CACHE_RELEASE_ID" ]; then
           [[ "$CACHE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]] || exit 64
           [ "$CACHE_MODE" != cold ] || { echo '::error ::cold conflicts with an explicit Release'; exit 64; }

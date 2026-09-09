@@ -274,11 +274,7 @@ def reader(selection_path, component, deep=False):
     pin = current["components"][component]
     with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
         manifest, _ = image.load_manifest(
-            selection["repo"],
-            current["releaseId"],
-            pin,
-            Path(directory) / "manifest",
-            selection.get("release"),
+            selection["repo"], current["releaseId"], pin, Path(directory) / "manifest"
         )
     system = next(system for system in SYSTEMS if component.endswith(system))
     if component.startswith("darwin-"):
@@ -320,30 +316,6 @@ def reader(selection_path, component, deep=False):
     )
 
 
-def repack_seed(coverage, output, release_id, shard_mib):
-    repo = os.environ["GITHUB_REPOSITORY"]
-    with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as temporary:
-        directory = Path(temporary)
-        selection = generation.resolve(repo, directory / "selection.json", release_id)
-        pin = selection["generation"]["components"]["linux-seed-x86_64-linux"]
-        restored = image.eager(repo, release_id, pin, directory / "seed")
-        manifest = json.loads((directory / "seed" / image.MANIFEST_NAME).read_text())
-        image.require(manifest["coverage"] == coverage, "seed coverage differs")
-        packed = image.pack_image(
-            restored["image"],
-            output,
-            shard_size=shard_mib * 1024 * 1024,
-            coverage=coverage,
-            filesystem_gate=manifest.get("filesystemGate"),
-        )
-        image.require(
-            packed["imageSha256"] == manifest["imageSha256"]
-            and packed["imageBytes"] == manifest["imageBytes"],
-            "repacked seed bytes changed",
-        )
-        print("CI_SEED_REPACK " + json.dumps(packed, separators=(",", ":")))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
@@ -352,11 +324,6 @@ def main():
     p.add_argument("proof")
     p.add_argument("run_id", type=int)
     p.add_argument("--release-id", type=int)
-    p = sub.add_parser("repack-seed")
-    p.add_argument("coverage", type=Path)
-    p.add_argument("output", type=Path)
-    p.add_argument("release_id", type=int)
-    p.add_argument("shard_mib", type=int, choices=(512, 64))
     p = sub.add_parser("retain")
     p.add_argument("coverage", type=Path)
     p.add_argument("records", type=Path)
@@ -374,13 +341,6 @@ def main():
     args = parser.parse_args()
     if args.operation == "plan":
         plan(args.directory, args.proof, args.run_id, args.release_id)
-    elif args.operation == "repack-seed":
-        repack_seed(
-            json.loads(args.coverage.read_text()),
-            args.output,
-            args.release_id,
-            args.shard_mib,
-        )
     elif args.operation == "retain":
         retain(
             json.loads(args.coverage.read_text()),

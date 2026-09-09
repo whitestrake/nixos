@@ -14,7 +14,6 @@ import sys
 import tarfile
 import time
 import urllib.error
-import urllib.request
 
 import ci_cache_image as image
 from ci_cache_generation import read_selection
@@ -283,31 +282,6 @@ def helper_pid(root):
     return json.loads(path.read_text())["pid"] if path.exists() else None
 
 
-def report_reader_stats(root, phase):
-    if os.environ.get("CI_EXPERIMENT_READER_STATS") != "true":
-        return
-    try:
-        ready = root / "reader/ready.txt"
-        if not ready.exists() or helper_fault(
-            helper_pid(root), root / "reader/backing-failure"
-        ):
-            return
-        url = ready.read_text().strip().removesuffix("/image") + "/stats"
-        with urllib.request.urlopen(url, timeout=2) as response:
-            stats = json.load(response)
-        print(
-            "CI_DARWIN_READER_STATS "
-            + json.dumps({"phase": phase, **stats}, separators=(",", ":")),
-            flush=True,
-        )
-    except Exception as error:
-        print(
-            "CI_DARWIN_READER_STATS "
-            + json.dumps({"phase": phase, "error": str(error)}, separators=(",", ":")),
-            flush=True,
-        )
-
-
 def cleanup(root):
     # Refuse to detach while any unexpected process still has store files open.
     mount = root / "mounted"
@@ -414,11 +388,7 @@ def mount(root, mode, repo):
     else:
         try:
             image.eager(
-                repo,
-                selection["generation"]["releaseId"],
-                pin,
-                root / "restore",
-                selection.get("release"),
+                repo, selection["generation"]["releaseId"], pin, root / "restore"
             )
             source = root / "restore/image.dmg"
             if mode == "maintenance":
@@ -520,7 +490,6 @@ def run(root, argv):
     for number in (1, 2):
         directory = root / f"attempt-{number}"
         directory.mkdir(mode=0o700)
-        report_reader_stats(root, f"before-workload-attempt-{number}")
         started = time.monotonic()
         status, reason = supervise(
             argv,
@@ -528,8 +497,6 @@ def run(root, argv):
             helper_pid(root) if hot and number == 1 else None,
             root / "reader/backing-failure",
         )
-        if reason is None:
-            report_reader_stats(root, f"after-workload-attempt-{number}")
         print(
             json.dumps(
                 {
@@ -689,24 +656,11 @@ def produce(root, output, coverage, argv, deep=False):
         verify(coverage, "aarch64-darwin")
         attempt = profile / "work"
         attempt.mkdir()
-        workloads = [[str(ROOTS / "nix/bin/nix"), "--version"]]
-        if os.environ.get("CI_EXPERIMENT_PROFILE_ACTIVATION") == "true":
-            runtime = (ROOTS / "nix").resolve()
-            workloads.extend(
-                (
-                    [str(runtime / "bin/nix-store"), "--check-validity", str(runtime)],
-                    [
-                        "/bin/bash",
-                        "-euc",
-                        'MANPATH= . "$1/etc/profile.d/nix.sh"; '
-                        '"$1/bin/nix-env" -i "$1"',
-                        "profile-activate-nix",
-                        str(runtime),
-                    ],
-                )
-            )
-        workloads.extend(([str(ROOTS / "cachix/bin/cachix"), "--version"], argv))
-        for workload in workloads:
+        for workload in (
+            [str(ROOTS / "nix/bin/nix"), "--version"],
+            [str(ROOTS / "cachix/bin/cachix"), "--version"],
+            argv,
+        ):
             status, fault = supervise(
                 workload,
                 attempt,
@@ -792,9 +746,7 @@ def main():
                 root, "cold" if args.mode == "maintenance" else "maintenance", args.repo
             )
     elif args.operation == "activate-nix":
-        report_reader_stats(root, "before-activate-nix")
         activated = activate_nix(root)
-        report_reader_stats(root, "after-activate-nix")
         # Let setup recovery remount before running an installer on failed backing.
         image.require(
             not helper_fault(helper_pid(root), root / "reader/backing-failure"),

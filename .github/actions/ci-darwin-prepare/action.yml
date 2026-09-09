@@ -8,14 +8,11 @@ inputs:
     description: Additional ordinary installer configuration
     default: ""
   configure-cachix:
-    description: Run the ordinary Cachix action
+    description: Configure Cachix authentication and cache access
     default: "false"
   cachix-auth-token:
     description: Optional Cachix authentication
     default: ""
-  cachix-setup:
-    description: action or experimental direct cached setup
-    default: action
 runs:
   using: composite
   steps:
@@ -61,7 +58,6 @@ runs:
         else
           "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" --mode cold
         fi
-        if [ "${CI_EXPERIMENT_READER_STATS:-}" = true ]; then /usr/bin/mdutil -s /nix || true; fi
     - name: Activate cached Nix or install it
       id: install
       continue-on-error: true
@@ -73,28 +69,24 @@ runs:
       id: cachix-bin
       if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
       shell: bash
-      env:
-        CACHIX_SETUP: ${{ inputs.cachix-setup }}
       run: |
-        case "$CACHIX_SETUP" in action | direct) ;; *) exit 64 ;; esac
         cached=/nix/var/nix/gcroots/github-ci/aarch64-darwin/cachix/bin/cachix
         if [ -x "$cached" ] && cached="$(cd -P "${cached%/*}" && pwd)/cachix"; then
           echo "path=$cached" >> "$GITHUB_OUTPUT"
           echo "${cached%/*}" >> "$GITHUB_PATH"
         fi
-    - name: Configure Cachix
+    - name: Configure Cachix when uncached
       id: cachix
-      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && (inputs.cachix-setup != 'direct' || steps.cachix-bin.outputs.path == '')
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && steps.cachix-bin.outputs.path == ''
       continue-on-error: true
       uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
         name: whitestrake
         authToken: ${{ inputs.cachix-auth-token }}
         skipPush: true
-        cachixBin: ${{ steps.cachix-bin.outputs.path }}
     - name: Configure cached Cachix directly
       id: cachix-direct
-      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && inputs.cachix-setup == 'direct' && steps.cachix-bin.outputs.path != ''
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && steps.cachix-bin.outputs.path != ''
       continue-on-error: true
       shell: bash
       env:
@@ -112,7 +104,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         INSTALL_OUTCOME: ${{ steps.install.outcome }}
-        CACHIX_OUTCOME: ${{ inputs.cachix-setup == 'direct' && steps.cachix-bin.outputs.path != '' && steps.cachix-direct.outcome || steps.cachix.outcome }}
+        CACHIX_OUTCOME: ${{ steps.cachix-bin.outputs.path != '' && steps.cachix-direct.outcome || steps.cachix.outcome }}
         CONFIGURE_CACHIX: ${{ inputs.configure-cachix }}
       run: |
         set -euo pipefail

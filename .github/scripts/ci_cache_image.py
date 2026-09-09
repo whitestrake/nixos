@@ -14,7 +14,6 @@ import shutil
 import socketserver
 import subprocess
 import threading
-import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -411,12 +410,11 @@ def gh_download_whole(repo, asset, limit=64 * 1024 * 1024):
     return body
 
 
-def load_manifest(repo, release_id, manifest_identity, directory, release=None):
+def load_manifest(repo, release_id, manifest_identity, directory):
     # The identity comes from a frozen, authenticated generation selection.
     validate_identity(manifest_identity)
     require(positive(release_id), "invalid pinned release or manifest digest")
-    if release is None:
-        release = gh_api(repo, f"releases/{release_id}")
+    release = gh_api(repo, f"releases/{release_id}")
     require(release.get("id") == release_id, "release ID changed")
     manifest_assets = [
         asset
@@ -570,26 +568,6 @@ class BlockStore:
                 self.blocks.append((shard, block))
         # ponytail: one lock coalesces duplicate blocks; use per-block locks if concurrency matters.
         self.lock = threading.Lock()
-        self.stats = (
-            {
-                "readCount": 0,
-                "readBytes": 0,
-                "accessedBlocks": set(),
-                "hotAccessedBlocks": set(),
-                "remoteMissCount": 0,
-                "remoteMissBytes": 0,
-                "remoteMissSeconds": 0.0,
-                "remoteMissMaxSeconds": 0.0,
-                "remoteMissBlocks": set(),
-                "cachedReadWaitBehindRemoteCount": 0,
-                "cachedReadWaitBehindRemoteSeconds": 0.0,
-                "cachedReadWaitBehindRemoteMaxSeconds": 0.0,
-            }
-            if os.environ.get("CI_EXPERIMENT_READER_STATS") == "true"
-            else None
-        )
-        self.hot_indices = set()
-        self.cached_indices = set()
 
     def _path(self, index):
         block = self.blocks[index][1]
@@ -617,17 +595,7 @@ class BlockStore:
                 source.seek(shard["offset"] + start)
                 payload = source.read(end - start + 1)
         else:
-            started = time.monotonic()
             payload = self.fetcher.fetch(shard["assetId"], start, end)
-            if self.stats is not None:
-                elapsed = time.monotonic() - started
-                self.stats["remoteMissCount"] += 1
-                self.stats["remoteMissBytes"] += len(payload)
-                self.stats["remoteMissSeconds"] += elapsed
-                self.stats["remoteMissMaxSeconds"] = max(
-                    self.stats["remoteMissMaxSeconds"], elapsed
-                )
-                self.stats["remoteMissBlocks"].update(indices)
         position = 0
         for index in indices:
             block = self.blocks[index][1]
@@ -641,8 +609,6 @@ class BlockStore:
             temporary.write_bytes(data)
             os.replace(temporary, path)
             data_by_index[index] = data
-            if self.stats is not None:
-                self.cached_indices.add(index)
             position += block["size"]
         require(position == len(payload), "range response has trailing data")
 
@@ -661,16 +627,7 @@ class BlockStore:
         block_size = self.manifest["blockSize"]
         first = start // block_size
         last = (start + length - 1) // block_size
-        requested_indices = set(range(first, last + 1))
-        cached_before_wait = (
-            self.stats is not None and requested_indices <= self.cached_indices
-        )
-        remote_misses_before = (
-            self.stats["remoteMissCount"] if self.stats is not None else 0
-        )
-        waiting = time.monotonic() if self.stats is not None else 0
         with self.lock:
-            waited = time.monotonic() - waiting if self.stats is not None else 0
             if self.profile:
                 with self.profile.open("a") as stream:
                     for index in range(first, last + 1):
@@ -695,59 +652,12 @@ class BlockStore:
             for group in groups:
                 self._fetch_group(group, data_by_index)
             data = b"".join(data_by_index[index] for index in range(first, last + 1))
-            if self.stats is not None:
-                self.stats["readCount"] += 1
-                self.stats["readBytes"] += length
-                self.stats["accessedBlocks"].update(requested_indices)
-                self.stats["hotAccessedBlocks"].update(
-                    requested_indices & self.hot_indices
-                )
-                if (
-                    cached_before_wait
-                    and not groups
-                    and self.stats["remoteMissCount"] > remote_misses_before
-                ):
-                    self.stats["cachedReadWaitBehindRemoteCount"] += 1
-                    self.stats["cachedReadWaitBehindRemoteSeconds"] += waited
-                    self.stats["cachedReadWaitBehindRemoteMaxSeconds"] = max(
-                        self.stats["cachedReadWaitBehindRemoteMaxSeconds"], waited
-                    )
         offset = start - self.blocks[first][1]["offset"]
         return data[offset : offset + length]
 
-    def stats_snapshot(self):
-        require(self.stats is not None, "reader statistics are disabled")
-        with self.lock:
-            result = {
-                key: round(value, 6) if key.endswith("Seconds") else value
-                for key, value in self.stats.items()
-                if not isinstance(value, set)
-            }
-            result.update(
-                accessedBlockCount=len(self.stats["accessedBlocks"]),
-                hotAccessedBlockCount=len(self.stats["hotAccessedBlocks"]),
-                remoteMissBlockCount=len(self.stats["remoteMissBlocks"]),
-                remoteMissBlockRanges=compact_ranges(self.stats["remoteMissBlocks"]),
-            )
-            return result
 
-
-def compact_ranges(indices):
-    ranges = []
-    for index in sorted(indices):
-        if ranges and index == ranges[-1][1] + 1:
-            ranges[-1][1] = index
-        else:
-            ranges.append([index, index])
-    return [
-        str(first) if first == last else f"{first}-{last}" for first, last in ranges
-    ]
-
-
-def eager(repo, release_id, manifest_identity, directory, release=None):
-    manifest, assets = load_manifest(
-        repo, release_id, manifest_identity, directory, release
-    )
+def eager(repo, release_id, manifest_identity, directory):
+    manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
     fetcher = RangeFetcher(repo, assets)
     directory = Path(directory)
     temporary = directory / "image.dmg.tmp"
@@ -851,17 +761,6 @@ class ImageHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.send_error(400)
             return
-        if self.path == "/stats" and self.server.store.stats is not None:
-            body = json.dumps(
-                self.server.store.stats_snapshot(), separators=(",", ":")
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            if send_body:
-                self.wfile.write(body)
-            return
         size = self.server.store.manifest["imageBytes"]
         status, start, end = 200, 0, size - 1
         if self.path != "/image":
@@ -903,10 +802,8 @@ class ImageHandler(BaseHTTPRequestHandler):
         pass
 
 
-def serve(repo, release_id, manifest_identity, directory, ready, release=None):
-    manifest, assets = load_manifest(
-        repo, release_id, manifest_identity, directory, release
-    )
+def serve(repo, release_id, manifest_identity, directory, ready):
+    manifest, assets = load_manifest(repo, release_id, manifest_identity, directory)
     store = BlockStore(manifest, directory, repo=repo, assets=assets)
     if manifest.get("component") == "darwin-image-aarch64-darwin":
         require("hotPack" in manifest, "missing bound hot pack")
@@ -926,11 +823,6 @@ def serve(repo, release_id, manifest_identity, directory, ready, release=None):
             "hot pack identity mismatch",
         )
         import_hot_pack(hot_pack, store)
-        if store.stats is not None:
-            store.hot_indices = {
-                int(path.name.split("-", 1)[0]) for path in store.cache.iterdir()
-            }
-            store.cached_indices.update(store.hot_indices)
     run_server(store, ready)
 
 
@@ -1000,13 +892,7 @@ def main():
         identity = selection["generation"]["components"][args.component]
         release_id = selection["generation"]["releaseId"]
         if args.command == "eager":
-            result = eager(
-                args.repo,
-                release_id,
-                identity,
-                args.directory,
-                selection.get("release"),
-            )
+            result = eager(args.repo, release_id, identity, args.directory)
         else:
             result = serve(
                 args.repo,
@@ -1014,7 +900,6 @@ def main():
                 identity,
                 args.directory,
                 args.ready,
-                selection.get("release"),
             )
     if result is not None:
         print(json.dumps(result, separators=(",", ":")))
