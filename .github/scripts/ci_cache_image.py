@@ -861,6 +861,7 @@ def main():
     pack.add_argument("--image", required=True, type=Path)
     pack.add_argument("--output", required=True, type=Path)
     pack.add_argument("--coverage", required=True, type=Path)
+    pack.add_argument("--shard-size", type=int, default=SHARD_SIZE)
     for name in ("eager", "serve"):
         command = commands.add_parser(name)
         command.add_argument("--repo", required=True)
@@ -875,7 +876,10 @@ def main():
     args = parser.parse_args()
     if args.command == "pack":
         result = pack_image(
-            args.image, args.output, coverage=json.loads(args.coverage.read_text())
+            args.image,
+            args.output,
+            shard_size=args.shard_size,
+            coverage=json.loads(args.coverage.read_text()),
         )
     elif args.command == "serve-local":
         result = serve_local(

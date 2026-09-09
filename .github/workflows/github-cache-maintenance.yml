@@ -239,7 +239,7 @@ jobs:
           if [ "$SYSTEM" = x86_64-linux ]; then
            nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
            bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
-           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json"
+           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" --shard-size 67108864
            python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
            rm "$RUNNER_TEMP/erofs-tool"
           fi

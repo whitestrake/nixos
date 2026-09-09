@@ -8,7 +8,7 @@ inputs:
     description: Additional ordinary installer configuration
     default: ""
   configure-cachix:
-    description: Run the ordinary Cachix action
+    description: Configure Cachix authentication and cache access
     default: "false"
   cachix-auth-token:
     description: Optional Cachix authentication
@@ -75,23 +75,36 @@ runs:
           echo "path=$cached" >> "$GITHUB_OUTPUT"
           echo "${cached%/*}" >> "$GITHUB_PATH"
         fi
-    - name: Configure Cachix
+    - name: Configure Cachix when uncached
       id: cachix
-      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true'
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && steps.cachix-bin.outputs.path == ''
       continue-on-error: true
       uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
         name: whitestrake
         authToken: ${{ inputs.cachix-auth-token }}
         skipPush: true
-        cachixBin: ${{ steps.cachix-bin.outputs.path }}
+    - name: Configure cached Cachix directly
+      id: cachix-direct
+      if: steps.install.outcome == 'success' && inputs.configure-cachix == 'true' && steps.cachix-bin.outputs.path != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        CACHIX_AUTH_TOKEN: ${{ inputs.cachix-auth-token }}
+        CACHIX_BIN: ${{ steps.cachix-bin.outputs.path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$CACHIX_AUTH_TOKEN" ]; then
+          "$CACHIX_BIN" authtoken "$CACHIX_AUTH_TOKEN"
+        fi
+        "$CACHIX_BIN" use whitestrake
     - name: Classify setup and recover confirmed hot backing failure
       id: recovery
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         INSTALL_OUTCOME: ${{ steps.install.outcome }}
-        CACHIX_OUTCOME: ${{ steps.cachix.outcome }}
+        CACHIX_OUTCOME: ${{ steps.cachix-bin.outputs.path != '' && steps.cachix-direct.outcome || steps.cachix.outcome }}
         CONFIGURE_CACHIX: ${{ inputs.configure-cachix }}
       run: |
         set -euo pipefail
