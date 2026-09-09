@@ -116,12 +116,7 @@ jobs:
       - name: Publish selected Darwin records
         id: records
         run: echo "records=$(cat "$RUNNER_TEMP/darwin/selected/records.json")" >> "$GITHUB_OUTPUT"
-      - name: Detach Darwin store
-        if: always()
-        run: |
-          if [ -d "$RUNNER_TEMP/darwin" ]; then
-            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
-          fi
+        # The hosted VM owns final store disposal; recovery still detaches before reuse.
   all-builds:
     name: "All Builds"
     needs:

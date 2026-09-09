@@ -48,43 +48,57 @@ jobs:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Authenticate source before checkout
+        id: source
         env:
-          EVENT_NAME: ${{ github.event_name }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
           ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")"
-          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$GITHUB_SHA" '
-           .head_repository.full_name == $repo and .head_sha == $sha and
+          jq -e --arg repo "$GITHUB_REPOSITORY" --argjson id "$SOURCE_RUN_ID" '
+           .id == $id and .head_repository.full_name == $repo and
+           (.head_sha | test("^[0-9a-f]{40}$")) and
            .path == ".github/workflows/continuous-integration.yml" and
            .status == "completed" and .conclusion == "success"
           ' <<< "$run" >/dev/null
           if [ "$EVENT_NAME" = workflow_run ] || [ "$GITHUB_REF" = refs/heads/master ]; then
-           [ "$GITHUB_SHA" = "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]
-           jq -e '.head_branch == "master"' <<< "$run" >/dev/null
+           jq -e '.head_branch == "master" and (.event == "push" or .event == "workflow_dispatch")' <<< "$run" >/dev/null
+           master="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)"
+           [[ "$master" =~ ^[0-9a-f]{40}$ ]]
+           if [ "$EVENT_NAME" = workflow_run ] && { [ "$(jq -r .head_sha <<< "$run")" != "$GITHUB_SHA" ] || [ "$GITHUB_SHA" != "$master" ]; }; then
+            echo "::notice ::Skipping superseded automatic cache maintenance."
+            exit 0
+           fi
+           [ "$GITHUB_SHA" = "$master" ]
           else
            [ "$EVENT_NAME" = workflow_dispatch ]
            [[ "$GITHUB_REF" == refs/heads/* ]]
            permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACTOR/permission" --jq .permission)"
            case "$permission" in admin | maintain | write) ;; *) exit 1 ;; esac
           fi
+          jq -e --arg sha "$GITHUB_SHA" '.head_sha == $sha' <<< "$run" >/dev/null
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: steps.source.outputs.eligible == 'true'
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Retire abandoned cache candidates
+        if: steps.source.outputs.eligible == 'true'
         run: python3 .github/scripts/ci_cache_generation.py prune-candidates --repo "$GITHUB_REPOSITORY" --execute
       - uses: ./.github/actions/install-nix
+        if: steps.source.outputs.eligible == 'true'
         with:
           extra-nix-conf: |
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
       - name: Resolve accepted proof and desired coverage
         id: plan
+        if: steps.source.outputs.eligible == 'true'
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
           DISPATCH_PROOF: ${{ inputs.proof_store_path }}
@@ -94,9 +108,17 @@ jobs:
           set -euo pipefail
           proof="$DISPATCH_PROOF"
           if [ "$GITHUB_REF" = refs/heads/master ]; then
+           master="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)"
+           [[ "$master" =~ ^[0-9a-f]{40}$ ]]
+           if [ "$GITHUB_SHA" != "$master" ]; then
+            if [ "$EVENT_NAME" = workflow_run ]; then
+             echo "::notice ::Skipping superseded automatic cache maintenance."
+             exit 0
+            fi
+            exit 1
+           fi
            source modules/deployment/scripts/cachix-pin-functions.sh
            proof="$(cachix_pin_path_strict "$(cachix_fetch_pins whitestrake)" successful-master-build)"
-           [ "$GITHUB_SHA" = "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]
           fi
           [[ "$proof" =~ ^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$ ]]
           extra=()

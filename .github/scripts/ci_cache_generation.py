@@ -28,6 +28,7 @@ from ci_cache_image import (
 )
 
 SCHEMA = "ci-cache-generation-v1"
+PROMOTION_SCHEMA = "ci-cache-promotion-v1"
 MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
 PUBLISHER = ".github/workflows/github-cache-maintenance.yml"
@@ -411,6 +412,7 @@ def begin(repo, source, coverage):
             "draft": True,
             "prerelease": False,
             "make_latest": "false",
+            "body": json.dumps({"schema": PROMOTION_SCHEMA}, separators=(",", ":")),
         },
         token=os.environ["RELEASE_TOKEN"],
     )
@@ -557,20 +559,140 @@ def latest_release(repo):
         raise
 
 
+def promotion_journal(release):
+    body = release.get("body")
+    if body in (None, ""):
+        return {"schema": PROMOTION_SCHEMA}
+    try:
+        journal = json.loads(body)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid promotion journal") from error
+    require(
+        isinstance(journal, dict)
+        and journal.get("schema") == PROMOTION_SCHEMA
+        and set(journal) <= {"schema", "promotionIntent", "promotion"},
+        "invalid promotion journal",
+    )
+    return journal
+
+
+def write_promotion_journal(repo, release, name, value):
+    fresh = gh_api(repo, f"releases/{release['id']}")
+    require(fresh.get("id") == release["id"], "release identity changed")
+    journal = promotion_journal(fresh)
+    require(
+        name in ("promotionIntent", "promotion")
+        and (name not in journal or journal[name] == value),
+        "conflicting promotion journal",
+    )
+    journal[name] = value
+    body = json.dumps(journal, separators=(",", ":"))
+    observed = gh_api(repo, f"releases/{release['id']}", "PATCH", {"body": body})
+    require(
+        observed.get("id") == release["id"] and promotion_journal(observed) == journal,
+        "promotion journal write was not observed",
+    )
+    release.update(observed)
+
+
+def validate_promotion_intent(release, intent):
+    require(
+        isinstance(intent, dict)
+        and set(intent) == {"releaseId", "previousId", "publisherRunId"}
+        and intent.get("releaseId") == release.get("id")
+        and positive(intent.get("publisherRunId"))
+        and (intent.get("previousId") is None or positive(intent["previousId"])),
+        "invalid promotion journal intent",
+    )
+
+
+def validate_promotion_receipt(release, record):
+    require(
+        isinstance(record, dict)
+        and set(record)
+        in (
+            {
+                "releaseId",
+                "previousId",
+                "publisherRunId",
+                "intentSha256",
+                "promotedAt",
+            },
+            {
+                "releaseId",
+                "previousId",
+                "publisherRunId",
+                "intentSha256",
+                "promotedAt",
+                "recoveredByRunId",
+            },
+        )
+        and record.get("releaseId") == release.get("id")
+        and positive(record.get("publisherRunId"))
+        and positive(record.get("promotedAt"))
+        and (record.get("previousId") is None or positive(record["previousId"]))
+        and record.get("previousId") != release.get("id")
+        and is_sha256(record.get("intentSha256"))
+        and ("recoveredByRunId" not in record or positive(record["recoveredByRunId"])),
+        "invalid promotion journal record",
+    )
+
+
+def promotion_record_present(release):
+    matches = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == "promotion.json"
+    ]
+    require(len(matches) <= 1, "duplicate promotion record")
+    if matches:
+        return True
+    journal = promotion_journal(release)
+    if "promotionIntent" in journal:
+        validate_promotion_intent(release, journal["promotionIntent"])
+    if "promotion" not in journal:
+        return False
+    record = journal["promotion"]
+    validate_promotion_receipt(release, record)
+    return True
+
+
+def promotion_intent_present(release):
+    matches = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == "promotion-intent.json"
+    ]
+    require(len(matches) <= 1, "duplicate promotion intent")
+    if matches:
+        return True
+    journal = promotion_journal(release)
+    if "promotionIntent" not in journal:
+        return False
+    validate_promotion_intent(release, journal["promotionIntent"])
+    return True
+
+
 def promotion_intent(repo, release):
-    matches = [a for a in release["assets"] if a["name"] == "promotion-intent.json"]
-    require(len(matches) == 1, "missing promotion intent")
-    pin = identity(matches[0])
-    intent = json.loads(asset_body(repo, release, pin, 65536))
-    require(
-        intent.get("releaseId") == release["id"]
-        and positive(intent.get("publisherRunId")),
-        "invalid promotion intent",
-    )
-    require(
-        intent.get("previousId") is None or positive(intent["previousId"]),
-        "invalid previous generation",
-    )
+    matches = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == "promotion-intent.json"
+    ]
+    require(len(matches) <= 1, "duplicate promotion intent")
+    if matches:
+        pin = identity(matches[0])
+        intent = json.loads(asset_body(repo, release, pin, 65536))
+    else:
+        journal = promotion_journal(release)
+        require("promotionIntent" in journal, "missing promotion intent")
+        intent = journal["promotionIntent"]
+        pin = {
+            "sha256": sha256(
+                json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+            )
+        }
+    validate_promotion_intent(release, intent)
     return intent, pin
 
 
@@ -584,17 +706,23 @@ def finish_promotion(repo, release, recovery_run=None):
     record = {**intent, "intentSha256": pin["sha256"], "promotedAt": int(time.time())}
     if recovery_run:
         record["recoveredByRunId"] = recovery_run
-    with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "promotion.json"
-        path.write_text(json.dumps(record, separators=(",", ":")))
-        upload(repo, release, path)
+    write_promotion_journal(repo, release, "promotion", record)
     return record
 
 
 def promotion_record(repo, release, generation):
-    matches = [a for a in release["assets"] if a["name"] == "promotion.json"]
-    require(len(matches) == 1, "missing promotion record")
-    record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
+    matches = [
+        asset
+        for asset in release.get("assets", [])
+        if asset.get("name") == "promotion.json"
+    ]
+    require(len(matches) <= 1, "duplicate promotion record")
+    if matches:
+        record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
+    else:
+        record = promotion_journal(release).get("promotion")
+        require(isinstance(record, dict), "missing promotion record")
+        validate_promotion_receipt(release, record)
     intent, pin = promotion_intent(repo, release)
     require(
         record.get("releaseId") == release["id"]
@@ -620,25 +748,33 @@ def promote(repo, release_id):
     previous = None
     if latest and owned(latest):
         current, _ = load_generation(repo, latest["id"], production=True)
-        if not any(a["name"] == "promotion.json" for a in latest["assets"]):
+        if latest["id"] == release["id"]:
+            if not promotion_record_present(latest):
+                intent, _ = promotion_intent(repo, latest)
+                require(
+                    intent["publisherRunId"] == current["publisherRunId"],
+                    "promotion publisher mismatch",
+                )
+                record = finish_promotion(repo, latest, recovery_run=run_id)
+                promotion_record(repo, latest, current)
+                return record
+            return promotion_record(repo, latest, current)
+        if not promotion_record_present(latest):
             finish_promotion(repo, latest, recovery_run=run_id)
         promotion_record(repo, latest, current)
         previous = latest["id"]
-    require(previous != release["id"], "already promoted")
     require(release.get("prerelease"), "candidate is not a prerelease")
-    require(
-        not any(a["name"] == "promotion.json" for a in release["assets"]),
-        "promotion receipt already exists",
-    )
+    require(not promotion_record_present(release), "promotion receipt already exists")
     intent = {
         "releaseId": release["id"],
         "previousId": previous,
         "publisherRunId": run_id,
     }
-    with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "promotion-intent.json"
-        path.write_text(json.dumps(intent, separators=(",", ":")))
-        upload(repo, release, path)
+    if promotion_intent_present(release):
+        existing, _ = promotion_intent(repo, release)
+        require(existing == intent, "conflicting promotion intent")
+    else:
+        write_promotion_journal(repo, release, "promotionIntent", intent)
     publisher_context(repo, generation["source"]["revision"], True)
     observed = latest_release(repo)
     require(
@@ -665,7 +801,7 @@ def retirement_plan(releases, current, now):
         if owned(release)
         and not release.get("draft")
         and release["id"] not in protected
-        and any(asset["name"] == "promotion.json" for asset in release["assets"])
+        and promotion_record_present(release)
     )
 
 
@@ -681,17 +817,13 @@ def release_inventory(repo):
 
 def candidate_ready(release, run, repo, now):
     tag = re.fullmatch(r"ci-cache-v1-([0-9]+)([0-9]{3})", release.get("tag_name", ""))
+    promoted = promotion_record_present(release)
     if not (
         tag
+        and not promoted
         and (
             release.get("draft")
-            or (
-                release.get("prerelease")
-                and run.get("head_branch") == "master"
-                and not any(
-                    a["name"] == "promotion.json" for a in release.get("assets", [])
-                )
-            )
+            or (release.get("prerelease") and run.get("head_branch") == "master")
         )
         and release.get("author", {}).get("login") in AUTHORS
     ):
@@ -719,6 +851,31 @@ def tag_ref(repo, tag):
         if b"HTTP 404" not in (error.stderr or b""):
             raise
         return None
+
+
+def delete_release_and_tag(repo, release, expected_tag):
+    gh_api(repo, f"releases/{release['id']}", "DELETE")
+    name = release["tag_name"]
+    if expected_tag is None:
+        require(tag_ref(repo, name) is None, f"orphan tag {name} appeared")
+        return
+    last_error = None
+    for _ in range(3):
+        try:
+            fresh = tag_ref(repo, name)
+            if fresh is None:
+                return
+            require(
+                fresh == expected_tag,
+                f"orphan tag {name} changed after release deletion",
+            )
+            gh_api(repo, f"git/refs/tags/{name}", "DELETE")
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            last_error = error
+    raise ValueError(
+        f"release {release['id']} deleted but orphan tag {name} could not be deleted"
+    ) from last_error
 
 
 def prune_candidates(repo, execute=False):
@@ -759,8 +916,6 @@ def prune_candidates(repo, execute=False):
             )
             continue
         if execute:
-            # These candidates are not current. Remove the exact tag first so a
-            # failed release deletion remains discoverable on the next sweep.
             ref = tag_ref(repo, release["tag_name"])
             if ref is not None:
                 require(
@@ -768,18 +923,17 @@ def prune_candidates(repo, execute=False):
                     and ref["object"]["sha"] == run["head_sha"],
                     "candidate tag target changed",
                 )
-                gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
             fresh = gh_api(repo, f"releases/{release['id']}")
             require(
-                fresh["draft"]
-                or (
-                    release["prerelease"]
-                    and fresh["prerelease"]
-                    and not any(a["name"] == "promotion.json" for a in fresh["assets"])
-                ),
+                not promotion_record_present(fresh)
+                and (fresh["draft"] or fresh["prerelease"]),
                 "candidate was promoted during cleanup",
             )
-            gh_api(repo, f"releases/{release['id']}", "DELETE")
+            require(
+                tag_ref(repo, release["tag_name"]) == ref,
+                "candidate tag changed before cleanup",
+            )
+            delete_release_and_tag(repo, fresh, ref)
         removed.append(release["id"])
     return {"candidateIds": removed, "executed": execute}
 
@@ -798,7 +952,7 @@ def prune(repo, source, execute=False):
     verify_proof(source, production=True)
     latest = gh_api(repo, "releases/latest")
     generation, _ = load_generation(repo, latest["id"], production=True)
-    if not any(a["name"] == "promotion.json" for a in latest["assets"]):
+    if not promotion_record_present(latest):
         intent, _ = promotion_intent(repo, latest)
         require(
             intent["publisherRunId"] == generation["publisherRunId"],
@@ -838,10 +992,7 @@ def prune(repo, source, execute=False):
                 tag_ref(repo, release["tag_name"]) == tag_targets[release_id],
                 "tag changed before retirement",
             )
-            # Keep the Release discoverable if deletion is interrupted after its tag.
-            if tag_targets[release_id] is not None:
-                gh_api(repo, f"git/refs/tags/{release['tag_name']}", "DELETE")
-            gh_api(repo, f"releases/{release_id}", "DELETE")
+            delete_release_and_tag(repo, release, tag_targets[release_id])
     return {"releaseIds": planned, "executed": execute}
 
 
