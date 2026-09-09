@@ -274,7 +274,11 @@ def reader(selection_path, component, deep=False):
     pin = current["components"][component]
     with tempfile.TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
         manifest, _ = image.load_manifest(
-            selection["repo"], current["releaseId"], pin, Path(directory) / "manifest"
+            selection["repo"],
+            current["releaseId"],
+            pin,
+            Path(directory) / "manifest",
+            selection.get("release"),
         )
     system = next(system for system in SYSTEMS if component.endswith(system))
     if component.startswith("darwin-"):

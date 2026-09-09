@@ -38,6 +38,10 @@ name: Cache Maintenance
         description: Experimental verified seed to repack without changing image bytes
         type: string
         default: ''
+      profile_activation:
+        description: Experimentally profile complete cached Nix activation
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -113,7 +117,7 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
           DISPATCH_PROOF: ${{ inputs.proof_store_path }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild || inputs.linux_seed_shard_mib == '64' || inputs.seed_source_release_id != '' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || inputs.linux_seed_shard_mib == '64' || inputs.seed_source_release_id != '' || inputs.profile_activation }}
           CACHE_RELEASE_ID: ${{ inputs.cache_release_id }}
         run: |
           set -euo pipefail
@@ -267,6 +271,8 @@ jobs:
       - name: Produce, profile and upload Darwin images
         timeout-minutes: 60
         if: runner.os == 'macOS'
+        env:
+          CI_EXPERIMENT_PROFILE_ACTIVATION: ${{ inputs.profile_activation }}
         run: |
           set -euo pipefail
           "$HOST_PYTHON" .github/scripts/ci_darwin.py produce --state "$RUNNER_TEMP/darwin" --coverage "$RUNNER_TEMP/plan/darwin-image-aarch64-darwin.json" --output "$RUNNER_TEMP/darwin-produced" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }} -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin

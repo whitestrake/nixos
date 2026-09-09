@@ -34,6 +34,11 @@ on:
         type: choice
         options: [hot, eager]
         default: hot
+      darwin_cachix_setup:
+        description: Experimental cached Darwin Cachix setup
+        type: choice
+        options: [action, direct]
+        default: action
 permissions:
   contents: read
 env:
@@ -143,6 +148,7 @@ jobs:
         uses: ./.github/actions/ci-darwin-prepare
         with:
           mode: ${{ inputs.darwin_mode || 'hot' }}
+          cachix-setup: ${{ inputs.darwin_cachix_setup || 'action' }}
           configure-cachix: "true"
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build Darwin configurations

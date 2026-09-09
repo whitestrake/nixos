@@ -286,12 +286,12 @@ def helper_pid(root):
 def report_reader_stats(root, phase):
     if os.environ.get("CI_EXPERIMENT_READER_STATS") != "true":
         return
-    ready = root / "reader/ready.txt"
-    if not ready.exists() or helper_fault(
-        helper_pid(root), root / "reader/backing-failure"
-    ):
-        return
     try:
+        ready = root / "reader/ready.txt"
+        if not ready.exists() or helper_fault(
+            helper_pid(root), root / "reader/backing-failure"
+        ):
+            return
         url = ready.read_text().strip().removesuffix("/image") + "/stats"
         with urllib.request.urlopen(url, timeout=2) as response:
             stats = json.load(response)
@@ -300,7 +300,7 @@ def report_reader_stats(root, phase):
             + json.dumps({"phase": phase, **stats}, separators=(",", ":")),
             flush=True,
         )
-    except (OSError, ValueError, urllib.error.URLError) as error:
+    except Exception as error:
         print(
             "CI_DARWIN_READER_STATS "
             + json.dumps({"phase": phase, "error": str(error)}, separators=(",", ":")),
@@ -689,11 +689,24 @@ def produce(root, output, coverage, argv, deep=False):
         verify(coverage, "aarch64-darwin")
         attempt = profile / "work"
         attempt.mkdir()
-        for workload in (
-            [str(ROOTS / "nix/bin/nix"), "--version"],
-            [str(ROOTS / "cachix/bin/cachix"), "--version"],
-            argv,
-        ):
+        workloads = [[str(ROOTS / "nix/bin/nix"), "--version"]]
+        if os.environ.get("CI_EXPERIMENT_PROFILE_ACTIVATION") == "true":
+            runtime = (ROOTS / "nix").resolve()
+            workloads.extend(
+                (
+                    [str(runtime / "bin/nix-store"), "--check-validity", str(runtime)],
+                    [
+                        "/bin/bash",
+                        "-euc",
+                        'MANPATH= . "$1/etc/profile.d/nix.sh"; '
+                        '"$1/bin/nix-env" -i "$1"',
+                        "profile-activate-nix",
+                        str(runtime),
+                    ],
+                )
+            )
+        workloads.extend(([str(ROOTS / "cachix/bin/cachix"), "--version"], argv))
+        for workload in workloads:
             status, fault = supervise(
                 workload,
                 attempt,
