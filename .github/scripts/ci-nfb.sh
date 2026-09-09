@@ -28,12 +28,16 @@ fi
 wrapper=("${HOST_PYTHON:-python3}" .github/scripts/nix_fast_build.py)
 if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then wrapper+=(--publish-checks); fi
 if [ -n "${CI_PACKAGE_REPORT_DIR:-}" ]; then wrapper+=(--build-hook .github/scripts/nix_fast_build_package_report.py); fi
-options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto)
+case "${CI_EXPERIMENT_EVAL_WORKERS:-}" in
+  '' | 1 | 3 | 4) ;;
+  *) echo 'Invalid experimental evaluator count' >&2; exit 1 ;;
+esac
+options=(--systems "$system" --eval-workers "${CI_EXPERIMENT_EVAL_WORKERS:-1}" --option builders '' --option max-jobs auto)
 flake=".#ci.$projection"
 case "$projection" in
   linux-hosts)
     flake='.#ci.linux'
-    options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --option max-jobs 2 --select 'ci: { inherit (ci) nixosConfigurations; }')
+    options=(--systems 'x86_64-linux aarch64-linux' --eval-workers "${CI_EXPERIMENT_EVAL_WORKERS:-3}" --store ssh-ng://eu.nixbuild.net --option max-jobs 2 --select 'ci: { inherit (ci) nixosConfigurations; }')
     ;;
   linux-checks)
     flake='.#ci.linux'

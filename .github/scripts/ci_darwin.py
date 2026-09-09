@@ -14,6 +14,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.request
 
 import ci_cache_image as image
 from ci_cache_generation import read_selection
@@ -282,6 +283,31 @@ def helper_pid(root):
     return json.loads(path.read_text())["pid"] if path.exists() else None
 
 
+def report_reader_stats(root, phase):
+    if os.environ.get("CI_EXPERIMENT_READER_STATS") != "true":
+        return
+    ready = root / "reader/ready.txt"
+    if not ready.exists() or helper_fault(
+        helper_pid(root), root / "reader/backing-failure"
+    ):
+        return
+    try:
+        url = ready.read_text().strip().removesuffix("/image") + "/stats"
+        with urllib.request.urlopen(url, timeout=2) as response:
+            stats = json.load(response)
+        print(
+            "CI_DARWIN_READER_STATS "
+            + json.dumps({"phase": phase, **stats}, separators=(",", ":")),
+            flush=True,
+        )
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        print(
+            "CI_DARWIN_READER_STATS "
+            + json.dumps({"phase": phase, "error": str(error)}, separators=(",", ":")),
+            flush=True,
+        )
+
+
 def cleanup(root):
     # Refuse to detach while any unexpected process still has store files open.
     mount = root / "mounted"
@@ -388,7 +414,11 @@ def mount(root, mode, repo):
     else:
         try:
             image.eager(
-                repo, selection["generation"]["releaseId"], pin, root / "restore"
+                repo,
+                selection["generation"]["releaseId"],
+                pin,
+                root / "restore",
+                selection.get("release"),
             )
             source = root / "restore/image.dmg"
             if mode == "maintenance":
@@ -490,6 +520,7 @@ def run(root, argv):
     for number in (1, 2):
         directory = root / f"attempt-{number}"
         directory.mkdir(mode=0o700)
+        report_reader_stats(root, f"before-workload-attempt-{number}")
         started = time.monotonic()
         status, reason = supervise(
             argv,
@@ -497,6 +528,8 @@ def run(root, argv):
             helper_pid(root) if hot and number == 1 else None,
             root / "reader/backing-failure",
         )
+        if reason is None:
+            report_reader_stats(root, f"after-workload-attempt-{number}")
         print(
             json.dumps(
                 {
@@ -746,7 +779,9 @@ def main():
                 root, "cold" if args.mode == "maintenance" else "maintenance", args.repo
             )
     elif args.operation == "activate-nix":
+        report_reader_stats(root, "before-activate-nix")
         activated = activate_nix(root)
+        report_reader_stats(root, "after-activate-nix")
         # Let setup recovery remount before running an installer on failed backing.
         image.require(
             not helper_fault(helper_pid(root), root / "reader/backing-failure"),

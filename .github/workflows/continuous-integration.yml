@@ -14,8 +14,30 @@ on:
         description: Optional pinned Release ID
         type: string
         default: ""
+      metadata_mode:
+        description: Experimental cache metadata handling
+        type: choice
+        options: [baseline, parallel, reuse, both]
+        default: baseline
+      linux_eval_workers:
+        description: Experimental Linux host evaluation workers
+        type: choice
+        options: ['3', '4']
+        default: '3'
+      checks_eval_workers:
+        description: Experimental source-check evaluation workers
+        type: choice
+        options: ['1', '3']
+        default: '1'
+      darwin_mode:
+        description: Experimental Darwin image reader
+        type: choice
+        options: [hot, eager]
+        default: hot
 permissions:
   contents: read
+env:
+  CI_EXPERIMENT_METADATA: ${{ inputs.metadata_mode || 'baseline' }}
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
@@ -56,6 +78,8 @@ jobs:
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build Linux configurations
+        env:
+          CI_EXPERIMENT_EVAL_WORKERS: ${{ inputs.linux_eval_workers || '3' }}
         run: bash .github/scripts/ci-nfb.sh linux-hosts x86_64-linux
       - name: Publish Linux build records
         id: records
@@ -87,6 +111,8 @@ jobs:
         with:
           component: linux-seed-x86_64-linux
       - name: Run source checks
+        env:
+          CI_EXPERIMENT_EVAL_WORKERS: ${{ inputs.checks_eval_workers || '1' }}
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
   darwin-builds:
     name: Darwin
@@ -102,6 +128,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
+      CI_EXPERIMENT_READER_STATS: "true"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -115,6 +142,7 @@ jobs:
       - name: Prepare Darwin build environment
         uses: ./.github/actions/ci-darwin-prepare
         with:
+          mode: ${{ inputs.darwin_mode || 'hot' }}
           configure-cachix: "true"
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build Darwin configurations

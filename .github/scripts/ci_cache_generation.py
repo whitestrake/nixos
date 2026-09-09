@@ -2,12 +2,14 @@
 """Immutable complete Release generations, authenticated through GitHub Actions."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -159,8 +161,32 @@ def check_run(repo, run_id, revision, workflow, production=False, successful=Fal
     return run
 
 
-def trusted_generation(repo, generation, production):
+def trusted_generation(repo, generation, production, parallel=False):
     source = generation["source"]
+    if parallel:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            checks = (
+                executor.submit(
+                    check_run,
+                    repo,
+                    generation["publisherRunId"],
+                    source["revision"],
+                    PUBLISHER,
+                    production,
+                ),
+                executor.submit(
+                    check_run,
+                    repo,
+                    source["runId"],
+                    source["revision"],
+                    SOURCE_WORKFLOW,
+                    production,
+                    True,
+                ),
+            )
+            for check in checks:
+                check.result()
+        return
     check_run(
         repo, generation["publisherRunId"], source["revision"], PUBLISHER, production
     )
@@ -246,7 +272,9 @@ def asset_body(repo, release, pin, limit=64 * 1024 * 1024):
     return body
 
 
-def load_generation(repo, release_id=None, production=None):
+def load_generation(
+    repo, release_id=None, production=None, parallel=False, include_release=False
+):
     require(release_id is None or positive(release_id), "invalid pinned release ID")
     release = gh_api(
         repo, f"releases/{release_id}" if release_id else "releases/latest"
@@ -282,17 +310,31 @@ def load_generation(repo, release_id=None, production=None):
             "missing component manifest",
         )
     trusted_generation(
-        repo, generation, release_id is None if production is None else production
+        repo,
+        generation,
+        release_id is None if production is None else production,
+        parallel,
     )
-    return generation, pin
+    return (generation, pin, release) if include_release else (generation, pin)
 
 
 def resolve(repo, output, release_id=None):
     # Never re-resolve latest for an already selected job, even if it has moved.
+    started = time.monotonic()
     output = Path(output)
     if output.exists():
         raise FileExistsError(output)
-    generation, pin = load_generation(repo, release_id)
+    mode = os.environ.get("CI_EXPERIMENT_METADATA", "baseline")
+    require(
+        mode in ("baseline", "parallel", "reuse", "both"),
+        "invalid metadata experiment",
+    )
+    generation, pin, release = load_generation(
+        repo,
+        release_id,
+        parallel=mode in ("parallel", "both"),
+        include_release=True,
+    )
     selection = {
         "schema": "ci-cache-selection-v1",
         "repo": repo,
@@ -300,8 +342,16 @@ def resolve(repo, output, release_id=None):
         "manifest": pin,
         "production": release_id is None,
     }
+    if mode in ("reuse", "both"):
+        selection["release"] = release
     with output.open("x") as stream:
         json.dump(selection, stream, separators=(",", ":"))
+    print(
+        f"CI_CACHE_METADATA_EXPERIMENT mode={mode} "
+        f"durationMs={round((time.monotonic() - started) * 1000)} "
+        f"releaseAssets={len(release['assets'])}",
+        file=sys.stderr,
+    )
     return selection
 
 
@@ -323,6 +373,35 @@ def read_selection(path, repo):
     require(
         selection["manifest"]["name"] == MANIFEST, "invalid generation manifest name"
     )
+    if "release" in selection:
+        release = selection["release"]
+        require(
+            isinstance(release, dict)
+            and release.get("id") == selection["generation"]["releaseId"]
+            and owned(release)
+            and not release.get("draft")
+            and (not selection["production"] or not release.get("prerelease"))
+            and release.get("author", {}).get("login") in AUTHORS
+            and release.get("target_commitish")
+            == selection["generation"]["source"]["revision"]
+            and isinstance(release.get("assets"), list),
+            "invalid selected release inventory",
+        )
+        for pin in (
+            selection["manifest"],
+            *selection["generation"]["components"].values(),
+        ):
+            require(
+                len(
+                    [
+                        asset
+                        for asset in release["assets"]
+                        if asset.get("id") == pin["assetId"] and identity(asset) == pin
+                    ]
+                )
+                == 1,
+                "selected release inventory changed",
+            )
     return selection
 
 

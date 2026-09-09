@@ -29,6 +29,15 @@ name: Cache Maintenance
         description: Recursively hash Nix store contents on producers and readers (use with force_rebuild)
         type: boolean
         default: false
+      linux_seed_shard_mib:
+        description: Experimental Linux seed shard size
+        type: choice
+        options: ['512', '64']
+        default: '512'
+      seed_source_release_id:
+        description: Experimental verified seed to repack without changing image bytes
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -89,7 +98,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Retire abandoned cache candidates
-        if: steps.source.outputs.eligible == 'true'
+        if: steps.source.outputs.eligible == 'true' && github.ref == 'refs/heads/master'
         run: python3 .github/scripts/ci_cache_generation.py prune-candidates --repo "$GITHUB_REPOSITORY" --execute
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -104,7 +113,7 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || inputs.source_run_id }}
           DISPATCH_PROOF: ${{ inputs.proof_store_path }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || inputs.linux_seed_shard_mib == '64' || inputs.seed_source_release_id != '' }}
           CACHE_RELEASE_ID: ${{ inputs.cache_release_id }}
         run: |
           set -euo pipefail
@@ -230,6 +239,8 @@ jobs:
         timeout-minutes: 60
         env:
           SYSTEM: ${{ matrix.system }}
+          SEED_SHARD_MIB: ${{ inputs.linux_seed_shard_mib || '512' }}
+          SEED_SOURCE_RELEASE_ID: ${{ inputs.seed_source_release_id }}
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
@@ -237,11 +248,17 @@ jobs:
           sudo apt-get install -y squashfs-tools
           python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json" "$SYSTEM" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
           if [ "$SYSTEM" = x86_64-linux ]; then
-           nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
-           bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
-           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json"
+           case "$SEED_SHARD_MIB" in 512 | 64) ;; *) exit 64 ;; esac
+           if [ -n "$SEED_SOURCE_RELEASE_ID" ]; then
+            [[ "$SEED_SOURCE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+            python3 .github/scripts/ci_cache_workflow.py repack-seed "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" "$RUNNER_TEMP/seed-packed" "$SEED_SOURCE_RELEASE_ID" "$SEED_SHARD_MIB"
+           else
+            nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
+            bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
+            python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" --shard-size "$((SEED_SHARD_MIB * 1024 * 1024))"
+            rm "$RUNNER_TEMP/erofs-tool"
+           fi
            python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
-           rm "$RUNNER_TEMP/erofs-tool"
           fi
           nix store gc
           bash .github/scripts/ci-linux-image.sh pack-full "$RUNNER_TEMP/full.squashfs" 2
