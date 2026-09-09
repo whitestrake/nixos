@@ -18,9 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: ./.github/actions/install-nix
-      - name: Run nix-update
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+      - name: Update selected packages
         id: update
         run: |
           set -euo pipefail
@@ -81,7 +83,7 @@ jobs:
         env:
           PACKAGE: ${{ inputs.package }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Format files
+      - name: Format package updates
         if: steps.update.outputs.changed == 'true'
         run: nix fmt
       - name: Create GitHub App token
@@ -93,7 +95,7 @@ jobs:
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Create Pull Request
+      - name: Open package update pull request
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:

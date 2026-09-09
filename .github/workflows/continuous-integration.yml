@@ -35,25 +35,29 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-cache-select
+      - name: Select cache generation
+        uses: ./.github/actions/ci-cache-select
         with:
           mode: ${{ inputs.cache_mode || 'warm' }}
           release-id: ${{ inputs.cache_release_id }}
-      - uses: ./.github/actions/ci-cache-restore
+      - name: Prepare Linux build environment
+        uses: ./.github/actions/ci-cache-restore
         with:
           component: linux-seed-x86_64-linux
-      - uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
+      - name: Configure remote Linux builders
+        uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
           settings: |
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Build Linux
+      - name: Build Linux configurations
         run: bash .github/scripts/ci-nfb.sh linux-hosts x86_64-linux
-      - name: Publish records
+      - name: Publish Linux build records
         id: records
         run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"
   source-checks:
@@ -69,17 +73,20 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-cache-select
+      - name: Select cache generation
+        uses: ./.github/actions/ci-cache-select
         with:
           mode: ${{ inputs.cache_mode || 'warm' }}
           release-id: ${{ inputs.cache_release_id }}
-      - uses: ./.github/actions/ci-cache-restore
+      - name: Prepare Linux build environment
+        uses: ./.github/actions/ci-cache-restore
         with:
           component: linux-seed-x86_64-linux
-      - name: Build Source checks
+      - name: Run source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
   darwin-builds:
     name: Darwin
@@ -96,14 +103,17 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-cache-select
+      - name: Select cache generation
+        uses: ./.github/actions/ci-cache-select
         with:
           mode: ${{ inputs.cache_mode || 'warm' }}
           release-id: ${{ inputs.cache_release_id }}
-      - uses: ./.github/actions/ci-darwin-prepare
+      - name: Prepare Darwin build environment
+        uses: ./.github/actions/ci-darwin-prepare
         with:
           configure-cachix: "true"
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -150,7 +160,7 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout repository
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false

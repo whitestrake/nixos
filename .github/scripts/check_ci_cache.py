@@ -3,6 +3,7 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,6 +13,7 @@ import zipfile
 
 import ci_cache_generation as generation
 import ci_cache_image as image
+import ci_darwin as darwin
 
 
 DATA = b"abcdefghijkl"
@@ -61,6 +63,46 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_cached_nix_requires_expected_version_and_registered_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            darwin.write_json(root / "mode.json", {"mode": "hot"})
+            env = {
+                "HOME": directory,
+                "XDG_CONFIG_HOME": directory,
+                "NIX_CONF": "build-dir = /tmp/nix-builds",
+                "NIX_VERSION": "2.34.7",
+                "GITHUB_ACCESS_TOKEN": "fresh-run-token",
+            }
+            runtime = Path("/nix/store/cached-nix")
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(Path, "resolve", return_value=runtime),
+                mock.patch.object(Path, "is_file", return_value=True),
+                mock.patch.object(darwin, "recovery_ready"),
+                mock.patch.object(darwin, "command") as command,
+            ):
+                command.return_value.stdout = "nix (Nix) 2.34.7\n"
+                self.assertTrue(darwin.activate_nix(root))
+                self.assertEqual(
+                    command.call_args_list[1].args,
+                    (runtime / "bin/nix-store", "--check-validity", runtime),
+                )
+                self.assertIn(
+                    "access-tokens = github.com=fresh-run-token",
+                    (root / "nix/nix.conf").read_text(),
+                )
+                self.assertEqual((root / ".netrc").stat().st_mode & 0o777, 0o600)
+                command.reset_mock()
+                command.return_value.stdout = "nix (Nix) 2.33.0\n"
+                self.assertFalse(darwin.activate_nix(root))
+                self.assertEqual(command.call_count, 1)
+                command.side_effect = [
+                    mock.Mock(stdout="nix (Nix) 2.34.7\n"),
+                    subprocess.CalledProcessError(1, []),
+                ]
+                self.assertFalse(darwin.activate_nix(root))
+
     def test_real_pack_manifest_rejects_mutated_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             _, manifest = packed(Path(directory))

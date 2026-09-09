@@ -80,7 +80,7 @@ jobs:
       NIX_ROOT_SYSTEM: ${{ matrix.system }}
       PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
-      - name: Checkout pull request head
+      - name: Check out pull request head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.HEAD_SHA }}
@@ -107,10 +107,12 @@ jobs:
             exit 1
           fi
 
-      - uses: ./.github/actions/ci-cache-select
+      - name: Select cache generation
+        uses: ./.github/actions/ci-cache-select
         with:
           release-id: ${{ inputs.cache_release_id }}
-      - uses: ./.github/actions/ci-cache-restore
+      - name: Prepare Linux build environment
+        uses: ./.github/actions/ci-cache-restore
         if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -121,7 +123,8 @@ jobs:
             max-jobs = auto
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
-      - uses: ./.github/actions/ci-darwin-prepare
+      - name: Prepare Darwin build environment
+        uses: ./.github/actions/ci-darwin-prepare
         if: runner.os == 'macOS'
         with:
           mode: eager
@@ -207,7 +210,7 @@ jobs:
       HEAD_SHA: ${{ needs.context.outputs.head }}
       PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
-      - name: Checkout reporter
+      - name: Check out report tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.BASE_SHA }}

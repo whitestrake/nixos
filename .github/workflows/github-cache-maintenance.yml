@@ -82,7 +82,8 @@ jobs:
           fi
           jq -e --arg sha "$GITHUB_SHA" '.head_sha == $sha' <<< "$run" >/dev/null
           echo "eligible=true" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: steps.source.outputs.eligible == 'true'
         with:
           ref: ${{ github.sha }}
@@ -90,7 +91,8 @@ jobs:
       - name: Retire abandoned cache candidates
         if: steps.source.outputs.eligible == 'true'
         run: python3 .github/scripts/ci_cache_generation.py prune-candidates --repo "$GITHUB_REPOSITORY" --execute
-      - uses: ./.github/actions/install-nix
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
         if: steps.source.outputs.eligible == 'true'
         with:
           extra-nix-conf: |
@@ -140,7 +142,7 @@ jobs:
           client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
           permission-contents: write
-      - name: Begin complete candidate
+      - name: Create candidate cache release
         id: begin
         if: steps.plan.outputs.refresh == 'true'
         env:
@@ -149,7 +151,8 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py begin --repo "$GITHUB_REPOSITORY"  --source "$RUNNER_TEMP/plan/source.json" --coverage "$RUNNER_TEMP/plan/coverage.json" > "$RUNNER_TEMP/candidate.json"
           echo "release_id=$(jq -er .releaseId "$RUNNER_TEMP/candidate.json")" >> "$GITHUB_OUTPUT"
-      - if: steps.begin.outputs.release_id != ''
+      - name: Upload cache plan
+        if: steps.begin.outputs.release_id != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cache-plan
@@ -179,11 +182,13 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Download cache plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: cache-plan
           path: ${{ runner.temp }}/plan
@@ -194,14 +199,16 @@ jobs:
           if [ -f "$RUNNER_TEMP/plan/previous.json" ]; then
            cp "$RUNNER_TEMP/plan/previous.json" "$RUNNER_TEMP/selection.json"
           fi
-      - if: runner.os == 'Linux'
+      - name: Prepare Linux build environment
+        if: runner.os == 'Linux'
         uses: ./.github/actions/ci-cache-restore
         with:
           component: linux-full-${{ matrix.system }}
           extra-nix-conf: |
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
-      - if: runner.os == 'macOS'
+      - name: Prepare Darwin build environment
+        if: runner.os == 'macOS'
         uses: ./.github/actions/ci-darwin-prepare
         with:
           mode: maintenance
@@ -270,11 +277,12 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Seal exact complete generation
+      - name: Seal and publish cache generation
         run: |
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py seal --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" >/dev/null
@@ -297,11 +305,13 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Download cache plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: cache-plan
           path: ${{ runner.temp }}/plan
@@ -310,11 +320,13 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py resolve --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
           echo "CI_EXPECTED_RECORDS=$RUNNER_TEMP/plan/$CI_LANE_SYSTEM-records.json" >> "$GITHUB_ENV"
-      - if: runner.os == 'Linux'
+      - name: Prepare Linux build environment
+        if: runner.os == 'Linux'
         uses: ./.github/actions/ci-cache-restore
         with:
           component: ${{ matrix.component }}
-      - if: runner.os == 'macOS'
+      - name: Prepare Darwin build environment
+        if: runner.os == 'macOS'
         uses: ./.github/actions/ci-darwin-prepare
         with:
           mode: ${{ matrix.mode }}
@@ -364,15 +376,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_ID: ${{ needs.planning.outputs.release_id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Download cache plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: cache-plan
           path: ${{ runner.temp }}/plan
-      - uses: ./.github/actions/install-nix
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
       - name: Promote and prune retired generations
         run: |
           set -euo pipefail
