@@ -10,7 +10,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: bash
+    - name: Resolve and pin cache generation
+      shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         CACHE_MODE: ${{ inputs.mode }}

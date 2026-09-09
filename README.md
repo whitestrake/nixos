@@ -64,6 +64,8 @@ CI is structured to separate evaluation, validation, building, deployment planni
 
 A successful CI build proves that the relevant configuration evaluates and builds. It does not, by itself, prove that an activated host remains reachable or healthy after deployment. That boundary is handled separately by deployment gating and host-side checks.
 
+Cache generations support GitHub's [immutable Releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases). All image and manifest assets are uploaded before publishing the candidate as a prerelease. Promotion records live in the mutable Release body; legacy records attached as assets remain readable. Retirement deletes the Release before its exact tag. Enable the repository's immutable Releases setting only after the compatible publisher is deployed and validated; local code changes do not enable it.
+
 ## Secrets Management
 
 Secrets are encrypted with [SOPS](https://github.com/getsops/sops) and integrated through [sops-nix](https://github.com/Mic92/sops-nix). Access policy is defined by `age` recipients in `.sops.yaml`.

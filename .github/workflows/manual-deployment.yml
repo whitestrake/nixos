@@ -27,7 +27,7 @@ jobs:
       deploy: ${{ steps.executor.outputs.deploy }}
       matrix: ${{ steps.executor.outputs.matrix }}
     steps:
-      - name: Checkout repository
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -35,7 +35,7 @@ jobs:
       - name: Install Nix
         uses: ./.github/actions/install-nix
 
-      - name: Plan deploy
+      - name: Plan host deployments
         id: plan
         shell: bash
         env:
@@ -48,7 +48,7 @@ jobs:
           CACHIX_DEPLOY_OUTPUT_DIR: ${{ runner.temp }}/cachix-deploy-plan
         run: bash modules/deployment/scripts/cachix-github-deploy-plan.sh
 
-      - name: Report no dispatch
+      - name: Report skipped deployment
         if: ${{ steps.plan.outputs.preview == 'true' || steps.plan.outputs.selected_count == '0' }}
         shell: bash
         env:

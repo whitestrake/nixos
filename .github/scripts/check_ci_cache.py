@@ -3,13 +3,17 @@
 
 import copy
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import ci_cache_generation as generation
 import ci_cache_image as image
+import ci_darwin as darwin
 
 
 DATA = b"abcdefghijkl"
@@ -59,6 +63,46 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_cached_nix_requires_expected_version_and_registered_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            darwin.write_json(root / "mode.json", {"mode": "hot"})
+            env = {
+                "HOME": directory,
+                "XDG_CONFIG_HOME": directory,
+                "NIX_CONF": "build-dir = /tmp/nix-builds",
+                "NIX_VERSION": "2.34.7",
+                "GITHUB_ACCESS_TOKEN": "fresh-run-token",
+            }
+            runtime = Path("/nix/store/cached-nix")
+            with (
+                mock.patch.dict(os.environ, env),
+                mock.patch.object(Path, "resolve", return_value=runtime),
+                mock.patch.object(Path, "is_file", return_value=True),
+                mock.patch.object(darwin, "recovery_ready"),
+                mock.patch.object(darwin, "command") as command,
+            ):
+                command.return_value.stdout = "nix (Nix) 2.34.7\n"
+                self.assertTrue(darwin.activate_nix(root))
+                self.assertEqual(
+                    command.call_args_list[1].args,
+                    (runtime / "bin/nix-store", "--check-validity", runtime),
+                )
+                self.assertIn(
+                    "access-tokens = github.com=fresh-run-token",
+                    (root / "nix/nix.conf").read_text(),
+                )
+                self.assertEqual((root / ".netrc").stat().st_mode & 0o777, 0o600)
+                command.reset_mock()
+                command.return_value.stdout = "nix (Nix) 2.33.0\n"
+                self.assertFalse(darwin.activate_nix(root))
+                self.assertEqual(command.call_count, 1)
+                command.side_effect = [
+                    mock.Mock(stdout="nix (Nix) 2.34.7\n"),
+                    subprocess.CalledProcessError(1, []),
+                ]
+                self.assertFalse(darwin.activate_nix(root))
+
     def test_real_pack_manifest_rejects_mutated_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             _, manifest = packed(Path(directory))
@@ -129,6 +173,19 @@ class CacheCheck(unittest.TestCase):
             }
             for release_id in range(1, 6)
         ]
+        intent = {"releaseId": 2, "previousId": 1, "publisherRunId": 9}
+        releases[1]["assets"] = []
+        releases[1]["body"] = json.dumps(
+            {
+                "schema": generation.PROMOTION_SCHEMA,
+                "promotionIntent": intent,
+                "promotion": {
+                    **intent,
+                    "intentSha256": "a" * 64,
+                    "promotedAt": promoted_at - 1,
+                },
+            }
+        )
         releases[-1]["assets"] = []  # Never promoted; not eligible for retirement.
         current = {"releaseId": 4, "previousId": 3, "promotedAt": promoted_at}
         before_grace = promoted_at + generation.GRACE - 1
@@ -141,6 +198,33 @@ class CacheCheck(unittest.TestCase):
         )
         current.update(releaseId=5, previousId=4, promotedAt=at_grace)
         self.assertEqual(generation.retirement_plan(releases, current, at_grace), [])
+
+    def test_tag_cleanup_retries_transient_failures_but_refuses_changed_target(self):
+        original = {"object": {"type": "commit", "sha": "a" * 40}}
+        changed = {"object": {"type": "commit", "sha": "b" * 40}}
+        with (
+            mock.patch.object(
+                generation,
+                "tag_ref",
+                side_effect=[subprocess.CalledProcessError(1, []), original, changed],
+            ),
+            mock.patch.object(
+                generation,
+                "gh_api",
+                side_effect=[None, subprocess.TimeoutExpired([], 60)],
+            ) as api,
+            self.assertRaisesRegex(ValueError, "orphan tag ci-cache-v1-7 changed"),
+        ):
+            generation.delete_release_and_tag(
+                "owner/repo", {"id": 7, "tag_name": "ci-cache-v1-7"}, original
+            )
+        self.assertEqual(
+            api.call_args_list,
+            [
+                mock.call("owner/repo", "releases/7", "DELETE"),
+                mock.call("owner/repo", "git/refs/tags/ci-cache-v1-7", "DELETE"),
+            ],
+        )
 
     def test_candidate_cleanup_requires_owned_finished_work_and_grace(self):
         updated = "2026-09-08T00:00:00Z"
@@ -196,6 +280,18 @@ class CacheCheck(unittest.TestCase):
             ("run_attempt", 0),
         ):
             self.assertFalse(ready(release, {**run, field: value}))
+        for body in (
+            "{bad",
+            json.dumps({"schema": generation.PROMOTION_SCHEMA, "promotion": None}),
+            json.dumps(
+                {"schema": generation.PROMOTION_SCHEMA, "promotionIntent": None}
+            ),
+        ):
+            with (
+                self.subTest(body=body),
+                self.assertRaisesRegex(ValueError, "promotion journal"),
+            ):
+                ready({**release, "body": body}, run)
 
 
 if __name__ == "__main__":

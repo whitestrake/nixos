@@ -413,6 +413,64 @@ def recovery_ready():
     image.require(result.returncode == 1, "unexpected Nix daemon")
 
 
+def activate_nix(root):
+    settings = json.loads((root / "mode.json").read_text())
+    if settings["mode"] == "cold":
+        return False
+    # The installer pointer supports generations produced before the explicit root.
+    runtime = ROOTS / "nix"
+    if not runtime.exists():
+        runtime = Path("/nix/var/nix-quick-install-action/nix")
+    runtime = runtime.resolve()
+    if runtime.parent != Path("/nix/store") or not (runtime / "bin/nix").is_file():
+        return False
+
+    home = Path.home()
+    config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config")) / "nix/nix.conf"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(os.environ["NIX_CONF"] + "\n")
+    config.chmod(0o600)
+    token = os.environ.get("GITHUB_ACCESS_TOKEN", "")
+    if token:
+        with config.open("a") as stream:
+            stream.write(f"access-tokens = github.com={token}\n")
+        netrc = home / ".netrc"
+        with netrc.open("a") as stream:
+            stream.write(f"machine github.com\nlogin github-token\npassword {token}\n")
+        netrc.chmod(0o600)
+    try:
+        version = command(
+            runtime / "bin/nix", "--version", capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        if version != f"nix (Nix) {os.environ['NIX_VERSION']}":
+            print(f"Cached runtime is incompatible: {version}")
+            return False
+        command(runtime / "bin/nix-store", "--check-validity", runtime, timeout=30)
+        recovery_ready()
+        command(
+            "/bin/bash",
+            "-euc",
+            r"""
+            MANPATH= . "$1/etc/profile.d/nix.sh"
+            "$1/bin/nix-env" -i "$1"
+            echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+            echo "NIX_PROFILES=/nix/var/nix/profiles/default $HOME/.nix-profile" >> "$GITHUB_ENV"
+            echo "NIX_USER_PROFILE_DIR=/nix/var/nix/profiles/per-user/$USER" >> "$GITHUB_ENV"
+            echo "NIX_SSL_CERT_FILE=${NIX_SSL_CERT_FILE:-/etc/ssl/cert.pem}" >> "$GITHUB_ENV"
+            """,
+            "activate-nix",
+            runtime,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print(f"Cached runtime could not be activated: {error}")
+        return False
+    print(
+        f"CI_DARWIN_NIX_ACTIVATED runtime={runtime} version={os.environ['NIX_VERSION']}"
+    )
+    return True
+
+
 def recover_setup(root):
     settings = json.loads((root / "mode.json").read_text())
     if settings["mode"] != "hot":
@@ -541,21 +599,21 @@ def produce(root, output, coverage, argv, deep=False):
             f"{tool} must be host-native outside /nix",
         )
     verify(coverage, "aarch64-darwin", deep=deep)
-    cachix = Path(shutil.which("cachix") or "").resolve()
-    image.require(
-        str(cachix).startswith("/nix/store/") and cachix.name == "cachix",
-        "ordinary Cachix must be installed",
-    )
-    closure = Path("/nix/store") / cachix.parts[3]
-    command(
-        "nix-store",
-        "--add-root",
-        ROOTS / "cachix",
-        "--indirect",
-        "--realise",
-        closure,
-        stdout=subprocess.DEVNULL,
-    )
+    for tool in ("nix", "cachix"):
+        executable = Path(shutil.which(tool) or "").resolve()
+        image.require(
+            str(executable).startswith("/nix/store/") and executable.name == tool,
+            f"{tool} must be installed in the store",
+        )
+        command(
+            "nix-store",
+            "--add-root",
+            ROOTS / tool,
+            "--indirect",
+            "--realise",
+            Path("/nix/store") / executable.parts[3],
+            stdout=subprocess.DEVNULL,
+        )
     command("nix", "store", "gc")
     command("sync")
     command("sudo", "hdiutil", "detach", "/nix", timeout=120)
@@ -598,7 +656,11 @@ def produce(root, output, coverage, argv, deep=False):
         verify(coverage, "aarch64-darwin")
         attempt = profile / "work"
         attempt.mkdir()
-        for workload in ([str(ROOTS / "cachix/bin/cachix"), "--version"], argv):
+        for workload in (
+            [str(ROOTS / "nix/bin/nix"), "--version"],
+            [str(ROOTS / "cachix/bin/cachix"), "--version"],
+            argv,
+        ):
             status, fault = supervise(
                 workload,
                 attempt,
@@ -631,7 +693,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
-        choices=("mount", "run", "cleanup", "produce", "recover-setup", "ready"),
+        choices=(
+            "mount",
+            "run",
+            "cleanup",
+            "produce",
+            "recover-setup",
+            "ready",
+            "activate-nix",
+        ),
     )
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument(
@@ -675,6 +745,15 @@ def main():
             mount(
                 root, "cold" if args.mode == "maintenance" else "maintenance", args.repo
             )
+    elif args.operation == "activate-nix":
+        activated = activate_nix(root)
+        # Let setup recovery remount before running an installer on failed backing.
+        image.require(
+            not helper_fault(helper_pid(root), root / "reader/backing-failure"),
+            "cache backing failed during Nix activation",
+        )
+        with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+            stream.write(f"activated={str(activated).lower()}\n")
     elif args.operation == "recover-setup":
         result = recover_setup(root)
         print(json.dumps(result))

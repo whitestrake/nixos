@@ -35,7 +35,8 @@ runs:
           echo "::error ::Apple crash reporter remained loaded"
           exit 1
         fi
-    - shell: bash
+    - name: Prepare host tools and mount Nix store
+      shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         DARWIN_MODE: ${{ inputs.mode }}
@@ -57,11 +58,12 @@ runs:
         else
           "$host_python" .github/scripts/ci_darwin.py mount --state "$RUNNER_TEMP/darwin" --mode cold
         fi
-    - name: Install Nix
+    - name: Activate cached Nix or install it
       id: install
       continue-on-error: true
       uses: ./.github/actions/install-nix
       with:
+        darwin-state: ${{ runner.temp }}/darwin
         extra-nix-conf: ${{ inputs.extra-nix-conf }}
     - name: Select cached Cachix
       id: cachix-bin
@@ -94,10 +96,11 @@ runs:
       run: |
         set -euo pipefail
         "$HOST_PYTHON" .github/scripts/ci_darwin.py recover-setup --state "$RUNNER_TEMP/darwin"
-    - name: Install Nix after clean recovery
+    - name: Activate Nix after cache recovery
       if: steps.recovery.outputs.recovered == 'true'
       uses: ./.github/actions/install-nix
       with:
+        darwin-state: ${{ runner.temp }}/darwin
         extra-nix-conf: ${{ inputs.extra-nix-conf }}
     - name: Configure Cachix after clean recovery
       if: steps.recovery.outputs.recovered == 'true' && inputs.configure-cachix == 'true'

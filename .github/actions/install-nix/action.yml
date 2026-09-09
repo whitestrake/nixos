@@ -1,7 +1,11 @@
 name: "Install Nix"
-description: "Install Nix with this repository's GitHub Actions defaults."
+description: "Activate cached Darwin Nix or install Nix with the repository defaults."
 
 inputs:
+  darwin-state:
+    description: "Mounted Darwin cache state, when cached runtime activation is available."
+    required: false
+    default: ""
   extra-nix-conf:
     description: "Additional nix.conf lines appended to the repository defaults."
     required: false
@@ -10,28 +14,14 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Prepare Nix build directory
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        sudo mkdir -p /tmp/nix-builds
-        sudo chmod 1777 /tmp/nix-builds
-
-        if [ "$RUNNER_OS" = macOS ]; then
-          # The pinned installer's retry bound requires Bash 4.1+ errexit semantics.
-          bash_bin="$(brew --prefix bash)/bin"
-          case "$bash_bin" in /nix/*) exit 1 ;; esac
-          if [ ! -x "$bash_bin/bash" ]; then
-            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install bash
-          fi
-          "$bash_bin/bash" -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 1) ))'
-          echo "$bash_bin" >> "$GITHUB_PATH"
-        fi
-
-    - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
-      with:
-        nix_conf: |
+    - name: Prepare build directory and activate cached Nix
+      id: prepare
+      shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+      env:
+        DARWIN_STATE: ${{ inputs.darwin-state }}
+        GITHUB_ACCESS_TOKEN: ${{ github.token }}
+        NIX_VERSION: "2.34.7"
+        NIX_CONF: |
           experimental-features = nix-command flakes
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
@@ -41,3 +31,25 @@ runs:
           download-attempts = 2
           stalled-download-timeout = 60
           ${{ inputs.extra-nix-conf }}
+      run: |
+        set -euo pipefail
+
+        sudo mkdir -p /tmp/nix-builds
+        sudo chmod 1777 /tmp/nix-builds
+
+        {
+          echo "nix-version=$NIX_VERSION"
+          echo "nix-conf<<NIX_CONFIG_END"
+          printenv NIX_CONF
+          echo NIX_CONFIG_END
+        } >> "$GITHUB_OUTPUT"
+        if [ -n "$DARWIN_STATE" ]; then
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py activate-nix --state "$DARWIN_STATE"
+        fi
+
+    - name: Install Nix when no compatible cached runtime is available
+      if: steps.prepare.outputs.activated != 'true'
+      uses: whitestrake/nix-quick-install-action@5f21485631edff028d7d901364e33e1e63726c9e # v35 with bounded Bash 3.2 retries
+      with:
+        nix_version: ${{ steps.prepare.outputs.nix-version }}
+        nix_conf: ${{ steps.prepare.outputs.nix-conf }}
