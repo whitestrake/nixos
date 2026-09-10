@@ -13,7 +13,9 @@ import signal
 import shutil
 import socketserver
 import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -393,19 +395,31 @@ def gh_download_whole(repo, asset, limit=64 * 1024 * 1024):
         type(asset.get("id")) is int and asset["id"] > 0 and 0 < asset["size"] <= limit,
         "invalid asset or download limit",
     )
-    body = subprocess.run(
-        [
-            "gh",
-            "api",
-            f"repos/{repo}/releases/assets/{asset['id']}",
-            "--header",
-            "Accept: application/octet-stream",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-        timeout=60,
-    ).stdout
+    for attempt in range(1, 4):
+        try:
+            body = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/releases/assets/{asset['id']}",
+                    "--header",
+                    "Accept: application/octet-stream",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=60,
+            ).stdout
+            break
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
+            print(
+                f"Asset {asset['id']} download attempt {attempt}/3 failed: {detail or error}",
+                file=sys.stderr,
+            )
+            if attempt == 3:
+                raise
+            time.sleep(2**attempt)
     require(len(body) == asset["size"], "asset size mismatch")
     return body
 
