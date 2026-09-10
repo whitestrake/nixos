@@ -68,7 +68,7 @@ in
           }
           trap cleanup EXIT
 
-          python3 - "$repo_root" "$file_path" "$@" << 'EOF'
+          python3 - "$repo_root" "$file_path" "$@" >&2 << 'EOF'
           import os
           import re
           import sys
