@@ -1,4 +1,4 @@
-# DO-NOT-EDIT. This file was auto-generated using github:vic/flake-file.
+# DO-NOT-EDIT. This file was auto-generated using github:denful/flake-file.
 # Use `nix run .#write-flake` to regenerate it.
 {
   description = "Whitestrake's Dendritic Nix OS configuration";
@@ -18,7 +18,7 @@
       url = "github:LnL7/nix-darwin/nix-darwin-26.05";
       inputs.nixpkgs.follows = "nixpkgs-darwin";
     };
-    den.url = "github:vic/den";
+    den.url = "github:denful/den";
     disko = {
       url = "github:nix-community/disko/latest";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -36,7 +36,7 @@
       url = "github:strongtz/i915-sriov-dkms";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
-    import-tree.url = "github:vic/import-tree";
+    import-tree.url = "github:denful/import-tree";
     nix-amp = {
       url = "github:whitestrake/nix-amp";
       inputs.nixpkgs.follows = "nixpkgs";
