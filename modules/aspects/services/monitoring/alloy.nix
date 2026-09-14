@@ -179,14 +179,6 @@
         }
       ];
 
-      nixpkgs.overlays = lib.optional cadvisorEnabled (_final: prev: {
-        cadvisor = prev.cadvisor.overrideAttrs (old: {
-          # Backport https://github.com/google/cadvisor/pull/3882 so the
-          # containerd and Docker factories keep separate namespace clients.
-          patches = (old.patches or []) ++ [./cadvisor-containerd-client-cache.patch];
-        });
-      });
-
       # Grafana Alloy
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
