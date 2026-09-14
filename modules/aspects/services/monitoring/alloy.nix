@@ -8,10 +8,10 @@
     }: let
       telemetry = config.services.alloy.telemetry;
       cadvisorEnabled = telemetry.cadvisorMode != "legacy";
-      zfsCanaryEnabled = telemetry.zfsMode == "canary";
+      zfsExporterEnabled = telemetry.zfsMode != "legacy";
       fleetTelemetryAttributes =
         lib.optionalString cadvisorEnabled "\n    \"telemetry.cadvisor\" = \"${telemetry.cadvisorMode}\","
-        + lib.optionalString zfsCanaryEnabled "\n    \"telemetry.zfs\" = \"${telemetry.zfsMode}\",";
+        + lib.optionalString zfsExporterEnabled "\n    \"telemetry.zfs\" = \"${telemetry.zfsMode}\",";
       zfsMetrics = pkgs.writeShellApplication {
         name = "alloy-zfs-metrics";
         runtimeInputs = [
@@ -25,6 +25,7 @@
 
           output=/var/lib/alloy/zfs.prom
           last_success=/var/lib/alloy/zfs-scrub-last-success.json
+          mode=${lib.escapeShellArg telemetry.zfsMode}
           status_tmp="$(mktemp /var/lib/alloy/zfs-status.XXXXXX)"
           objects_tmp="$(mktemp /var/lib/alloy/zfs-objects.XXXXXX)"
           monitor_tmp="$(mktemp /var/lib/alloy/zfs-monitor.XXXXXX)"
@@ -33,28 +34,66 @@
           trap 'rm -f "$status_tmp" "$objects_tmp" "$monitor_tmp" "$metrics_tmp" "$last_tmp"' EXIT
 
           zpool status -j -p > "$status_tmp"
-          zfs list -H -p -t filesystem,volume \
-            -o name,type,used,available,usedbydataset,usedbysnapshots,usedbychildren,quota,refquota \
-            > "$objects_tmp"
-          zfs get -H -p -o name,value,source -s local -t filesystem,volume \
-            grafana:monitor > "$monitor_tmp"
-          if ! test -s "$last_success"; then
-            printf '{}\n' > "$last_success"
+          if test "$mode" != standalone; then
+            zfs list -H -p -t filesystem,volume \
+              -o name,type,used,available,usedbydataset,usedbysnapshots,usedbychildren,quota,refquota \
+              > "$objects_tmp"
+            zfs get -H -p -o name,value,source -s local -t filesystem,volume \
+              grafana:monitor > "$monitor_tmp"
           fi
 
-          jq --slurpfile previous "$last_success" '
+          previous="$last_success"
+          if ! test -s "$previous"; then
+            previous_tmp="$(mktemp /var/lib/alloy/zfs-scrub-previous.XXXXXX)"
+            trap 'rm -f "$status_tmp" "$objects_tmp" "$monitor_tmp" "$metrics_tmp" "$last_tmp" "$previous_tmp"' EXIT
+            printf '{}\n' > "$previous_tmp"
+            previous="$previous_tmp"
+          fi
+
+          jq --slurpfile previous "$previous" '
             reduce (.pools | to_entries[]) as $pool ($previous[0];
-              if (($pool.value.scan_stats.function // "") == "SCRUB"
-                  and ($pool.value.scan_stats.state // "") == "FINISHED"
-                  and (($pool.value.scan_stats.errors // "0") | tonumber) == 0)
-              then .[$pool.key] = (($pool.value.scan_stats.end_time // "0") | tonumber)
+              ($pool.value.scan_stats // {}) as $scan |
+              (($scan.errors // null) | try tonumber catch null) as $errors |
+              (($scan.end_time // null) | try tonumber catch null) as $end_time |
+              if (($scan.function // "") == "SCRUB"
+                  and ($scan.state // "") == "FINISHED"
+                  and $errors != null
+                  and $errors == 0
+                  and $end_time != null)
+              then .[$pool.key] = $end_time
               else .
               end
             )
           ' "$status_tmp" > "$last_tmp"
-          mv "$last_tmp" "$last_success"
 
-          jq -r --slurpfile last "$last_success" '
+          if test "$mode" = standalone; then
+            jq -r --slurpfile last "$last_tmp" '
+              def metric($pool; $name; $value):
+                "\($name){pool=\($pool | @json)} \($value)";
+              def required_number($value; $field):
+                if $value == null then error("missing " + $field)
+                else try ($value | tonumber) catch error("invalid " + $field)
+                end;
+              if ((.pools? | type) != "object" or (.pools | length) == 0)
+              then error("no ZFS pools returned")
+              else
+                .pools | to_entries[] |
+                .key as $pool |
+                .value as $status |
+                (($status.vdevs // {})[$pool] // error("missing root vdev for " + $pool)) as $root |
+                required_number($root.read_errors; "read_errors") as $read_errors |
+                required_number($root.write_errors; "write_errors") as $write_errors |
+                required_number($root.checksum_errors; "checksum_errors") as $checksum_errors |
+                metric($pool; "zfs_pool_read_errors_total"; $read_errors),
+                metric($pool; "zfs_pool_write_errors_total"; $write_errors),
+                metric($pool; "zfs_pool_checksum_errors_total"; $checksum_errors),
+                metric($pool; "zfs_pool_scrub_last_success_timestamp_seconds";
+                  ($last[0][$pool] // 0))
+              end
+            ' "$status_tmp" > "$metrics_tmp"
+            printf 'zfs_incident_collection_last_success_timestamp_seconds %s\n' "$(date +%s)" >> "$metrics_tmp"
+          else
+            jq -r --slurpfile last "$last_tmp" '
             .pools | to_entries[] |
             .key as $pool |
             .value as $status |
@@ -78,9 +117,9 @@
               if ($status.scan_stats.state // "") == "SCANNING" then 1 else 0 end),
             metric("homelab_zfs_pool_scrub_last_success_timestamp_seconds";
               ($last[0][$pool] // 0))
-          ' "$status_tmp" > "$metrics_tmp"
+            ' "$status_tmp" > "$metrics_tmp"
 
-          awk -F '	' -v monitor_file="$monitor_tmp" '
+            awk -F '	' -v monitor_file="$monitor_tmp" '
             FILENAME == monitor_file {
               if ($2 == "include" || $2 == "exclude") {
                 monitor[$1] = $2
@@ -110,9 +149,11 @@
               print "homelab_zfs_object_usedbysnapshots_bytes" labels " " $6
               print "homelab_zfs_object_usedbychildren_bytes" labels " " $7
             }
-          ' "$monitor_tmp" "$objects_tmp" >> "$metrics_tmp"
+            ' "$monitor_tmp" "$objects_tmp" >> "$metrics_tmp"
+          fi
 
           chmod 0644 "$metrics_tmp"
+          mv "$last_tmp" "$last_success"
           mv "$metrics_tmp" "$output"
         '';
       };
@@ -160,6 +201,7 @@
               type = lib.types.enum [
                 "legacy"
                 "canary"
+                "standalone"
               ];
               default = "legacy";
               description = "Migration mode for ZFS telemetry.";
@@ -174,8 +216,8 @@
           message = "services.alloy.telemetry.cadvisorMode requires Docker when set to canary or standalone";
         }
         {
-          assertion = !zfsCanaryEnabled || config.boot.zfs.enabled;
-          message = "services.alloy.telemetry.zfsMode requires ZFS when set to canary";
+          assertion = !zfsExporterEnabled || config.boot.zfs.enabled;
+          message = "services.alloy.telemetry.zfsMode requires ZFS when set to canary or standalone";
         }
       ];
 
@@ -198,7 +240,7 @@
       };
       services.prometheus.exporters.smartctl.enable = true;
       services.prometheus.exporters.smartctl.listenAddress = "127.0.0.1";
-      services.prometheus.exporters.zfs = lib.mkIf zfsCanaryEnabled {
+      services.prometheus.exporters.zfs = lib.mkIf zfsExporterEnabled {
         enable = true;
         listenAddress = "127.0.0.1";
         port = 9134;
@@ -228,7 +270,7 @@
       };
 
       systemd.services.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Export bounded ZFS pool and object metrics for Alloy";
+        description = "Export bounded ZFS metrics for Alloy";
         after = [
           "alloy.service"
           "zfs-import.target"
@@ -240,11 +282,12 @@
           Group = "root";
           UMask = "0022";
           ExecStart = lib.getExe zfsMetrics;
+          TimeoutStartSec = "45s";
         };
       };
 
       systemd.timers.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Refresh bounded ZFS pool and object metrics for Alloy";
+        description = "Refresh bounded ZFS metrics for Alloy";
         wantedBy = ["timers.target"];
         timerConfig = {
           OnBootSec = "2m";
@@ -258,12 +301,12 @@
       den.deploy.health = {
         requiredSystemdUnits =
           lib.optional cadvisorEnabled "cadvisor.service"
-          ++ lib.optional zfsCanaryEnabled "prometheus-zfs-exporter.service";
+          ++ lib.optional zfsExporterEnabled "prometheus-zfs-exporter.service";
         requiredCommands =
           lib.optionalAttrs cadvisorEnabled {
             cadvisor = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:8080/metrics >/dev/null";
           }
-          // lib.optionalAttrs zfsCanaryEnabled {
+          // lib.optionalAttrs zfsExporterEnabled {
             zfs-exporter = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:9134/metrics >/dev/null";
           };
       };
