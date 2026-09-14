@@ -6,6 +6,12 @@
       pkgs,
       ...
     }: let
+      telemetry = config.services.alloy.telemetry;
+      cadvisorEnabled = telemetry.cadvisorMode != "legacy";
+      zfsCanaryEnabled = telemetry.zfsMode == "canary";
+      fleetTelemetryAttributes =
+        lib.optionalString cadvisorEnabled "\n    \"telemetry.cadvisor\" = \"${telemetry.cadvisorMode}\","
+        + lib.optionalString zfsCanaryEnabled "\n    \"telemetry.zfs\" = \"${telemetry.zfsMode}\",";
       zfsMetrics = pkgs.writeShellApplication {
         name = "alloy-zfs-metrics";
         runtimeInputs = [
@@ -137,12 +143,75 @@
         '';
       };
     in {
+      imports = [
+        {
+          options.services.alloy.telemetry = {
+            cadvisorMode = lib.mkOption {
+              type = lib.types.enum [
+                "legacy"
+                "canary"
+                "standalone"
+              ];
+              default = "legacy";
+              description = "Migration mode for cAdvisor telemetry.";
+            };
+
+            zfsMode = lib.mkOption {
+              type = lib.types.enum [
+                "legacy"
+                "canary"
+              ];
+              default = "legacy";
+              description = "Migration mode for ZFS telemetry.";
+            };
+          };
+        }
+      ];
+
+      assertions = [
+        {
+          assertion = !cadvisorEnabled || config.virtualisation.docker.enable;
+          message = "services.alloy.telemetry.cadvisorMode requires Docker when set to canary or standalone";
+        }
+        {
+          assertion = !zfsCanaryEnabled || config.boot.zfs.enabled;
+          message = "services.alloy.telemetry.zfsMode requires ZFS when set to canary";
+        }
+      ];
+
       # Grafana Alloy
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
       services.alloy.extraFlags = ["--stability.level=public-preview"];
+      services.cadvisor = lib.mkIf cadvisorEnabled {
+        enable = true;
+        listenAddress = "127.0.0.1";
+        port = 8080;
+        extraOptions = [
+          "--storage_duration=2m"
+          "--docker_only=true"
+          "--disable_root_cgroup_stats=true"
+          "--store_container_labels=false"
+          "--enable_metrics=cpu,memory,network"
+        ];
+      };
       services.prometheus.exporters.smartctl.enable = true;
       services.prometheus.exporters.smartctl.listenAddress = "127.0.0.1";
+      services.prometheus.exporters.zfs = lib.mkIf zfsCanaryEnabled {
+        enable = true;
+        listenAddress = "127.0.0.1";
+        port = 9134;
+        extraFlags = [
+          "--collector.dataset-filesystem"
+          "--properties.dataset-filesystem=used,available,usedbydataset,usedbysnapshots,usedbychildren"
+          "--no-collector.dataset-snapshot"
+          "--exclude=^[^/]+$"
+          "--collector.dataset-volume"
+          "--properties.dataset-volume=used,available,usedbydataset,usedbysnapshots,usedbychildren"
+          "--collector.pool"
+          "--properties.pool=allocated,free,health"
+        ];
+      };
       systemd.services.alloy = {
         environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
         preStart = lib.getExe hostInfoMetrics;
@@ -185,6 +254,19 @@
         };
       };
 
+      den.deploy.health = {
+        requiredSystemdUnits =
+          lib.optional cadvisorEnabled "cadvisor.service"
+          ++ lib.optional zfsCanaryEnabled "prometheus-zfs-exporter.service";
+        requiredCommands =
+          lib.optionalAttrs cadvisorEnabled {
+            cadvisor = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:8080/metrics >/dev/null";
+          }
+          // lib.optionalAttrs zfsCanaryEnabled {
+            zfs-exporter = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:9134/metrics >/dev/null";
+          };
+      };
+
       environment.etc."alloy/config.alloy".text = ''
         remotecfg {
           url            = sys.env("GCLOUD_FM_URL")
@@ -193,7 +275,7 @@
 
           attributes = {
             "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}",
-            "telemetry.tailscale" = "${lib.boolToString config.services.tailscale.enable}",
+            "telemetry.tailscale" = "${lib.boolToString config.services.tailscale.enable}",${fleetTelemetryAttributes}
           }
 
           basic_auth {
