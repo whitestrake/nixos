@@ -25,6 +25,8 @@
       ];
       system.stateVersion = "25.11";
 
+      services.alloy.telemetry.cadvisorMode = "canary";
+
       # Use grub boot loader
       boot.loader.grub = {
         enable = true;
