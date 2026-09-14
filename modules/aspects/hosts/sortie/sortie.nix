@@ -25,7 +25,7 @@
 
       system.stateVersion = "25.05";
 
-      services.alloy.telemetry.cadvisorMode = "canary";
+      services.alloy.telemetry.cadvisorMode = "standalone";
 
       # QEMU guest agent
       services.qemuGuest.enable = true;

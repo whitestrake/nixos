@@ -11,7 +11,7 @@
       ];
       system.stateVersion = "24.11";
 
-      services.alloy.telemetry.cadvisorMode = "canary";
+      services.alloy.telemetry.cadvisorMode = "standalone";
 
       boot.loader.grub.enable = true;
       boot.loader.grub.device = "/dev/vda";
