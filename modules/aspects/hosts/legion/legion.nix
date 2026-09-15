@@ -32,6 +32,7 @@
       };
 
       services.qemuGuest.enable = true;
+      services.alloy.telemetry.zfsMode = "canary";
       services.zfs.autoScrub.enable = true;
 
       zramSwap.enable = true;
