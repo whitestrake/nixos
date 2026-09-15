@@ -26,7 +26,7 @@
       system.stateVersion = "25.11";
 
       services.alloy.telemetry.cadvisorMode = "standalone";
-      services.alloy.telemetry.zfsMode = "canary";
+      services.alloy.telemetry.zfsMode = "standalone";
 
       # Use grub boot loader
       boot.loader.grub = {
