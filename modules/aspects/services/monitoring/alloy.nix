@@ -178,12 +178,7 @@
           attributes = {
             "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}",
             "telemetry.tailscale" = "${lib.boolToString config.services.tailscale.enable}",
-            ${lib.optionalString config.virtualisation.docker.enable ''
-          "telemetry.cadvisor" = "standalone",
-        ''}
-            ${lib.optionalString config.boot.zfs.enabled ''
-          "telemetry.zfs" = "standalone",
-        ''}
+            "telemetry.zfs" = "${lib.boolToString config.boot.zfs.enabled}",
           }
 
           basic_auth {
