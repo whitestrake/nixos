@@ -27,8 +27,6 @@
 
       # QEMU guest agent
       services.qemuGuest.enable = true;
-      services.alloy.telemetry.cadvisorMode = "standalone";
-      services.alloy.telemetry.zfsMode = "standalone";
 
       # Use the systemd-boot EFI boot loader.
       boot.loader.systemd-boot.enable = true;

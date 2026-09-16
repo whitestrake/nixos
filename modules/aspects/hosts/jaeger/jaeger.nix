@@ -11,8 +11,6 @@
       ];
       system.stateVersion = "24.05";
 
-      services.alloy.telemetry.cadvisorMode = "standalone";
-
       # Use the systemd-boot EFI boot loader.
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
