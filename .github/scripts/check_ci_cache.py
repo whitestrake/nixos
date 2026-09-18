@@ -2,6 +2,7 @@
 """Small portable checks for cache data and retention boundaries."""
 
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -63,6 +64,63 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_upload_reconciles_errors_only_with_matching_uploaded_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shard.bin"
+            path.write_bytes(DATA)
+            asset = {
+                "id": 10,
+                "name": path.name,
+                "size": len(DATA),
+                "digest": "sha256:" + image.sha256(DATA),
+                "state": "uploaded",
+            }
+            for error in (
+                None,
+                subprocess.CalledProcessError(1, ["gh", "release", "upload"]),
+                subprocess.TimeoutExpired(["gh", "release", "upload"], 600),
+            ):
+                for assets, message in (
+                    ([asset], None),
+                    ([], "uploaded asset missing"),
+                    ([asset, asset], "uploaded asset missing"),
+                    ([{**asset, "name": "other.bin"}], "uploaded asset missing"),
+                    ([{**asset, "size": len(DATA) + 1}], "upload integrity mismatch"),
+                    (
+                        [{**asset, "digest": "sha256:" + "0" * 64}],
+                        "upload integrity mismatch",
+                    ),
+                    ([{**asset, "state": "starter"}], "asset upload incomplete"),
+                ):
+                    release = {"id": 7, "tag_name": "ci-cache-v1-7", "assets": []}
+                    fresh = {**release, "assets": assets}
+                    with (
+                        self.subTest(error=error, assets=assets),
+                        mock.patch.object(
+                            generation, "gh_upload", side_effect=error
+                        ) as upload,
+                        mock.patch.object(
+                            generation, "gh_api", return_value=fresh
+                        ) as api,
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                        mock.patch("sys.stderr", new_callable=io.StringIO),
+                    ):
+                        if message:
+                            with self.assertRaisesRegex(ValueError, message):
+                                generation.upload("owner/repo", release, path)
+                            self.assertEqual(release["assets"], [])
+                        else:
+                            self.assertEqual(
+                                generation.upload("owner/repo", release, path),
+                                image.identity(asset),
+                            )
+                            self.assertEqual(release, fresh)
+                        upload.assert_called_once_with(
+                            "owner/repo", release["tag_name"], path
+                        )
+                        api.assert_called_once_with("owner/repo", "releases/7")
+                        self.assertEqual(stdout.getvalue(), "")
+
     def test_cached_nix_requires_expected_version_and_registered_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

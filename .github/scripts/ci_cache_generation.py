@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -347,10 +348,18 @@ def upload(repo, release, path):
         not any(a["name"] == path.name for a in release["assets"]),
         "asset already exists",
     )
-    gh_upload(repo, release["tag_name"], path)
+    try:
+        gh_upload(repo, release["tag_name"], path)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        # GitHub may have stored the asset before the upload response failed.
+        print(
+            f"::warning::Upload command failed; checking asset integrity: {error}",
+            file=sys.stderr,
+        )
     fresh = gh_api(repo, f"releases/{release['id']}")
     matches = [a for a in fresh["assets"] if a["name"] == path.name]
     require(len(matches) == 1, "uploaded asset missing")
+    require(matches[0].get("state") == "uploaded", "asset upload incomplete")
     pin = identity(matches[0])
     require(
         pin["sha256"] == file_sha256(path) and pin["size"] == path.stat().st_size,
