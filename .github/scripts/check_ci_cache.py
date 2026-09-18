@@ -64,6 +64,56 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_range_download_retries_truncation_once_and_rejects_bad_headers(self):
+        url = "https://example.invalid/shard"
+        asset = {"size": len(DATA), "browser_download_url": url}
+        for to_file in (False, True):
+            for bodies, content_range, succeeds, calls in (
+                ([DATA[:4], DATA], "bytes 0-11/12", True, 2),
+                ([DATA[:4], DATA[:4]], "bytes 0-11/12", False, 2),
+                ([DATA[:4], DATA], "bytes 1-12/12", False, 1),
+                ([DATA + b"x", DATA], "bytes 0-11/12", False, 1),
+            ):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "shard"
+                    responses = []
+                    for body in bodies:
+                        response = io.BytesIO(body)
+                        response.status = 206
+                        response.headers = {
+                            "Content-Range": content_range,
+                            "Content-Length": str(len(DATA)),
+                        }
+                        response.geturl = lambda: url
+                        responses.append(response)
+                    fetcher = image.RangeFetcher("owner/repo", {7: asset})
+                    with (
+                        self.subTest(
+                            to_file=to_file, bodies=bodies, content_range=content_range
+                        ),
+                        mock.patch.object(
+                            image.urllib.request, "urlopen", side_effect=responses
+                        ) as request,
+                        mock.patch.object(image.time, "sleep"),
+                    ):
+
+                        def download():
+                            if to_file:
+                                return fetcher.fetch_to(7, 0, len(DATA) - 1, path)
+                            return fetcher.fetch(7, 0, len(DATA) - 1)
+
+                        if succeeds:
+                            self.assertEqual(download(), len(DATA) if to_file else DATA)
+                            if to_file:
+                                self.assertEqual(path.read_bytes(), DATA)
+                        else:
+                            with self.assertRaisesRegex(
+                                ValueError, "invalid range response"
+                            ):
+                                download()
+                            self.assertFalse(path.exists())
+                        self.assertEqual(request.call_count, calls)
+
     def test_upload_reconciles_errors_only_with_matching_uploaded_asset(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shard.bin"

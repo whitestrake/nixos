@@ -503,15 +503,17 @@ class RangeFetcher:
                     content_range = response.headers.get("Content-Range")
                     content_length = response.headers.get("Content-Length")
                     final_url = response.geturl()
-                valid = (
+                valid_headers = (
                     status == 206
                     and content_range == f"bytes {start}-{end}/{asset['size']}"
                     and content_length == str(expected)
-                    and size == expected
                 )
-                if not valid:
+                if not valid_headers or size != expected:
                     if target is not None:
                         Path(target).unlink(missing_ok=True)
+                    if valid_headers and size < expected and not attempt:
+                        time.sleep(1)
+                        continue
                     raise ValueError(
                         "invalid range response: "
                         f"status={status} range={content_range!r} "
