@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 
 from ci_cache_image import (
     DRAFT_NAME,
@@ -799,10 +800,7 @@ def promote(repo, release_id):
     return finish_promotion(repo, release)
 
 
-def retirement_plan(releases, current, now):
-    # ponytail: frequent promotions retain extras; track retirement individually if space demands it.
-    if now - current["promotedAt"] < GRACE:
-        return []
+def retirement_candidates(releases, current):
     protected = {current["releaseId"], current["previousId"]}
     return sorted(
         release["id"]
@@ -830,21 +828,32 @@ def candidate_ready(release, run, repo, now):
     if not (
         tag
         and not promoted
-        and (
-            release.get("draft")
-            or (release.get("prerelease") and run.get("head_branch") == "master")
-        )
+        and (release.get("draft") or release.get("prerelease"))
         and release.get("author", {}).get("login") in AUTHORS
     ):
         return False
-    return (
+    if not (
         run.get("id") == int(tag[1])
         and run.get("run_attempt", 0) >= int(tag[2]) > 0
         and run.get("status") == "completed"
         and run.get("path") == PUBLISHER
         and run.get("head_repository", {}).get("full_name") == repo
         and run.get("head_sha") == release.get("target_commitish")
-        and now
+    ):
+        return False
+    if not release.get("draft") and run.get("head_branch") != "master":
+        branch = run.get("head_branch")
+        if not isinstance(branch, str) or not branch:
+            return False
+        try:
+            gh_api(repo, f"branches/{quote(branch, safe='')}")
+        except subprocess.CalledProcessError as error:
+            if b"HTTP 404" not in (error.stderr or b""):
+                raise
+            return True
+        return False
+    return (
+        now
         - max(
             datetime.fromisoformat(value).timestamp()
             for value in (release["updated_at"], run["updated_at"])
@@ -919,7 +928,12 @@ def prune_candidates(repo, execute=False):
                     and candidate["source"]["revision"] == run["head_sha"],
                     "candidate identity mismatch",
                 )
-        except (ValueError, KeyError, subprocess.CalledProcessError) as error:
+        except (
+            ValueError,
+            KeyError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
             print(
                 f"::warning ::Leaving unverifiable cache candidate {release['id']}: {type(error).__name__}"
             )
@@ -934,9 +948,13 @@ def prune_candidates(repo, execute=False):
                 )
             fresh = gh_api(repo, f"releases/{release['id']}")
             require(
-                not promotion_record_present(fresh)
-                and (fresh["draft"] or fresh["prerelease"]),
-                "candidate was promoted during cleanup",
+                candidate_ready(
+                    fresh,
+                    gh_api(repo, f"actions/runs/{run['id']}"),
+                    repo,
+                    time.time(),
+                ),
+                "candidate is no longer eligible for cleanup",
             )
             require(
                 tag_ref(repo, release["tag_name"]) == ref,
@@ -972,13 +990,16 @@ def prune(repo, source, execute=False):
         finish_promotion(repo, latest, recovery_run=run_id)
     current = promotion_record(repo, latest, generation)
     releases = release_inventory(repo)
-    planned = retirement_plan(releases, current, int(time.time()))
+    now = int(time.time())
+    planned = []
     tag_targets = {}
-    for release_id in planned:
+    for release_id in retirement_candidates(releases, current):
         retired, _ = load_generation(repo, release_id, production=True)
         release = next(r for r in releases if r["id"] == release_id)
         record = promotion_record(repo, release, retired)
         require(record["promotedAt"] <= current["promotedAt"], "newer promotion found")
+        if now - record["promotedAt"] < GRACE:
+            continue
         tag = tag_ref(repo, release["tag_name"])
         require(
             tag is None
@@ -990,6 +1011,7 @@ def prune(repo, source, execute=False):
             "tag target does not match generation",
         )
         tag_targets[release_id] = tag
+        planned.append(release_id)
     if execute:
         for release_id in planned:
             require(

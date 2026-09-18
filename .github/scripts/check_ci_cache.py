@@ -125,13 +125,19 @@ class CacheCheck(unittest.TestCase):
                 "digest": "sha256:" + image.sha256(DATA),
                 "state": "uploaded",
             }
-            for error in (
-                None,
-                subprocess.CalledProcessError(1, ["gh", "release", "upload"]),
-                subprocess.TimeoutExpired(["gh", "release", "upload"], 600),
-            ):
+            upload_error = subprocess.CalledProcessError(1, ["gh", "release", "upload"])
+            cases = [
+                (None, [asset], None),
+                (upload_error, [asset], None),
+                (
+                    subprocess.TimeoutExpired(["gh", "release", "upload"], 600),
+                    [asset],
+                    None,
+                ),
+            ]
+            cases += [
+                (upload_error, assets, message)
                 for assets, message in (
-                    ([asset], None),
                     ([], "uploaded asset missing"),
                     ([asset, asset], "uploaded asset missing"),
                     ([{**asset, "name": "other.bin"}], "uploaded asset missing"),
@@ -141,35 +147,35 @@ class CacheCheck(unittest.TestCase):
                         "upload integrity mismatch",
                     ),
                     ([{**asset, "state": "starter"}], "asset upload incomplete"),
+                )
+            ]
+            for error, assets, message in cases:
+                release = {"id": 7, "tag_name": "ci-cache-v1-7", "assets": []}
+                fresh = {**release, "assets": assets}
+                with (
+                    self.subTest(error=error, assets=assets),
+                    mock.patch.object(
+                        generation, "gh_upload", side_effect=error
+                    ) as upload,
+                    mock.patch.object(generation, "gh_api", return_value=fresh) as api,
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+                    mock.patch("sys.stderr", new_callable=io.StringIO),
                 ):
-                    release = {"id": 7, "tag_name": "ci-cache-v1-7", "assets": []}
-                    fresh = {**release, "assets": assets}
-                    with (
-                        self.subTest(error=error, assets=assets),
-                        mock.patch.object(
-                            generation, "gh_upload", side_effect=error
-                        ) as upload,
-                        mock.patch.object(
-                            generation, "gh_api", return_value=fresh
-                        ) as api,
-                        mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
-                        mock.patch("sys.stderr", new_callable=io.StringIO),
-                    ):
-                        if message:
-                            with self.assertRaisesRegex(ValueError, message):
-                                generation.upload("owner/repo", release, path)
-                            self.assertEqual(release["assets"], [])
-                        else:
-                            self.assertEqual(
-                                generation.upload("owner/repo", release, path),
-                                image.identity(asset),
-                            )
-                            self.assertEqual(release, fresh)
-                        upload.assert_called_once_with(
-                            "owner/repo", release["tag_name"], path
+                    if message:
+                        with self.assertRaisesRegex(ValueError, message):
+                            generation.upload("owner/repo", release, path)
+                        self.assertEqual(release["assets"], [])
+                    else:
+                        self.assertEqual(
+                            generation.upload("owner/repo", release, path),
+                            image.identity(asset),
                         )
-                        api.assert_called_once_with("owner/repo", "releases/7")
-                        self.assertEqual(stdout.getvalue(), "")
+                        self.assertEqual(release, fresh)
+                    upload.assert_called_once_with(
+                        "owner/repo", release["tag_name"], path
+                    )
+                    api.assert_called_once_with("owner/repo", "releases/7")
+                    self.assertEqual(stdout.getvalue(), "")
 
     def test_cached_nix_requires_expected_version_and_registered_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -270,42 +276,76 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generation.validate_generation(value)
 
-    def test_retirement_keeps_current_previous_and_full_grace(self):
-        promoted_at = 100_000
+    def test_retirement_expires_each_generation_and_protects_current_previous(self):
+        now = 200_000
         releases = [
             {
-                "id": release_id,
-                "tag_name": f"ci-cache-v1-{release_id}",
+                "id": i,
+                "tag_name": f"ci-cache-v1-{i}",
                 "draft": False,
                 "assets": [{"name": "promotion.json"}],
             }
-            for release_id in range(1, 6)
+            for i in range(1, 7)
         ]
-        intent = {"releaseId": 2, "previousId": 1, "publisherRunId": 9}
-        releases[1]["assets"] = []
-        releases[1]["body"] = json.dumps(
-            {
+        releases[4]["draft"] = True
+        releases[5]["assets"] = []
+        journals = {}
+        for i in range(1, 5):
+            intent = {"releaseId": i, "previousId": i - 1 or None, "publisherRunId": 9}
+            journals[i] = {
                 "schema": generation.PROMOTION_SCHEMA,
                 "promotionIntent": intent,
                 "promotion": {
                     **intent,
-                    "intentSha256": "a" * 64,
-                    "promotedAt": promoted_at - 1,
+                    "intentSha256": image.sha256(
+                        json.dumps(
+                            intent, sort_keys=True, separators=(",", ":")
+                        ).encode()
+                    ),
+                    "promotedAt": now - generation.GRACE,
                 },
             }
+        journals[2]["promotion"]["promotedAt"] += 1  # Not quite 24 hours old.
+        journals[4]["promotion"]["promotedAt"] = (
+            now  # New promotions must not reset older ages.
         )
-        releases[-1]["assets"] = []  # Never promoted; not eligible for retirement.
-        current = {"releaseId": 4, "previousId": 3, "promotedAt": promoted_at}
-        before_grace = promoted_at + generation.GRACE - 1
-        at_grace = promoted_at + generation.GRACE
-        self.assertEqual(
-            generation.retirement_plan(releases, current, before_grace), []
-        )
-        self.assertEqual(
-            generation.retirement_plan(releases, current, at_grace), [1, 2]
-        )
-        current.update(releaseId=5, previousId=4, promotedAt=at_grace)
-        self.assertEqual(generation.retirement_plan(releases, current, at_grace), [])
+        for release in releases[:4]:
+            release["assets"] = []
+            release["body"] = json.dumps(journals[release["id"]])
+        with (
+            mock.patch.object(generation, "publisher_context", return_value=9),
+            mock.patch.object(generation, "check_run"),
+            mock.patch.object(generation, "verify_proof"),
+            mock.patch.object(generation, "gh_api", return_value=releases[3]),
+            mock.patch.object(
+                generation, "load_generation", return_value=(complete_generation(), {})
+            ),
+            mock.patch.object(generation, "release_inventory", return_value=releases),
+            mock.patch.object(generation, "tag_ref", return_value=None),
+            mock.patch.object(generation.time, "time", return_value=now),
+            mock.patch.object(generation, "delete_release_and_tag") as delete,
+        ):
+            source = complete_generation()["source"]
+            self.assertEqual(
+                generation.prune("owner/repo", source),
+                {"releaseIds": [1], "executed": False},
+            )
+            delete.assert_not_called()
+            journals[2]["promotion"]["promotedAt"] -= 1
+            releases[1]["body"] = json.dumps(journals[2])
+            self.assertEqual(
+                generation.prune("owner/repo", source, execute=True),
+                {"releaseIds": [1, 2], "executed": True},
+            )
+            self.assertEqual(
+                [call.args[1]["id"] for call in delete.call_args_list], [1, 2]
+            )
+            delete.reset_mock()
+            journals[1]["promotion"]["intentSha256"] = "0" * 64
+            releases[0]["body"] = json.dumps(journals[1])
+            with self.assertRaisesRegex(ValueError, "invalid promotion record"):
+                generation.prune("owner/repo", source, execute=True)
+            delete.assert_not_called()
 
     def test_tag_cleanup_retries_transient_failures_but_refuses_changed_target(self):
         original = {"object": {"type": "commit", "sha": "a" * 40}}
@@ -369,6 +409,33 @@ class CacheCheck(unittest.TestCase):
         self.assertTrue(ready(sealed, master_run))
         self.assertFalse(ready(sealed, master_run, boundary - 1))
         self.assertFalse(ready(sealed, run))
+        branch_run = {**run, "head_branch": "feat/cache-experiment"}
+        with mock.patch.object(generation, "gh_api", return_value={}) as api:
+            self.assertFalse(ready(sealed, branch_run))
+            api.assert_called_once_with(
+                "owner/repo", "branches/feat%2Fcache-experiment"
+            )
+        with mock.patch.object(
+            generation,
+            "gh_api",
+            side_effect=subprocess.CalledProcessError(1, [], stderr=b"HTTP 404"),
+        ) as api:
+            self.assertTrue(ready(sealed, branch_run, boundary - generation.GRACE))
+            api.reset_mock()
+            self.assertFalse(ready(sealed, {**branch_run, "status": "in_progress"}))
+            self.assertFalse(ready(sealed, {**branch_run, "head_sha": "b" * 40}))
+            self.assertFalse(ready(release, branch_run, boundary - 1))
+            api.assert_not_called()
+        for error in (
+            subprocess.CalledProcessError(1, [], stderr=b"HTTP 403"),
+            subprocess.TimeoutExpired([], 60),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(generation, "gh_api", side_effect=error),
+                self.assertRaises(type(error)),
+            ):
+                ready(sealed, branch_run)
         self.assertFalse(ready(sealed, {**master_run, "status": "in_progress"}))
         self.assertFalse(ready({**sealed, "prerelease": False}, master_run))
         self.assertFalse(
