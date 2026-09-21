@@ -5,114 +5,119 @@
       lib,
       pkgs,
       ...
-    }: let
-      zfsMetrics = pkgs.writeShellApplication {
-        name = "alloy-zfs-metrics";
-        runtimeInputs = [
-          pkgs.coreutils
-          pkgs.jq
-          config.boot.zfs.package
-        ];
-        text = ''
-          set -eu
-
-          output=/var/lib/alloy/zfs.prom
-          last_success=/var/lib/alloy/zfs-scrub-last-success.json
-          status_tmp="$(mktemp /var/lib/alloy/zfs-status.XXXXXX)"
-          metrics_tmp="$(mktemp /var/lib/alloy/zfs.prom.XXXXXX)"
-          last_tmp="$(mktemp /var/lib/alloy/zfs-scrub-last-success.XXXXXX)"
-          trap 'rm -f "$status_tmp" "$metrics_tmp" "$last_tmp"' EXIT
-
-          zpool status -j -p > "$status_tmp"
-          previous="$last_success"
-          if ! test -s "$previous"; then
-            previous_tmp="$(mktemp /var/lib/alloy/zfs-scrub-previous.XXXXXX)"
-            trap 'rm -f "$status_tmp" "$metrics_tmp" "$last_tmp" "$previous_tmp"' EXIT
-            printf '{}\n' > "$previous_tmp"
-            previous="$previous_tmp"
-          fi
-
-          jq --slurpfile previous "$previous" '
-            reduce (.pools | to_entries[]) as $pool ($previous[0];
-              ($pool.value.scan_stats // {}) as $scan |
-              (($scan.errors // null) | try tonumber catch null) as $errors |
-              (($scan.end_time // null) | try tonumber catch null) as $end_time |
-              if (($scan.function // "") == "SCRUB"
-                  and ($scan.state // "") == "FINISHED"
-                  and $errors != null
-                  and $errors == 0
-                  and $end_time != null)
-              then .[$pool.key] = $end_time
-              else .
-              end
-            )
-          ' "$status_tmp" > "$last_tmp"
-
-          jq -r --slurpfile last "$last_tmp" '
-            def metric($pool; $name; $value):
-              "\($name){pool=\($pool | @json)} \($value)";
-            def required_number($value; $field):
-              if $value == null then error("missing " + $field)
-              else try ($value | tonumber) catch error("invalid " + $field)
-              end;
-            if ((.pools? | type) != "object" or (.pools | length) == 0)
-            then error("no ZFS pools returned")
-            else
-              .pools | to_entries[] |
-              .key as $pool |
-              .value as $status |
-              (($status.vdevs // {})[$pool] // error("missing root vdev for " + $pool)) as $root |
-              required_number($root.read_errors; "read_errors") as $read_errors |
-              required_number($root.write_errors; "write_errors") as $write_errors |
-              required_number($root.checksum_errors; "checksum_errors") as $checksum_errors |
-              metric($pool; "zfs_pool_read_errors_total"; $read_errors),
-              metric($pool; "zfs_pool_write_errors_total"; $write_errors),
-              metric($pool; "zfs_pool_checksum_errors_total"; $checksum_errors),
-              metric($pool; "zfs_pool_scrub_last_success_timestamp_seconds";
-                ($last[0][$pool] // 0))
-            end
-          ' "$status_tmp" > "$metrics_tmp"
-          printf 'zfs_incident_collection_last_success_timestamp_seconds %s\n' "$(date +%s)" >> "$metrics_tmp"
-
-          chmod 0644 "$metrics_tmp"
-          mv "$last_tmp" "$last_success"
-          mv "$metrics_tmp" "$output"
-        '';
-      };
-    in {
+    }: {
       # Grafana Alloy
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
       services.alloy.extraFlags = ["--stability.level=public-preview"];
-      services.cadvisor = {
-        enable = config.virtualisation.docker.enable;
-        listenAddress = "127.0.0.1";
-        port = 8080;
-        extraOptions = [
-          "--storage_duration=2m"
-          "--docker_only=true"
-          "--containerd=/run/docker/containerd/containerd.sock"
-          "--disable_root_cgroup_stats=true"
-          "--store_container_labels=false"
-          "--enable_metrics=cpu,memory,network"
-        ];
+      services.telegraf = {
+        enable = true;
+        extraConfig = {
+          agent = {
+            interval = "60s";
+            flush_interval = "5s";
+            omit_hostname = true;
+            skip_processors_after_aggregators = true;
+          };
+          inputs = lib.filterAttrs (_: inputs: inputs != []) {
+            docker = lib.optionals config.virtualisation.docker.enable [
+              {
+                endpoint = "unix:///var/run/docker.sock";
+                source_tag = true;
+                startup_error_behavior = "retry";
+                timeout = "5s";
+                perdevice_include = ["network"];
+                total_include = ["cpu"];
+                docker_label_exclude = ["*"];
+                namepass = ["docker_container_cpu" "docker_container_mem" "docker_container_net" "docker_container_status" "docker_container_health"];
+                fieldinclude = ["usage_total" "usage" "limit" "rx_bytes" "tx_bytes" "rx_errors" "tx_errors" "rx_dropped" "tx_dropped" "uptime_ns" "health_status" "failing_streak"];
+                taginclude = ["container_name" "source" "cpu" "network"];
+              }
+            ];
+            smart = [
+              {
+                path_smartctl = "${lib.getExe pkgs.smartmontools}";
+                timeout = "20s";
+                attributes = false;
+                namepass = ["smart_device"];
+                fieldinclude = ["health_ok" "exit_status" "critical_warning" "media_errors" "available_spare" "available_spare_threshold" "percentage_used" "temp_c"];
+                taginclude = ["device"];
+                path_nvme = "${lib.getExe pkgs.nvme-cli}";
+                enable_extensions = [];
+              }
+            ];
+            exec = lib.optionals config.boot.zfs.enabled [
+              {
+                alias = "zfs_pool";
+                commands = ["${lib.getBin config.boot.zfs.package}/libexec/zfs/zpool_influxdb -n"];
+                timeout = "20s";
+                data_format = "influx";
+                namepass = ["zpool_stats" "zpool_scan_stats"];
+                fieldinclude = ["alloc" "free" "read_errors" "write_errors" "checksum_errors" "end_ts" "errors"];
+                taginclude = ["name" "state" "vdev" "function"];
+                tagdrop = {vdev = ["root/*"];};
+              }
+              {
+                alias = "zfs_dataset";
+                commands = ["${lib.getBin config.boot.zfs.package}/bin/zfs list -Hp -t filesystem,volume -o name,type,used,available,usedbydataset,usedbysnapshots,usedbychildren"];
+                timeout = "20s";
+                data_format = "csv";
+                name_override = "zfs_dataset";
+                csv_header_row_count = 0;
+                csv_delimiter = "\t";
+                csv_column_names = ["name" "type" "used" "available" "usedbydataset" "usedbysnapshots" "usedbychildren"];
+                csv_column_types = ["string" "string" "int" "int" "int" "int" "int"];
+                csv_tag_columns = ["name" "type"];
+                csv_skip_values = ["-"];
+                tagpass = {name = ["*/*"];};
+              }
+            ];
+            internal = [
+              {
+                collect_memstats = false;
+                namepass = ["internal_gather"];
+                fieldinclude = ["errors" "metrics_gathered"];
+                taginclude = ["input" "alias"];
+              }
+            ];
+          };
+          outputs = {
+            prometheus_client = [
+              {
+                listen = "127.0.0.1:9273";
+                metric_version = 1;
+                string_as_label = true;
+                export_timestamp = true;
+                expiration_interval = "180s";
+                collectors_exclude = ["gocollector" "process"];
+              }
+            ];
+          };
+          processors = {
+            override = [
+              {
+                namepass = ["docker_container_cpu" "docker_container_mem" "docker_container_net"];
+                tagexclude = ["source"];
+              }
+            ];
+            converter = [
+              {
+                namepass = ["smart_device"];
+                fields = {integer = ["health_ok"];};
+              }
+            ];
+          };
+        };
       };
-      services.prometheus.exporters.smartctl.enable = true;
-      services.prometheus.exporters.smartctl.listenAddress = "127.0.0.1";
-      services.prometheus.exporters.zfs = {
-        enable = config.boot.zfs.enabled;
-        listenAddress = "127.0.0.1";
-        port = 9134;
-        extraFlags = [
-          "--collector.dataset-filesystem"
-          "--properties.dataset-filesystem=used,available,usedbydataset,usedbysnapshots,usedbychildren"
-          "--no-collector.dataset-snapshot"
-          "--exclude=^[^/]+$"
-          "--collector.dataset-volume"
-          "--properties.dataset-volume=used,available,usedbydataset,usedbysnapshots,usedbychildren"
-          "--collector.pool"
-          "--properties.pool=allocated,free,health"
-        ];
+      systemd.services.telegraf.serviceConfig = {
+        # smartctl ioctls and Docker access require privileged collection.
+        User = lib.mkForce "root";
+        Group = lib.mkForce "root";
+        AmbientCapabilities = lib.mkForce [];
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
       };
       systemd.services.alloy = {
         environment.GCLOUD_FM_COLLECTOR_ID = config.networking.hostName;
@@ -127,46 +132,12 @@
           };
       };
 
-      systemd.services.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Export bounded ZFS metrics for Alloy";
-        after = [
-          "alloy.service"
-          "zfs-import.target"
-        ];
-        requires = ["alloy.service"];
-        serviceConfig = {
-          Type = "oneshot";
-          User = "root";
-          Group = "root";
-          UMask = "0022";
-          ExecStart = lib.getExe zfsMetrics;
-          TimeoutStartSec = "45s";
-        };
-      };
-
-      systemd.timers.alloy-zfs-metrics = lib.mkIf config.boot.zfs.enabled {
-        description = "Refresh bounded ZFS metrics for Alloy";
-        wantedBy = ["timers.target"];
-        timerConfig = {
-          OnBootSec = "2m";
-          OnUnitActiveSec = "1m";
-          AccuracySec = "1s";
-          RandomizedDelaySec = "5s";
-          Persistent = true;
-        };
-      };
-
       den.deploy.health = {
-        requiredSystemdUnits =
-          lib.optional config.virtualisation.docker.enable "cadvisor.service"
-          ++ lib.optional config.boot.zfs.enabled "prometheus-zfs-exporter.service";
-        requiredCommands =
-          lib.optionalAttrs config.virtualisation.docker.enable {
-            cadvisor = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:8080/metrics >/dev/null";
-          }
-          // lib.optionalAttrs config.boot.zfs.enabled {
-            zfs-exporter = "${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:9134/metrics >/dev/null";
-          };
+        requiredSystemdUnits = ["telegraf.service"];
+        requiredCommands.telegraf = ''
+          ${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:9273/metrics >/dev/null &&
+          ${config.systemd.services.telegraf.serviceConfig.ExecStart} --test >/dev/null
+        '';
       };
 
       environment.etc."alloy/config.alloy".text = ''
