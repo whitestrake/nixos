@@ -335,12 +335,17 @@ def publisher_context(repo, revision, production):
     )
     run_id = int(os.environ.get("GITHUB_RUN_ID", "0"))
     require(positive(run_id), "publisher requires Actions run context")
-    check_run(repo, run_id, revision, PUBLISHER, production)
+    run = check_run(repo, run_id, revision, PUBLISHER, production)
     if production:
-        require(
-            gh_api(repo, "commits/master")["sha"] == revision,
-            "source is no longer current master",
-        )
+        master = gh_api(repo, "commits/master")["sha"]
+        require(re.fullmatch(r"[0-9a-f]{40}", master), "invalid master revision")
+        if master != revision and run["event"] == "workflow_run":
+            print(
+                "::notice ::Skipping superseded automatic cache maintenance.",
+                file=sys.stderr,
+            )
+            raise SystemExit(0)
+        require(master == revision, "source is no longer current master")
     return run_id
 
 
