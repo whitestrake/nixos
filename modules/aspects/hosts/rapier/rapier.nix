@@ -40,6 +40,8 @@
       # Hostname and TZ
       networking.hostId = "3ae03bc7";
 
+      services.zfs.autoScrub.enable = true;
+
       sops.secrets."smbCredentials/rapier@tempus" = {};
       storage.cifsMounts = let
         credentials = config.sops.secrets."smbCredentials/rapier@tempus".path;

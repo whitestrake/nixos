@@ -41,6 +41,8 @@
       # Network hostname properties
       networking.hostId = "bffd5e86";
 
+      services.zfs.autoScrub.enable = true;
+
       # SMB mount configs
       sops.secrets."smbCredentials/sortie@tempus" = {};
       storage.cifsMounts = let
