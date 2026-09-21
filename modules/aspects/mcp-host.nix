@@ -31,6 +31,8 @@
           MCP_HOST = "127.0.0.1";
           MCP_PORT = "8763";
           MCP_TRANSPORT = "STREAMABLE_HTTP";
+          # Tailscale controls access to this loopback-only backend.
+          MCP_ALLOW_UNAUTHENTICATED_HTTP = "true";
           MCP_ALLOWED_HOSTS = "${tailnetServiceHost "proxmox"},${tailnetServiceHost "proxmox"}:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*";
           MCP_ALLOWED_ORIGINS = "https://${tailnetServiceHost "proxmox"}";
           MCP_DNS_REBINDING_PROTECTION = "true";

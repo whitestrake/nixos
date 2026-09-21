@@ -2,6 +2,7 @@
   lib,
   fetchPypi,
   python3Packages,
+  rustPlatform,
   nix-update-script,
 }:
 python3Packages.buildPythonApplication rec {
@@ -27,6 +28,59 @@ python3Packages.buildPythonApplication rec {
       paramiko
       proxmoxer
       pydantic
+      (
+        # Remove the fallback once nixpkgs provides Monty >= 0.0.22.
+        if lib.versionAtLeast pydantic-monty.version "0.0.22"
+        then pydantic-monty
+        else let
+          version = "0.0.22";
+          src = pydantic-monty.src.override {
+            tag = "v${version}";
+            hash = "sha256-ZlCj71rUXOeTbE29mas2K+xcSowvZY1dpzuYacMzTkU=";
+          };
+          cargoDeps = rustPlatform.fetchCargoVendor {
+            pname = "pydantic-monty";
+            inherit version src;
+            hash = "sha256-hLZnEUCR5PAZ71qt1UFnkDdFandKzTQXvINNUdpDbAQ=";
+          };
+          client = pydantic-monty.overridePythonAttrs (_: {
+            pname = "pydantic-monty-client";
+            inherit version src cargoDeps;
+            # The metapackage check below exercises the client with its worker.
+            doCheck = false;
+          });
+          runtime = buildPythonPackage {
+            pname = "pydantic-monty-runtime";
+            inherit version src cargoDeps;
+            pyproject = true;
+            nativeBuildInputs = [
+              rustPlatform.cargoSetupHook
+              rustPlatform.maturinBuildHook
+            ];
+            maturinBuildFlags = ["-m" "crates/monty-runtime/Cargo.toml"];
+            doCheck = false;
+          };
+        in
+          buildPythonPackage {
+            pname = "pydantic-monty";
+            inherit version src;
+            pyproject = true;
+            build-system = [hatchling];
+            postUnpack = "sourceRoot+=/packages/pydantic-monty";
+            dependencies = [client runtime];
+            nativeCheckInputs = [runtime];
+            installCheckPhase = ''
+              runHook preInstallCheck
+              ${python.interpreter} - <<'PYTHON'
+              from pydantic_monty import Monty
+              with Monty() as pool, pool.checkout() as session:
+                  assert session.feed_run("1 + 2") == 3
+              PYTHON
+              runHook postInstallCheck
+            '';
+            pythonImportsCheck = ["pydantic_monty"];
+          }
+      )
       requests
       uvicorn
     ]
@@ -34,6 +88,8 @@ python3Packages.buildPythonApplication rec {
 
   pythonRelaxDeps = [
     "paramiko"
+    # Accept newer nixpkgs releases; the dependency selection enforces the floor.
+    "pydantic-monty"
   ];
 
   # This deployment uses the native MCP server entrypoint. Upstream declares mcpo
