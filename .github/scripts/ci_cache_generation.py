@@ -933,6 +933,28 @@ def prune_candidates(repo, execute=False):
                     and candidate["source"]["revision"] == run["head_sha"],
                     "candidate identity mismatch",
                 )
+            if execute:
+                ref = tag_ref(repo, release["tag_name"])
+                if ref is not None:
+                    require(
+                        ref["object"]["type"] == "commit"
+                        and ref["object"]["sha"] == run["head_sha"],
+                        "candidate tag target changed",
+                    )
+                fresh = gh_api(repo, f"releases/{release['id']}")
+                require(
+                    candidate_ready(
+                        fresh,
+                        gh_api(repo, f"actions/runs/{run['id']}"),
+                        repo,
+                        time.time(),
+                    ),
+                    "candidate is no longer eligible for cleanup",
+                )
+                require(
+                    tag_ref(repo, release["tag_name"]) == ref,
+                    "candidate tag changed before cleanup",
+                )
         except (
             ValueError,
             KeyError,
@@ -944,27 +966,6 @@ def prune_candidates(repo, execute=False):
                 f"{type(error).__name__}: {error}"
             ) from error
         if execute:
-            ref = tag_ref(repo, release["tag_name"])
-            if ref is not None:
-                require(
-                    ref["object"]["type"] == "commit"
-                    and ref["object"]["sha"] == run["head_sha"],
-                    "candidate tag target changed",
-                )
-            fresh = gh_api(repo, f"releases/{release['id']}")
-            require(
-                candidate_ready(
-                    fresh,
-                    gh_api(repo, f"actions/runs/{run['id']}"),
-                    repo,
-                    time.time(),
-                ),
-                "candidate is no longer eligible for cleanup",
-            )
-            require(
-                tag_ref(repo, release["tag_name"]) == ref,
-                "candidate tag changed before cleanup",
-            )
             delete_release_and_tag(repo, fresh, ref)
         removed.append(release["id"])
     return {"candidateIds": removed, "executed": execute}

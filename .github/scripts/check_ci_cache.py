@@ -554,6 +554,43 @@ class CacheCheck(unittest.TestCase):
         )
         delete.assert_not_called()
 
+    def test_candidate_cleanup_revalidation_error_names_release(self):
+        release = {
+            "id": 5,
+            "tag_name": "ci-cache-v1-123001",
+            "draft": True,
+            "prerelease": False,
+            "author": {"login": "whitestrake[bot]"},
+            "target_commitish": "a" * 40,
+            "updated_at": "1970-01-01T00:00:00Z",
+            "assets": [],
+        }
+        run = {
+            "id": 123,
+            "run_attempt": 1,
+            "status": "completed",
+            "path": generation.PUBLISHER,
+            "head_repository": {"full_name": "owner/repo"},
+            "head_sha": "a" * 40,
+            "updated_at": release["updated_at"],
+        }
+        failure = subprocess.TimeoutExpired(["gh", "api", "git/ref/tags"], 60)
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}),
+            mock.patch.object(generation, "publisher_context", return_value=999),
+            mock.patch.object(generation, "release_inventory", return_value=[release]),
+            mock.patch.object(generation, "gh_api", side_effect=[run, release]),
+            mock.patch.object(generation, "tag_ref", side_effect=failure),
+            mock.patch.object(generation, "delete_release_and_tag") as delete,
+            mock.patch.object(generation.time, "time", return_value=200_000),
+            self.assertRaisesRegex(
+                RuntimeError, "candidate 5.*TimeoutExpired"
+            ) as raised,
+        ):
+            generation.prune_candidates("owner/repo", execute=True)
+        self.assertIs(raised.exception.__cause__, failure)
+        delete.assert_not_called()
+
     def test_promoted_generation_recovers_then_accepts_rerun_and_prune(self):
         current = complete_generation()
         intent = {"releaseId": 7, "previousId": None, "publisherRunId": 9}
