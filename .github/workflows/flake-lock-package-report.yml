@@ -172,6 +172,7 @@ jobs:
         with:
           name: package-report-${{ matrix.system }}
           path: ${{ runner.temp }}/ci-package-reports/${{ matrix.system }}
+          if-no-files-found: error
           compression-level: 0
           retention-days: 7
 
