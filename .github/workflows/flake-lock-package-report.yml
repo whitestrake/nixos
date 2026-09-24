@@ -33,6 +33,7 @@ jobs:
     outputs:
       base: ${{ steps.pr.outputs.base }}
       head: ${{ steps.pr.outputs.head }}
+      trusted: ${{ steps.pr.outputs.trusted }}
       number: ${{ steps.pr.outputs.number }}
     steps:
       - name: Resolve and validate current pull request
@@ -40,19 +41,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
-          jq -e --arg repo "$GITHUB_REPOSITORY" --arg base "$EVENT_BASE" --arg head "$EVENT_HEAD" '
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg head "$EVENT_HEAD" '
             .state == "open" and .base.ref == "master" and .head.repo.full_name == $repo and
-            ($base == "" or .base.sha == $base) and ($head == "" or .head.sha == $head)
+            ($head == "" or .head.sha == $head)
           ' <<< "$pr" >/dev/null
+          trusted="$(jq -er '.base.sha' <<< "$pr")"
+          head="$(jq -er '.head.sha' <<< "$pr")"
+          base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$trusted...$head" --jq '.merge_base_commit.sha')"
+          [[ "$base" =~ ^[0-9a-f]{40}$ ]]
           {
-            echo "base=$(jq -r .base.sha <<< "$pr")"
-            echo "head=$(jq -r .head.sha <<< "$pr")"
+            echo "base=$base"
+            echo "head=$head"
+            echo "trusted=$trusted"
             echo "number=$PR_NUMBER"
           } >> "$GITHUB_OUTPUT"
   compile:
@@ -95,12 +100,11 @@ jobs:
 
           pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
           if ! jq -e \
-            --arg base "$BASE_SHA" \
             --arg head "$HEAD_SHA" \
             '
               .state == "open"
               and .base.ref == "master"
-              and .base.sha == $base
+              and .head.repo.full_name == env.GITHUB_REPOSITORY
               and .head.sha == $head
             ' <<< "$pr_json" >/dev/null; then
             echo "::error ::Rejecting stale, closed, or non-master package report."
@@ -134,55 +138,36 @@ jobs:
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
 
-      - name: Resolve accepted build proof
-        id: proof
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          source modules/deployment/scripts/cachix-pin-functions.sh
-          proof_path="$(cachix_pin_path_strict "$(cachix_fetch_pins whitestrake)" successful-master-build)"
-
-          proof_file="$RUNNER_TEMP/ci-build-proof.json"
-          nix store cat --store https://whitestrake.cachix.org "$proof_path" > "$proof_file"
-          jq -ceS -f .github/scripts/ci-build-proof.jq "$proof_file" > "$proof_file.canonical"
-          mv "$proof_file.canonical" "$proof_file"
-
-          proof_revision="$(jq -er '.revision' "$proof_file")"
-          records="$(jq -ce --arg system "$NIX_ROOT_SYSTEM" '[.records[] | select(.system == $system)]' "$proof_file")"
-          if [ "$records" = '[]' ]; then
-            echo "::error ::Accepted build proof has no records for $NIX_ROOT_SYSTEM."
-            exit 1
-          fi
-
-          {
-            printf 'proof_store_path=%s\n' "$proof_path"
-            printf 'proof_revision=%s\n' "$proof_revision"
-            printf 'records=%s\n' "$records"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Prepare report tool and accepted baseline
-        timeout-minutes: 45
-        env:
-          BASELINE_RECORDS: ${{ steps.proof.outputs.records }}
-        run: |
-          set -euo pipefail
-          dix="$(nix build --inputs-from . --option builders '' --option max-jobs 0 --no-link --print-out-paths nixpkgs-unstable#dix)"
-          echo "DIX_BIN=$dix/bin/dix" >> "$GITHUB_ENV"
-          paths=()
-          while IFS= read -r path; do paths+=("$path"); done <<< "$(jq -er '.[].storePath' <<< "$BASELINE_RECORDS")"
-          nix-store --realise --option builders '' --option max-jobs 0 "${paths[@]}"
-      - name: Build and report CI lane
-        timeout-minutes: 30
+      - name: Build CI lane
+        id: build
         env:
           CI_LANE_SYSTEM: ${{ env.NIX_ROOT_SYSTEM }}
-          CI_BASELINE_RECORDS_JSON: ${{ steps.proof.outputs.records }}
-          CI_PROOF_STORE_PATH: ${{ steps.proof.outputs.proof_store_path }}
-          CI_PROOF_REVISION: ${{ steps.proof.outputs.proof_revision }}
-          CI_PACKAGE_REPORT_DIR: ${{ runner.temp }}/ci-package-reports
+          CI_NFB_JOURNAL: ${{ runner.temp }}/ci-nfb-journal.json
         run: bash .github/scripts/ci-nfb.sh "$CI_LANE_SYSTEM" "$CI_LANE_SYSTEM"
 
+      - name: Check out PR merge base
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: baseline
+          persist-credentials: false
+
+      - name: Collect package report fragments
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        env:
+          CI_PACKAGE_REPORT_DIR: ${{ runner.temp }}/ci-package-reports
+          CI_NFB_JOURNAL: ${{ runner.temp }}/ci-nfb-journal.json
+        run: |
+          set -euo pipefail
+          dix="$(nix build --inputs-from baseline --no-link --print-out-paths nixpkgs-unstable#dix)"
+          DIX_BIN="$dix/bin/dix" python3 .github/scripts/nix_fast_build_package_report.py \
+            --journal "$CI_NFB_JOURNAL" --base-dir baseline \
+            --report-dir "$CI_PACKAGE_REPORT_DIR" --system "$NIX_ROOT_SYSTEM" \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+
       - name: Upload package reports
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: package-report-${{ matrix.system }}
@@ -193,6 +178,7 @@ jobs:
   publish:
     name: "Publish"
     needs: [context, compile]
+    if: ${{ needs.compile.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -201,12 +187,13 @@ jobs:
     env:
       BASE_SHA: ${{ needs.context.outputs.base }}
       HEAD_SHA: ${{ needs.context.outputs.head }}
+      TRUSTED_SHA: ${{ needs.context.outputs.trusted }}
       PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
       - name: Check out report tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ env.BASE_SHA }}
+          ref: ${{ env.TRUSTED_SHA }}
           persist-credentials: false
 
       - name: Download package reports
@@ -223,6 +210,7 @@ jobs:
 
           python3 .github/scripts/flake_lock_package_report.py \
             --diff-dir package-reports \
+            --base-sha "$BASE_SHA" \
             --head-sha "$HEAD_SHA" \
             --output package-report.md
 
@@ -235,15 +223,20 @@ jobs:
 
           pr_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
           if ! jq -e \
-            --arg base "$BASE_SHA" \
             --arg head "$HEAD_SHA" \
             '
               .state == "open"
               and .base.ref == "master"
-              and .base.sha == $base
+              and .head.repo.full_name == env.GITHUB_REPOSITORY
               and .head.sha == $head
             ' <<< "$pr_json" >/dev/null; then
             echo "::error ::Rejecting stale, closed, or non-master package report."
+            exit 1
+          fi
+          current_master="$(jq -er '.base.sha' <<< "$pr_json")"
+          current_base="$(gh api "repos/$GITHUB_REPOSITORY/compare/$current_master...$HEAD_SHA" --jq '.merge_base_commit.sha')"
+          if [ "$current_base" != "$BASE_SHA" ]; then
+            echo "::error ::PR merge base changed during package reporting."
             exit 1
           fi
 

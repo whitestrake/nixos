@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import re
 from collections import defaultdict
 from pathlib import Path
 
 COMMENT_MARKER = "<!-- flake-lock-package-report:comment -->"
-STORE_PATH = re.compile(
-    r"^/nix/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+$"
-)
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+
+
+def safe_text(value):
+    return re.sub(
+        r"([\\`*_{}\[\]()#+\-.!|])",
+        r"\\\1",
+        html.escape(value.replace("\n", " ").replace("\r", " ")),
+    )
 
 
 def load_reports(diff_dir):
     reports = []
-    proof_identity = None
+    pair = None
     for path in sorted(Path(diff_dir).rglob("record.json")):
         data = json.loads(path.read_text())
-        proof_path = data.get("proofStorePath")
-        proof_revision = data.get("proofRevision")
-        if not isinstance(proof_path, str) or STORE_PATH.fullmatch(proof_path) is None:
-            raise SystemExit(f"invalid proof store path in {path}")
-        if (
-            not isinstance(proof_revision, str)
-            or REVISION.fullmatch(proof_revision) is None
+        current_pair = (data.get("baseSha"), data.get("headSha"))
+        if not all(
+            isinstance(sha, str) and REVISION.fullmatch(sha) for sha in current_pair
         ):
-            raise SystemExit(f"invalid proof revision in {path}")
-        current_identity = (proof_path, proof_revision)
-        if proof_identity is None:
-            proof_identity = current_identity
-        elif current_identity != proof_identity:
-            raise SystemExit("package report fragments use mixed build proofs")
+            raise SystemExit(f"invalid comparison revisions in {path}")
+        if pair is None:
+            pair = current_pair
+        elif current_pair != pair:
+            raise SystemExit("package report fragments use mixed base/head pairs")
         report = data["packageReport"]
         reports.append(
             {
@@ -44,7 +45,7 @@ def load_reports(diff_dir):
 
     if not reports:
         raise SystemExit("no GHCI record.json artifacts found")
-    return reports, proof_identity[1]
+    return reports, pair
 
 
 def version_text(diff):
@@ -110,7 +111,9 @@ def delta_text(size):
 
 
 def render_package(name, version, entries, host_count):
-    label = f"{name}: {version}" if version else f"{name}:"
+    label = (
+        f"{safe_text(name)}: {safe_text(version)}" if version else f"{safe_text(name)}:"
+    )
     by_delta = {}
     for host, size in entries:
         if size != 0:
@@ -129,7 +132,9 @@ def render_package(name, version, entries, host_count):
 
     lines = [label]
     for text, group in sorted(by_delta.items(), key=lambda item: item[1]["sort"]):
-        lines.append(f"  {text} ({', '.join(sorted(group['hosts']))})")
+        lines.append(
+            f"  {text} ({', '.join(safe_text(host) for host in sorted(group['hosts']))})"
+        )
     return "\n".join(lines)
 
 
@@ -151,8 +156,12 @@ def package_updates(reports):
     ]
 
 
-def render(diff_dir, head_sha):
-    reports, proof_revision = load_reports(diff_dir)
+def render(diff_dir, base_sha, head_sha):
+    reports, pair = load_reports(diff_dir)
+    if pair != (base_sha, head_sha):
+        raise SystemExit(
+            "package report fragments differ from requested base/head pair"
+        )
     successful = [report for report in reports if report["status"] == "success"]
     failed = [report for report in reports if report["status"] != "success"]
     updates = package_updates(successful)
@@ -160,7 +169,7 @@ def render(diff_dir, head_sha):
     lines = [
         COMMENT_MARKER,
         f"Report generated for `{head_sha}`",
-        f"Compared against latest successful master build `{proof_revision}`",
+        f"Compared against PR merge base `{base_sha}`",
         "",
         "## Package updates",
     ]
@@ -171,7 +180,7 @@ def render(diff_dir, head_sha):
     if failed:
         lines.extend(["", "## Unavailable reports"])
         lines.extend(
-            f"- {report['name']} ({report['system']}): {report['message']}"
+            f"- {safe_text(report['name'])} ({safe_text(report['system'])}): {safe_text(report['message'])}"
             for report in failed
         )
 
@@ -181,11 +190,12 @@ def render(diff_dir, head_sha):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--diff-dir", required=True)
+    parser.add_argument("--base-sha", required=True)
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    Path(args.output).write_text(render(args.diff_dir, args.head_sha))
+    Path(args.output).write_text(render(args.diff_dir, args.base_sha, args.head_sha))
 
 
 if __name__ == "__main__":
