@@ -190,13 +190,6 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-      - name: Detach Darwin store
-        if: always() && runner.os == 'macOS'
-        run: |
-          if [ -d "$RUNNER_TEMP/darwin" ]; then
-            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
-          fi
-
   publish:
     name: "Publish"
     needs: [context, compile]

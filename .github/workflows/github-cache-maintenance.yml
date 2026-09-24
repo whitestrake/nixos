@@ -256,13 +256,6 @@ jobs:
           for component in darwin-image-aarch64-darwin darwin-maintenance-aarch64-darwin; do
            "$HOST_PYTHON" .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "$component" --directory "$RUNNER_TEMP/darwin-produced/$component"
           done
-      - name: Detach Darwin store
-        if: always() && runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          if [ -d "$RUNNER_TEMP/darwin" ]; then
-            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
-          fi
   seal:
     name: Publishing
     runs-on: ubuntu-24.04
@@ -354,13 +347,6 @@ jobs:
         run: |
           set -euo pipefail
           "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py reader "$RUNNER_TEMP/selection.json" "$COMPONENT" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
-      - name: Detach Darwin store
-        if: always() && runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          if [ -d "$RUNNER_TEMP/darwin" ]; then
-            "$HOST_PYTHON" .github/scripts/ci_darwin.py cleanup --state "$RUNNER_TEMP/darwin"
-          fi
   promote:
     name: Promotion
     runs-on: ubuntu-24.04

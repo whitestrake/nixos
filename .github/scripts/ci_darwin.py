@@ -31,7 +31,7 @@ class CacheRestoreError(RuntimeError):
 
 def command(*args, **kwargs):
     argv = [str(arg) for arg in args]
-    timeout = kwargs.pop("timeout", 600)
+    timeout = kwargs.pop("timeout", None)
     data = kwargs.pop("input", None)
     if data is not None:
         kwargs["stdin"] = subprocess.PIPE
@@ -282,39 +282,27 @@ def helper_pid(root):
     return json.loads(path.read_text())["pid"] if path.exists() else None
 
 
-def cleanup(root):
-    # Refuse to detach while any unexpected process still has store files open.
+def detach_nix(root):
     mount = root / "mounted"
-    if mount.exists():
-        # ReportCrash can retain store files briefly after owned children exit.
-        deadline = time.monotonic() + 10
-        while True:
-            users = subprocess.run(
-                ["sudo", "lsof", "-t", "+f", "--", "/nix"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if (
-                users.returncode not in (0, 1)
-                or not users.stdout.strip()
-                or time.monotonic() >= deadline
-            ):
-                break
-            time.sleep(0.2)
-        if users.returncode not in (0, 1) or users.stdout.strip():
-            subprocess.run(["sudo", "lsof", "+f", "--", "/nix"], timeout=5)
-        image.require(
-            users.returncode in (0, 1) and not users.stdout.strip(),
-            "store users remain; refusing detach",
-        )
-    if mount.exists():
-        mounted = subprocess.run(
-            ["mount"], capture_output=True, text=True, check=True
-        ).stdout
-        if " on /nix (" in mounted:
+    if not mount.exists():
+        return
+    mounted = subprocess.run(
+        ["mount"], capture_output=True, text=True, check=True
+    ).stdout
+    if " on /nix (" in mounted:
+        try:
             command("sudo", "hdiutil", "detach", "/nix", timeout=120)
-        mount.unlink()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            try:
+                subprocess.run(["sudo", "lsof", "+f", "--", "/nix"], timeout=5)
+            except subprocess.TimeoutExpired:
+                print("lsof timed out; retrying normal /nix detach", file=sys.stderr)
+            command("sudo", "hdiutil", "detach", "/nix", timeout=120)
+    mount.unlink()
+
+
+def cleanup(root):
+    detach_nix(root)
     # Native unmount may still read the HTTP base image beneath the shadow.
     stop_group(helper_pid(root))
     for name in ("reader", "restore", "bundle", "image.shadow", "helper.json"):
@@ -561,7 +549,6 @@ def filesystem_gate(path):
             devices[0],
             capture_output=True,
             text=True,
-            timeout=900,
         )
         image.require(
             "appears to be OK" in checked.stdout,
@@ -616,9 +603,8 @@ def produce(root, output, coverage, argv, deep=False):
         )
     command("nix", "store", "gc")
     command("sync")
-    command("sudo", "hdiutil", "detach", "/nix", timeout=120)
-    (root / "mounted").unlink()
-    command("hdiutil", "compact", bundle, timeout=600)
+    detach_nix(root)
+    command("hdiutil", "compact", bundle)
     output.mkdir()
     archive = output / "nix-root.sparsebundle.tar.zst"
     command(
@@ -632,12 +618,9 @@ def produce(root, output, coverage, argv, deep=False):
         bundle.parent,
         bundle.name,
         env={**os.environ, "COPYFILE_DISABLE": "1"},
-        timeout=1800,
     )
     exported = output / "nix-root.dmg"
-    command(
-        "hdiutil", "convert", bundle, "-format", "ULFO", "-o", exported, timeout=1800
-    )
+    command("hdiutil", "convert", bundle, "-format", "ULFO", "-o", exported)
     gate = filesystem_gate(exported)
     packed = output / IMAGE
     image.pack_image(exported, packed, coverage=coverage, filesystem_gate=gate)

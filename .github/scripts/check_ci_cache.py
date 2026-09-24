@@ -64,6 +64,53 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_darwin_cleanup_detaches_before_diagnostic_and_keeps_failed_mount(self):
+        failure = subprocess.CalledProcessError(1, ["hdiutil", "detach", "/nix"])
+        cases = (
+            ("first attempt", [None], False, 1, 0),
+            ("diagnostic timeout", [failure, None], False, 2, 1),
+            ("retry failure", [failure, failure], True, 2, 1),
+        )
+        for name, attempts, remains, detach_count, diagnostic_count in cases:
+            with tempfile.TemporaryDirectory() as directory, self.subTest(name=name):
+                root = Path(directory)
+                marker = root / "mounted"
+                marker.touch()
+                diagnostics = []
+
+                def run(args, **kwargs):
+                    if args == ["mount"]:
+                        return subprocess.CompletedProcess(
+                            args, 0, stdout="/dev/disk1 on /nix (hfs, local)\n"
+                        )
+                    if args[:2] == ["sudo", "lsof"]:
+                        diagnostics.append(kwargs["timeout"])
+                        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                    raise AssertionError(args)
+
+                with (
+                    mock.patch.object(darwin.subprocess, "run", side_effect=run),
+                    mock.patch.object(
+                        darwin, "command", side_effect=attempts
+                    ) as detach,
+                    mock.patch("sys.stderr", new_callable=io.StringIO),
+                ):
+                    if remains:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            darwin.cleanup(root)
+                    else:
+                        darwin.cleanup(root)
+                self.assertEqual(marker.exists(), remains)
+                self.assertEqual(detach.call_count, detach_count)
+                self.assertEqual(
+                    [call.args for call in detach.call_args_list],
+                    [("sudo", "hdiutil", "detach", "/nix")] * detach_count,
+                )
+                self.assertEqual(len(diagnostics), diagnostic_count)
+                self.assertTrue(
+                    all(timeout and timeout <= 5 for timeout in diagnostics)
+                )
+
     def test_range_download_retries_truncation_once_and_rejects_bad_headers(self):
         url = "https://example.invalid/shard"
         asset = {"size": len(DATA), "browser_download_url": url}
