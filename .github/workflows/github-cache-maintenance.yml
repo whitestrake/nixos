@@ -374,8 +374,11 @@ jobs:
           path: ${{ runner.temp }}/plan
       - name: Install Nix
         uses: ./.github/actions/install-nix
-      - name: Promote and prune retired generations
+      - name: Promote cache generation
         run: |
           set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py promote --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID"
+      - name: Prune retired generations
+        run: |
+          set -euo pipefail
           python3 .github/scripts/ci_cache_generation.py prune --repo "$GITHUB_REPOSITORY" --source "$RUNNER_TEMP/plan/source.json" --execute

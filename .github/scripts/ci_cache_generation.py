@@ -939,10 +939,10 @@ def prune_candidates(repo, execute=False):
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
         ) as error:
-            print(
-                f"::warning ::Leaving unverifiable cache candidate {release['id']}: {type(error).__name__}"
-            )
-            continue
+            raise RuntimeError(
+                f"Cannot inspect cache candidate {release['id']}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
         if execute:
             ref = tag_ref(repo, release["tag_name"])
             if ref is not None:

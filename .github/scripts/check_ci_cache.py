@@ -515,6 +515,92 @@ class CacheCheck(unittest.TestCase):
             ):
                 ready({**release, "body": body}, run)
 
+    def test_candidate_cleanup_fails_on_run_lookup_and_keeps_active_rerun(self):
+        ineligible = {
+            "id": 4,
+            "tag_name": "ci-cache-v1-124001",
+            "draft": True,
+            "prerelease": False,
+            "author": {"login": "whitestrake[bot]"},
+        }
+        older = {
+            "id": 5,
+            "tag_name": "ci-cache-v1-123001",
+            "draft": True,
+            "prerelease": False,
+        }
+        active_run = {"status": "in_progress"}
+        failure = subprocess.TimeoutExpired(["gh", "api", "actions/runs/123"], 60)
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}),
+            mock.patch.object(generation, "publisher_context", return_value=999),
+            mock.patch.object(
+                generation, "release_inventory", return_value=[ineligible, older]
+            ),
+            mock.patch.object(
+                generation, "gh_api", side_effect=[active_run, ineligible, failure]
+            ) as api,
+            mock.patch.object(generation, "delete_release_and_tag") as delete,
+            self.assertRaisesRegex(RuntimeError, "candidate 5.*TimeoutExpired"),
+        ):
+            generation.prune_candidates("owner/repo", execute=True)
+        self.assertEqual(
+            api.call_args_list,
+            [
+                mock.call("owner/repo", "actions/runs/124"),
+                mock.call("owner/repo", "releases/4"),
+                mock.call("owner/repo", "actions/runs/123"),
+            ],
+        )
+        delete.assert_not_called()
+
+    def test_promoted_generation_recovers_then_accepts_rerun_and_prune(self):
+        current = complete_generation()
+        intent = {"releaseId": 7, "previousId": None, "publisherRunId": 9}
+        receipt = {
+            **intent,
+            "intentSha256": image.sha256(
+                json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+            ),
+            "promotedAt": 100,
+        }
+        release = {
+            "id": 7,
+            "tag_name": "ci-cache-v1-9001",
+            "draft": False,
+            "prerelease": False,
+            "body": json.dumps(
+                {"schema": generation.PROMOTION_SCHEMA, "promotionIntent": intent}
+            ),
+            "assets": [],
+        }
+
+        def api(_repo, endpoint, method="GET", payload=None):
+            self.assertIn(endpoint, ("releases/latest", "releases/7"))
+            if method == "PATCH":
+                release.update(payload)
+            return copy.deepcopy(release)
+
+        with (
+            mock.patch.object(
+                generation, "load_generation", return_value=(current, {})
+            ),
+            mock.patch.object(generation, "publisher_context", return_value=9),
+            mock.patch.object(generation, "check_run"),
+            mock.patch.object(generation, "verify_proof"),
+            mock.patch.object(generation, "gh_api", side_effect=api),
+            mock.patch.object(generation, "latest_release", return_value=release),
+            mock.patch.object(generation, "release_inventory", return_value=[release]),
+            mock.patch.object(generation.time, "time", return_value=100),
+        ):
+            recovered = {**receipt, "recoveredByRunId": 9}
+            self.assertEqual(generation.promote("owner/repo", 7), recovered)
+            self.assertEqual(generation.promote("owner/repo", 7), recovered)
+            self.assertEqual(
+                generation.prune("owner/repo", current["source"], execute=True),
+                {"releaseIds": [], "executed": True},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
