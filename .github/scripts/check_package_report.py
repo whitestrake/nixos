@@ -68,7 +68,7 @@ class PackageReportChecks(unittest.TestCase):
                         "headSha": HEAD,
                         "packageReport": {
                             "status": "failed",
-                            "message": "<script>surprise</script>",
+                            "message": "<script>surprise</script> https://example.invalid ~~obsolete~~",
                             "diff": None,
                         },
                     }
@@ -77,6 +77,8 @@ class PackageReportChecks(unittest.TestCase):
             rendered = renderer.render(directory, BASE, HEAD)
             self.assertNotIn("\n## forged heading", rendered)
             self.assertNotIn("<script>", rendered)
+            self.assertIn("https\\://example\\.invalid", rendered)
+            self.assertIn("\\~\\~obsolete\\~\\~", rendered)
 
     def test_cached_base_skips_copy_and_build(self):
         calls = []

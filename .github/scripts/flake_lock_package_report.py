@@ -12,7 +12,7 @@ REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 def safe_text(value):
     return re.sub(
-        r"([\\`*_{}\[\]()#+\-.!|])",
+        r"([\\`*_{}\[\]()#+\-.!|:~])",
         r"\\\1",
         html.escape(value.replace("\n", " ").replace("\r", " ")),
     )
