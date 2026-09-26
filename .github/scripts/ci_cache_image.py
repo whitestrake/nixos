@@ -374,7 +374,6 @@ def gh_upload(repo, tag, path):
         ["gh", "release", "upload", tag, str(path), "--repo", repo],
         stdout=subprocess.PIPE,
         check=True,
-        timeout=600,
     )
 
 

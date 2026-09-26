@@ -3,7 +3,6 @@
   fetchPypi,
   python3Packages,
   rustPlatform,
-  nix-update-script,
 }:
 python3Packages.buildPythonApplication rec {
   pname = "proxmox-mcp-plus";
@@ -103,11 +102,8 @@ python3Packages.buildPythonApplication rec {
   # and the live checks require a Proxmox environment.
   doCheck = false;
 
-  passthru.updateScript = nix-update-script {
-    extraArgs = [
-      "--flake"
-    ];
-  };
+  # Bypass nixpkgs' default Python update script, which builds the dependency shell.
+  passthru.updateScript = null;
 
   pythonImportsCheck = [
     "proxmox_mcp"
