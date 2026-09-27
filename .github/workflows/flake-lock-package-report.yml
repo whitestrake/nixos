@@ -160,7 +160,7 @@ jobs:
           CI_NFB_JOURNAL: ${{ runner.temp }}/ci-nfb-journal.json
         run: |
           set -euo pipefail
-          dix="$(nix build --inputs-from baseline --no-link --print-out-paths nixpkgs-unstable#dix)"
+          dix="$(nix build --inputs-from ./baseline --no-link --print-out-paths nixpkgs-unstable#dix)"
           DIX_BIN="$dix/bin/dix" python3 .github/scripts/nix_fast_build_package_report.py \
             --journal "$CI_NFB_JOURNAL" --base-dir baseline \
             --report-dir "$CI_PACKAGE_REPORT_DIR" --system "$NIX_ROOT_SYSTEM" \
