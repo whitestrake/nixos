@@ -88,6 +88,32 @@ jobs:
           component: linux-seed-x86_64-linux
       - name: Run source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
+      # Temporary proof of the selected release; remove after a successful hosted run.
+      - name: Probe Proxmox MCP Plus 0.5.21 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.outPath)"
+          test "$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.version)" = 0.5.21
+          nix path-info --store https://whitestrake.cachix.org "$out" >/dev/null
+          actual="$(nix build --no-link --print-out-paths --option max-jobs 0 .#packages.x86_64-linux.proxmox-mcp-plus)"
+          test "$actual" = "$out"
+          python_env="$(nix build --impure --no-link --print-out-paths --expr 'let f = builtins.getFlake (toString ./.); p = f.packages.x86_64-linux.proxmox-mcp-plus; python = (builtins.head p.dependencies).pythonModule; in python.withPackages (ps: [ (ps.toPythonModule p) ])')"
+          test -x "$out/bin/proxmox-mcp-plus"
+          "$python_env/bin/python3" - <<'PYTHON'
+          from importlib.metadata import distribution
+          import proxmox_mcp
+          from proxmox_mcp.server import main
+
+          installed = distribution("proxmox-mcp-plus")
+          assert installed.version == proxmox_mcp.__version__ == "0.5.21"
+          assert callable(main)
+          assert any(
+              entry.name == "proxmox-mcp-plus" and entry.value == "proxmox_mcp.server:main"
+              for entry in installed.entry_points
+          )
+          PYTHON
+          printf 'PROXMOX_MCP_PLUS_RUNTIME_OK version=0.5.21 outPath=%s\n' "$out"
   darwin-builds:
     name: Darwin
     runs-on: macos-26
@@ -179,33 +205,6 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
-
-      # Temporary proof of the selected release; remove after a successful hosted run.
-      - name: Probe Proxmox MCP Plus 0.5.21 runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.outPath)"
-          test "$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.version)" = 0.5.21
-          nix path-info --store https://whitestrake.cachix.org "$out" >/dev/null
-          actual="$(nix build --no-link --print-out-paths --option max-jobs 0 .#packages.x86_64-linux.proxmox-mcp-plus)"
-          test "$actual" = "$out"
-          python_env="$(nix build --impure --no-link --print-out-paths --expr 'let f = builtins.getFlake (toString ./.); p = f.packages.x86_64-linux.proxmox-mcp-plus; in (builtins.head p.dependencies).pythonModule.withPackages (_: [p])')"
-          test -x "$out/bin/proxmox-mcp-plus"
-          "$python_env/bin/python3" - <<'PYTHON'
-          from importlib.metadata import distribution
-          import proxmox_mcp
-          from proxmox_mcp.server import main
-
-          installed = distribution("proxmox-mcp-plus")
-          assert installed.version == proxmox_mcp.__version__ == "0.5.21"
-          assert callable(main)
-          assert any(
-              entry.name == "proxmox-mcp-plus" and entry.value == "proxmox_mcp.server:main"
-              for entry in installed.entry_points
-          )
-          PYTHON
-          printf 'PROXMOX_MCP_PLUS_RUNTIME_OK version=0.5.21 outPath=%s\n' "$out"
 
       - name: Assemble build manifest
         shell: bash
