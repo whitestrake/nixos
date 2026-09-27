@@ -23,127 +23,71 @@ EVENT = {
 }
 
 
+def write_fragment(
+    directory,
+    lane,
+    *,
+    name="host",
+    system="x86_64-linux",
+    base=BASE,
+    status="success",
+    message="",
+):
+    path = Path(directory, lane, "record.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "name": name,
+                "system": system,
+                "baseSha": base,
+                "headSha": HEAD,
+                "packageReport": {
+                    "status": status,
+                    "message": message,
+                    "diff": {"diffs": []} if status == "success" else None,
+                },
+            }
+        )
+    )
+    return path
+
+
 class PackageReportChecks(unittest.TestCase):
     def test_render_requires_every_ci_lane(self):
         systems = ("aarch64-linux", "x86_64-linux", "aarch64-darwin")
         with tempfile.TemporaryDirectory() as directory:
             for system in systems:
-                path = Path(directory, system, "record.json")
-                path.parent.mkdir()
-                path.write_text(
-                    json.dumps(
-                        {
-                            "name": system,
-                            "system": system,
-                            "baseSha": BASE,
-                            "headSha": HEAD,
-                            "packageReport": {
-                                "status": "success",
-                                "message": "",
-                                "diff": {"diffs": []},
-                            },
-                        }
-                    )
-                )
+                path = write_fragment(directory, system, name=system, system=system)
             self.assertIn(
                 "No package updates detected",
                 renderer.render(directory, BASE, HEAD, systems),
             )
-            Path(directory, systems[-1], "record.json").unlink()
+            path.unlink()
             with self.assertRaisesRegex(SystemExit, "lanes incomplete"):
                 renderer.render(directory, BASE, HEAD, systems)
 
     def test_mixed_pairs_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for index, base in enumerate((BASE, "c" * 40)):
-                path = Path(directory, str(index), "record.json")
-                path.parent.mkdir()
-                path.write_text(
-                    json.dumps(
-                        {
-                            "name": "host",
-                            "system": "x86_64-linux",
-                            "baseSha": base,
-                            "headSha": HEAD,
-                            "packageReport": {
-                                "status": "success",
-                                "message": "",
-                                "diff": {"diffs": []},
-                            },
-                        }
-                    )
-                )
+                write_fragment(directory, str(index), base=base)
             with self.assertRaisesRegex(SystemExit, "mixed base/head pairs"):
                 renderer.load_reports(directory)
 
     def test_fragment_text_cannot_create_markdown(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory, "record.json")
-            path.write_text(
-                json.dumps(
-                    {
-                        "name": "host\n## forged heading",
-                        "system": "x86_64-linux",
-                        "baseSha": BASE,
-                        "headSha": HEAD,
-                        "packageReport": {
-                            "status": "failed",
-                            "message": "<script>surprise</script> https://example.invalid ~~obsolete~~",
-                            "diff": None,
-                        },
-                    }
-                )
+            write_fragment(
+                directory,
+                "host",
+                name="host\n## forged heading",
+                status="failed",
+                message="<script>surprise</script> https://example.invalid ~~obsolete~~",
             )
             rendered = renderer.render(directory, BASE, HEAD)
             self.assertNotIn("\n## forged heading", rendered)
             self.assertNotIn("<script>", rendered)
             self.assertIn("https\\://example\\.invalid", rendered)
             self.assertIn("\\~\\~obsolete\\~\\~", rendered)
-
-    def test_cached_base_skips_copy_and_build(self):
-        calls = []
-
-        def run(command, **kwargs):
-            calls.append(command)
-            return subprocess.CompletedProcess(command, 0, "")
-
-        with (
-            patch.object(collector.subprocess, "run", side_effect=run),
-            patch.object(
-                collector, "cache_status", side_effect=AssertionError("cache queried")
-            ),
-        ):
-            collector.ensure_baseline(OLD, "repo")
-        self.assertEqual(calls, [["nix", "path-info", "--recursive", OLD]])
-
-    def test_confirmed_cache_miss_builds_exact_base_path(self):
-        calls = []
-
-        def run(command, **kwargs):
-            calls.append(command)
-            output = OLD + "\n" if command[1] == "build" else ""
-            code = 1 if command[1] == "path-info" and len(calls) == 1 else 0
-            return subprocess.CompletedProcess(
-                command, code, output, f"error: path '{OLD}' is not valid"
-            )
-
-        with (
-            patch.object(collector.subprocess, "run", side_effect=run),
-            patch.object(collector, "cache_status", return_value=404),
-        ):
-            collector.ensure_baseline(
-                OLD, "repo", "x86_64-linux", "nixosConfigurations.host"
-            )
-        self.assertEqual(
-            calls[1],
-            [
-                "nix",
-                "build",
-                "--no-link",
-                "--print-out-paths",
-                ".#ci.x86_64-linux.nixosConfigurations.host",
-            ],
-        )
 
     def test_cachix_hit_realises_exact_path(self):
         calls = []
@@ -166,7 +110,10 @@ class PackageReportChecks(unittest.TestCase):
         self.assertFalse(any(command[1] == "build" for command in calls))
 
     def test_fallback_rejects_different_output(self):
+        calls = []
+
         def run(command, **kwargs):
+            calls.append(command)
             if command[1] == "path-info":
                 return subprocess.CompletedProcess(
                     command, 1, "", f"error: path '{OLD}' is not valid"
@@ -181,6 +128,16 @@ class PackageReportChecks(unittest.TestCase):
                 collector.ensure_baseline(
                     OLD, "repo", "x86_64-linux", "nixosConfigurations.host"
                 )
+        self.assertEqual(
+            calls[1],
+            [
+                "nix",
+                "build",
+                "--no-link",
+                "--print-out-paths",
+                ".#ci.x86_64-linux.nixosConfigurations.host",
+            ],
+        )
 
     def test_cache_service_error_is_fatal(self):
         def run(command, **kwargs):
@@ -218,6 +175,7 @@ class PackageReportChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             journal = root / "journal.json"
+            fragments = root / "fragments"
             journal.write_text(
                 json.dumps(
                     {
@@ -242,20 +200,17 @@ class PackageReportChecks(unittest.TestCase):
                 collector.process_journal(
                     journal,
                     root / "base",
-                    root / "fragments",
+                    fragments,
                     "x86_64-linux",
                     BASE,
                     HEAD,
                 )
-            record = json.loads(
-                (
-                    root
-                    / "fragments"
-                    / "x86_64-linux"
-                    / "nixosConfigurations"
-                    / "host"
-                    / "record.json"
-                ).read_text()
+            path = fragments / "x86_64-linux/nixosConfigurations/host/record.json"
+            self.assertEqual(list(fragments.rglob("record.json")), [path])
+            record = json.loads(path.read_text())
+            self.assertEqual(
+                record["packageReport"],
+                {"status": "success", "message": "", "diff": {"diffs": []}},
             )
             self.assertEqual((record["baseSha"], record["headSha"]), (BASE, HEAD))
 

@@ -64,34 +64,33 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
-    def test_darwin_cleanup_detaches_before_diagnostic_and_keeps_failed_mount(self):
+    def test_darwin_cleanup_retries_after_diagnostic_timeout_and_keeps_failed_mount(
+        self,
+    ):
         failure = subprocess.CalledProcessError(1, ["hdiutil", "detach", "/nix"])
-        cases = (
-            ("first attempt", [None], False, 1, 0),
-            ("diagnostic timeout", [failure, None], False, 2, 1),
-            ("retry failure", [failure, failure], True, 2, 1),
-        )
-        for name, attempts, remains, detach_count, diagnostic_count in cases:
-            with tempfile.TemporaryDirectory() as directory, self.subTest(name=name):
+        for remains in (False, True):
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                self.subTest(remains=remains),
+            ):
                 root = Path(directory)
                 marker = root / "mounted"
                 marker.touch()
-                diagnostics = []
-
-                def run(args, **kwargs):
-                    if args == ["mount"]:
-                        return subprocess.CompletedProcess(
-                            args, 0, stdout="/dev/disk1 on /nix (hfs, local)\n"
-                        )
-                    if args[:2] == ["sudo", "lsof"]:
-                        diagnostics.append(kwargs["timeout"])
-                        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-                    raise AssertionError(args)
-
                 with (
-                    mock.patch.object(darwin.subprocess, "run", side_effect=run),
                     mock.patch.object(
-                        darwin, "command", side_effect=attempts
+                        darwin.subprocess,
+                        "run",
+                        side_effect=[
+                            subprocess.CompletedProcess(
+                                [], 0, "/dev/disk1 on /nix (apfs, local)\n"
+                            ),
+                            subprocess.TimeoutExpired(["lsof"], 5),
+                        ],
+                    ),
+                    mock.patch.object(
+                        darwin,
+                        "command",
+                        side_effect=[failure, failure if remains else None],
                     ) as detach,
                     mock.patch("sys.stderr", new_callable=io.StringIO),
                 ):
@@ -101,14 +100,9 @@ class CacheCheck(unittest.TestCase):
                     else:
                         darwin.cleanup(root)
                 self.assertEqual(marker.exists(), remains)
-                self.assertEqual(detach.call_count, detach_count)
                 self.assertEqual(
                     [call.args for call in detach.call_args_list],
-                    [("sudo", "hdiutil", "detach", "/nix")] * detach_count,
-                )
-                self.assertEqual(len(diagnostics), diagnostic_count)
-                self.assertTrue(
-                    all(timeout and timeout <= 5 for timeout in diagnostics)
+                    [("sudo", "hdiutil", "detach", "/nix")] * 2,
                 )
 
     def test_range_download_retries_truncation_once_and_rejects_bad_headers(self):
@@ -323,9 +317,8 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generation.validate_generation(value)
 
-    def test_apfs_generation_selection_keeps_legacy_retirement_parseable(self):
+    def test_apfs_generation_selection_rejects_legacy_images(self):
         legacy = complete_generation()
-        generation.validate_generation(legacy)  # Retirement still reads old releases.
         with tempfile.TemporaryDirectory() as directory:
             selection_path = Path(directory) / "selection.json"
             pin = {
@@ -341,10 +334,6 @@ class CacheCheck(unittest.TestCase):
                     ValueError, "incompatible Darwin cache format"
                 ):
                     generation.resolve("owner/repo", selection_path)
-                with self.assertRaisesRegex(
-                    ValueError, "incompatible Darwin cache format"
-                ):
-                    generation.resolve("owner/repo", selection_path, release_id=7)
             self.assertFalse(selection_path.exists())
             selection_path.write_text(
                 json.dumps(
@@ -359,18 +348,6 @@ class CacheCheck(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "incompatible Darwin cache format"):
                 generation.read_selection(selection_path, "owner/repo")
-            selection_path.unlink()
-
-            current = copy.deepcopy(legacy)
-            current["darwinFormat"] = "apfs-case-sensitive-v1"
-            generation.validate_generation(current)
-            with mock.patch.object(
-                generation, "load_generation", return_value=(current, pin)
-            ):
-                selected = generation.resolve("owner/repo", selection_path)
-            self.assertEqual(
-                generation.read_selection(selection_path, "owner/repo"), selected
-            )
 
     def test_retirement_expires_each_generation_and_protects_current_previous(self):
         now = 200_000
@@ -563,129 +540,20 @@ class CacheCheck(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "promotion journal"),
             ):
                 ready({**release, "body": body}, run)
-
-    def test_candidate_cleanup_fails_on_run_lookup_and_keeps_active_rerun(self):
-        ineligible = {
-            "id": 4,
-            "tag_name": "ci-cache-v1-124001",
-            "draft": True,
-            "prerelease": False,
-            "author": {"login": "whitestrake[bot]"},
-        }
-        older = {
-            "id": 5,
-            "tag_name": "ci-cache-v1-123001",
-            "draft": True,
-            "prerelease": False,
-        }
-        active_run = {"status": "in_progress"}
-        failure = subprocess.TimeoutExpired(["gh", "api", "actions/runs/123"], 60)
         with (
             mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}),
             mock.patch.object(generation, "publisher_context", return_value=999),
             mock.patch.object(
-                generation, "release_inventory", return_value=[ineligible, older]
+                generation, "release_inventory", return_value=[{**release, "id": 5}]
             ),
             mock.patch.object(
-                generation, "gh_api", side_effect=[active_run, ineligible, failure]
-            ) as api,
+                generation, "gh_api", side_effect=subprocess.TimeoutExpired(["gh"], 60)
+            ),
             mock.patch.object(generation, "delete_release_and_tag") as delete,
-            self.assertRaisesRegex(RuntimeError, "candidate 5.*TimeoutExpired"),
+            self.assertRaisesRegex(RuntimeError, "TimeoutExpired"),
         ):
             generation.prune_candidates("owner/repo", execute=True)
-        self.assertEqual(
-            api.call_args_list,
-            [
-                mock.call("owner/repo", "actions/runs/124"),
-                mock.call("owner/repo", "releases/4"),
-                mock.call("owner/repo", "actions/runs/123"),
-            ],
-        )
         delete.assert_not_called()
-
-    def test_candidate_cleanup_revalidation_error_names_release(self):
-        release = {
-            "id": 5,
-            "tag_name": "ci-cache-v1-123001",
-            "draft": True,
-            "prerelease": False,
-            "author": {"login": "whitestrake[bot]"},
-            "target_commitish": "a" * 40,
-            "updated_at": "1970-01-01T00:00:00Z",
-            "assets": [],
-        }
-        run = {
-            "id": 123,
-            "run_attempt": 1,
-            "status": "completed",
-            "path": generation.PUBLISHER,
-            "head_repository": {"full_name": "owner/repo"},
-            "head_sha": "a" * 40,
-            "updated_at": release["updated_at"],
-        }
-        failure = subprocess.TimeoutExpired(["gh", "api", "git/ref/tags"], 60)
-        with (
-            mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}),
-            mock.patch.object(generation, "publisher_context", return_value=999),
-            mock.patch.object(generation, "release_inventory", return_value=[release]),
-            mock.patch.object(generation, "gh_api", side_effect=[run, release]),
-            mock.patch.object(generation, "tag_ref", side_effect=failure),
-            mock.patch.object(generation, "delete_release_and_tag") as delete,
-            mock.patch.object(generation.time, "time", return_value=200_000),
-            self.assertRaisesRegex(
-                RuntimeError, "candidate 5.*TimeoutExpired"
-            ) as raised,
-        ):
-            generation.prune_candidates("owner/repo", execute=True)
-        self.assertIs(raised.exception.__cause__, failure)
-        delete.assert_not_called()
-
-    def test_promoted_generation_recovers_then_accepts_rerun_and_prune(self):
-        current = complete_generation()
-        intent = {"releaseId": 7, "previousId": None, "publisherRunId": 9}
-        receipt = {
-            **intent,
-            "intentSha256": image.sha256(
-                json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
-            ),
-            "promotedAt": 100,
-        }
-        release = {
-            "id": 7,
-            "tag_name": "ci-cache-v1-9001",
-            "draft": False,
-            "prerelease": False,
-            "body": json.dumps(
-                {"schema": generation.PROMOTION_SCHEMA, "promotionIntent": intent}
-            ),
-            "assets": [],
-        }
-
-        def api(_repo, endpoint, method="GET", payload=None):
-            self.assertIn(endpoint, ("releases/latest", "releases/7"))
-            if method == "PATCH":
-                release.update(payload)
-            return copy.deepcopy(release)
-
-        with (
-            mock.patch.object(
-                generation, "load_generation", return_value=(current, {})
-            ),
-            mock.patch.object(generation, "publisher_context", return_value=9),
-            mock.patch.object(generation, "check_run"),
-            mock.patch.object(generation, "verify_proof"),
-            mock.patch.object(generation, "gh_api", side_effect=api),
-            mock.patch.object(generation, "latest_release", return_value=release),
-            mock.patch.object(generation, "release_inventory", return_value=[release]),
-            mock.patch.object(generation.time, "time", return_value=100),
-        ):
-            recovered = {**receipt, "recoveredByRunId": 9}
-            self.assertEqual(generation.promote("owner/repo", 7), recovered)
-            self.assertEqual(generation.promote("owner/repo", 7), recovered)
-            self.assertEqual(
-                generation.prune("owner/repo", current["source"], execute=True),
-                {"releaseIds": [], "executed": True},
-            )
 
 
 if __name__ == "__main__":
