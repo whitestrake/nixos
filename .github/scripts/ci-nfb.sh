@@ -7,7 +7,6 @@ finish() {
   trap - EXIT
   if [ -n "$diagnostic_pid" ]; then
     kill -TERM -- "-$diagnostic_pid" 2>/dev/null || kill "$diagnostic_pid" 2>/dev/null || :
-    wait "$diagnostic_pid" 2>/dev/null || :
   fi
   echo "CI_NFB_COMPLETE status=$status durationSeconds=$SECONDS"
   exit "$status"
