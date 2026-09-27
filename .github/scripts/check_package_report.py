@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
 """Focused, portable checks for package report collection and rendering."""
 
-import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import flake_lock_package_report as renderer
+import nix_fast_build_package_report as collector
 
-def module(name):
-    spec = importlib.util.spec_from_file_location(
-        name, Path(__file__).with_name(name + ".py")
-    )
-    loaded = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-collector = module("nix_fast_build_package_report")
-renderer = module("flake_lock_package_report")
 BASE = "a" * 40
 HEAD = "b" * 40
 OLD = "/nix/store/" + "0" * 32 + "-old"
@@ -114,7 +105,7 @@ class PackageReportChecks(unittest.TestCase):
 
         def run(command, **kwargs):
             calls.append(command)
-            return type("Result", (), {"returncode": 0, "stdout": ""})()
+            return subprocess.CompletedProcess(command, 0, "")
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),
@@ -132,15 +123,9 @@ class PackageReportChecks(unittest.TestCase):
             calls.append(command)
             output = OLD + "\n" if command[1] == "build" else ""
             code = 1 if command[1] == "path-info" and len(calls) == 1 else 0
-            return type(
-                "Result",
-                (),
-                {
-                    "returncode": code,
-                    "stdout": output,
-                    "stderr": f"error: path '{OLD}' is not valid",
-                },
-            )()
+            return subprocess.CompletedProcess(
+                command, code, output, f"error: path '{OLD}' is not valid"
+            )
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),
@@ -166,15 +151,9 @@ class PackageReportChecks(unittest.TestCase):
         def run(command, **kwargs):
             calls.append(command)
             code = 1 if len(calls) == 1 else 0
-            return type(
-                "Result",
-                (),
-                {
-                    "returncode": code,
-                    "stdout": "",
-                    "stderr": f"error: path '{OLD}' is not valid",
-                },
-            )()
+            return subprocess.CompletedProcess(
+                command, code, "", f"error: path '{OLD}' is not valid"
+            )
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),
@@ -189,18 +168,10 @@ class PackageReportChecks(unittest.TestCase):
     def test_fallback_rejects_different_output(self):
         def run(command, **kwargs):
             if command[1] == "path-info":
-                return type(
-                    "Result",
-                    (),
-                    {
-                        "returncode": 1,
-                        "stdout": "",
-                        "stderr": f"error: path '{OLD}' is not valid",
-                    },
-                )()
-            return type(
-                "Result", (), {"returncode": 0, "stdout": NEW + "\n", "stderr": ""}
-            )()
+                return subprocess.CompletedProcess(
+                    command, 1, "", f"error: path '{OLD}' is not valid"
+                )
+            return subprocess.CompletedProcess(command, 0, NEW + "\n", "")
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),
@@ -213,15 +184,9 @@ class PackageReportChecks(unittest.TestCase):
 
     def test_cache_service_error_is_fatal(self):
         def run(command, **kwargs):
-            return type(
-                "Result",
-                (),
-                {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": f"error: path '{OLD}' is not valid",
-                },
-            )()
+            return subprocess.CompletedProcess(
+                command, 1, "", f"error: path '{OLD}' is not valid"
+            )
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),
@@ -234,15 +199,9 @@ class PackageReportChecks(unittest.TestCase):
 
     def test_local_store_error_is_not_a_cache_miss(self):
         def run(command, **kwargs):
-            return type(
-                "Result",
-                (),
-                {
-                    "returncode": 1,
-                    "stdout": "",
-                    "stderr": "cannot connect to Nix daemon",
-                },
-            )()
+            return subprocess.CompletedProcess(
+                command, 1, "", "cannot connect to Nix daemon"
+            )
 
         with (
             patch.object(collector.subprocess, "run", side_effect=run),

@@ -62,8 +62,9 @@
 in {
   perSystem = {pkgs, ...}: {
     checks.ci-cache = pkgs.runCommand "ci-cache-check" {} ''
-      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts/check_ci_cache.py}
-      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts/check_package_report.py}
+      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_ci_cache.py
+      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_package_report.py
+      ${pkgs.python3.withPackages (ps: [ps.packaging])}/bin/python3 ${../.github/scripts}/check_proxmox_mcp_plus_update.py
       touch $out
     '';
   };

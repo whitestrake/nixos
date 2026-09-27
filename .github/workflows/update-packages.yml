@@ -42,16 +42,41 @@ jobs:
           | Package | Before | After |
           |---|---:|---:|
           EOF
+          echo "body_path=$BODY" >> "$GITHUB_OUTPUT"
           failures=()
 
           while IFS= read -r package; do
             before_diff="$(git diff | git hash-object --stdin)"
 
-            if old_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)" && \
-              nix run nixpkgs#nix-update -- \
-                --flake \
-                --use-update-script \
-                "$package" && \
+            if ! old_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
+              failures+=("$package")
+              continue
+            fi
+
+            update_args=(--flake --use-update-script)
+            if [ "$package" = proxmox-mcp-plus ]; then
+              context="$RUNNER_TEMP/proxmox-mcp-plus-context.json"
+              if ! nix eval --json .#packages --accept-flake-config \
+                --apply 'systems: builtins.mapAttrs (system: packages: let p = packages.proxmox-mcp-plus; in { version = p.version; python = (builtins.head p.dependencies).pythonModule.version; dependencies = map (d: { name = d.pname or d.name; version = d.version or null; }) p.dependencies; relax = p.pythonRelaxDeps or []; remove = p.pythonRemoveDeps or []; }) systems' \
+                > "$context"; then
+                failures+=("$package")
+                continue
+              fi
+              if ! python_env="$(nix build --impure --no-link --print-out-paths --expr 'let pkgs = import (builtins.getFlake "nixpkgs").outPath { system = builtins.currentSystem; }; in pkgs.python3.withPackages (ps: [ ps.packaging ])')"; then
+                failures+=("$package")
+                continue
+              fi
+              if ! selected="$("$python_env/bin/python3" .github/scripts/select_proxmox_mcp_plus.py "$context")"; then
+                failures+=("$package")
+                continue
+              fi
+              if [ -z "$selected" ]; then
+                continue
+              fi
+              update_args=(--flake --version "$selected")
+            fi
+
+            if nix run nixpkgs#nix-update -- "${update_args[@]}" "$package" && \
               new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
               after_diff="$(git diff | git hash-object --stdin)"
 
@@ -78,7 +103,6 @@ jobs:
 
           if ! git diff --quiet; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "body_path=$BODY" >> "$GITHUB_OUTPUT"
           fi
         env:
           PACKAGE: ${{ inputs.package }}
@@ -88,7 +112,7 @@ jobs:
         run: nix fmt
       - name: Create GitHub App token
         id: app-token
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
@@ -96,7 +120,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Open package update pull request
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ steps.app-token.outputs.token }}
