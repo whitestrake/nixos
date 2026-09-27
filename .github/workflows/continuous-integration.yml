@@ -188,7 +188,8 @@ jobs:
           out="$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.outPath)"
           test "$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.version)" = 0.5.21
           nix path-info --store https://whitestrake.cachix.org "$out" >/dev/null
-          nix copy --from https://whitestrake.cachix.org "$out"
+          actual="$(nix build --no-link --print-out-paths --option max-jobs 0 .#packages.x86_64-linux.proxmox-mcp-plus)"
+          test "$actual" = "$out"
           python_env="$(nix build --impure --no-link --print-out-paths --expr 'let f = builtins.getFlake (toString ./.); p = f.packages.x86_64-linux.proxmox-mcp-plus; in (builtins.head p.dependencies).pythonModule.withPackages (_: [p])')"
           test -x "$out/bin/proxmox-mcp-plus"
           "$python_env/bin/python3" - <<'PYTHON'

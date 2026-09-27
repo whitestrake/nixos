@@ -59,7 +59,12 @@ def cache_status(path):
     narinfo = f"{CACHE_URL}/{Path(path).name[:32]}.narinfo"
     try:
         with urllib.request.urlopen(
-            urllib.request.Request(narinfo, method="HEAD"), timeout=30
+            urllib.request.Request(
+                narinfo,
+                headers={"User-Agent": "nix-package-report/1"},
+                method="HEAD",
+            ),
+            timeout=30,
         ) as response:
             return response.status
     except urllib.error.HTTPError as error:
@@ -76,7 +81,7 @@ def ensure_baseline(path, directory, system=None, attr=None):
         raise RuntimeError(f"local store check failed: {local.stderr.strip()}")
     status = cache_status(path)
     if status == 200:
-        subprocess.run(["nix", "copy", "--from", CACHE_URL, path], check=True)
+        subprocess.run(["nix-store", "--realise", path], check=True)
     elif status == 404:
         result = subprocess.run(
             ["nix", "build", "--no-link", "--print-out-paths", f".#ci.{system}.{attr}"],

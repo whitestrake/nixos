@@ -145,7 +145,7 @@ class PackageReportChecks(unittest.TestCase):
             ],
         )
 
-    def test_cachix_hit_copies_exact_path(self):
+    def test_cachix_hit_realises_exact_path(self):
         calls = []
 
         def run(command, **kwargs):
@@ -162,7 +162,7 @@ class PackageReportChecks(unittest.TestCase):
             collector.ensure_baseline(
                 OLD, "repo", "x86_64-linux", "nixosConfigurations.host"
             )
-        self.assertEqual(calls[1], ["nix", "copy", "--from", collector.CACHE_URL, OLD])
+        self.assertEqual(calls[1], ["nix-store", "--realise", OLD])
         self.assertFalse(any(command[1] == "build" for command in calls))
 
     def test_fallback_rejects_different_output(self):
