@@ -3,19 +3,19 @@
   pkgs,
   ...
 }: let
-  version = "0.157.0";
+  version = "0.157.1";
   assets = {
     "aarch64-darwin" = {
       name = "codex-aarch64-apple-darwin";
-      hash = "sha256-DxUiNiv4yLu1i/L6ijxgCgtyPx1ONAWrgxr+2jJDiQk=";
+      hash = "sha256-PEWxYrenb1EyUBWx0KgRLHMhm3qbWc1XYsN8m6VYlPo=";
     };
     "x86_64-linux" = {
       name = "codex-x86_64-unknown-linux-musl";
-      hash = "sha256-2z/jrao1xQ7ftoqYihF3gv40kpYPtj1wA+tnSMzAZXs=";
+      hash = "sha256-6YwejgKOgTf6LSQVyC7Fjns3AaYn41VKrOWzyjFFSvI=";
     };
     "aarch64-linux" = {
       name = "codex-aarch64-unknown-linux-musl";
-      hash = "sha256-5vvieY6UG4M/fjvDQBD3RDJArEoUnOGHbzLL+gun0l8=";
+      hash = "sha256-TGscF8HF/Q1PspUbdIGGe5Xqcysf6rJpyYWIsV2xYlM=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
