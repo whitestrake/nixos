@@ -323,6 +323,55 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generation.validate_generation(value)
 
+    def test_apfs_generation_selection_keeps_legacy_retirement_parseable(self):
+        legacy = complete_generation()
+        generation.validate_generation(legacy)  # Retirement still reads old releases.
+        with tempfile.TemporaryDirectory() as directory:
+            selection_path = Path(directory) / "selection.json"
+            pin = {
+                "assetId": 10,
+                "name": generation.MANIFEST,
+                "size": 1,
+                "sha256": "a" * 64,
+            }
+            with mock.patch.object(
+                generation, "load_generation", return_value=(legacy, pin)
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "incompatible Darwin cache format"
+                ):
+                    generation.resolve("owner/repo", selection_path)
+                with self.assertRaisesRegex(
+                    ValueError, "incompatible Darwin cache format"
+                ):
+                    generation.resolve("owner/repo", selection_path, release_id=7)
+            self.assertFalse(selection_path.exists())
+            selection_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "ci-cache-selection-v1",
+                        "repo": "owner/repo",
+                        "generation": legacy,
+                        "manifest": pin,
+                        "production": True,
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "incompatible Darwin cache format"):
+                generation.read_selection(selection_path, "owner/repo")
+            selection_path.unlink()
+
+            current = copy.deepcopy(legacy)
+            current["darwinFormat"] = "apfs-case-sensitive-v1"
+            generation.validate_generation(current)
+            with mock.patch.object(
+                generation, "load_generation", return_value=(current, pin)
+            ):
+                selected = generation.resolve("owner/repo", selection_path)
+            self.assertEqual(
+                generation.read_selection(selection_path, "owner/repo"), selected
+            )
+
     def test_retirement_expires_each_generation_and_protects_current_previous(self):
         now = 200_000
         releases = [

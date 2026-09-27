@@ -1,26 +1,9 @@
 #!/usr/bin/env bash
 # Shared ordinary CI and exact-image validation workload.
 set -euo pipefail
-diagnostic_pid=
-finish() {
-  status=$?
-  trap - EXIT
-  if [ -n "$diagnostic_pid" ]; then
-    kill -TERM -- "-$diagnostic_pid" 2>/dev/null || kill "$diagnostic_pid" 2>/dev/null || :
-  fi
-  echo "CI_NFB_COMPLETE status=$status durationSeconds=$SECONDS"
-  exit "$status"
-}
-trap finish EXIT
+trap 'echo "CI_NFB_COMPLETE status=$? durationSeconds=$SECONDS"' EXIT
 projection="$1"
 system="$2"
-# Temporary hosted Darwin diagnostic; remove after identifying the stall.
-if [ "$system" = aarch64-darwin ] && [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
-  "${HOST_PYTHON:-/usr/bin/python3}" .github/scripts/ci_nfb_diagnostic.py &
-  diagnostic_pid=$!
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-fi
 result_dir="${CI_DARWIN_ATTEMPT_DIR:-$RUNNER_TEMP/ci-results}"
 mkdir -p "$result_dir"
 root="/nix/var/nix/gcroots/github-ci/$system/nix-fast-build"

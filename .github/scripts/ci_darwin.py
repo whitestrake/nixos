@@ -536,29 +536,50 @@ def filesystem_gate(path):
     entities = plistlib.loads(result.stdout)["system-entities"]
     whole = next(entry["dev-entry"] for entry in entities if entry.get("dev-entry"))
     try:
-        devices = [
+        containers = [
             entry["dev-entry"]
             for entry in entities
-            if entry.get("content-hint") == "Apple_HFS"
+            if entry.get("content-hint") == "Apple_APFS"
         ]
-        image.require(len(devices) == 1, "expected exactly one HFS filesystem")
+        volumes = [
+            entry["dev-entry"]
+            for entry in entities
+            if entry.get("volume-kind") == "apfs"
+        ]
+        image.require(
+            len(containers) == len(volumes) == 1,
+            "expected exactly one APFS container and volume",
+        )
+        image.require(
+            containers[0].startswith("/dev/disk")
+            and volumes[0].startswith("/dev/disk"),
+            "unexpected APFS device",
+        )
+        container = containers[0].replace("/dev/disk", "/dev/rdisk", 1)
+        volume = volumes[0].replace("/dev/disk", "/dev/rdisk", 1)
         checked = command(
             "sudo",
-            "/sbin/fsck_hfs",
-            "-fn",
-            devices[0],
+            "/sbin/fsck_apfs",
+            "-n",
+            container,
             capture_output=True,
             text=True,
         )
+        report = checked.stdout + "\n" + checked.stderr
         image.require(
-            "appears to be OK" in checked.stdout,
-            "filesystem check did not confirm healthy HFS",
+            f"The container {container} appears to be OK." in report
+            and any(
+                line.strip().startswith(f"** The volume {volume} ")
+                and line.strip().endswith(" appears to be OK.")
+                for line in report.splitlines()
+            ),
+            "filesystem check did not confirm healthy APFS",
         )
     finally:
         command("hdiutil", "detach", whole, timeout=120)
     after = image.file_sha256(path)
     image.require(before == after, "filesystem validation changed image")
-    return {"imageSha256": before}
+    return {"imageSha256": before, "filesystem": "APFS"}
 
 
 def validate_hot(exported, manifest, hot, directory):

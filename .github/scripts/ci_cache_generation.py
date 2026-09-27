@@ -30,6 +30,7 @@ from ci_cache_image import (
 )
 
 SCHEMA = "ci-cache-generation-v1"
+DARWIN_FORMAT = "apfs-case-sensitive-v1"
 PROMOTION_SCHEMA = "ci-cache-promotion-v1"
 MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
@@ -125,6 +126,11 @@ def validate_generation(generation):
     require(positive(generation.get("publisherRunId")), "invalid publisher run")
     validate_source(generation.get("source", {}))
     fingerprint(generation.get("coverage"))
+    # Legacy HFS generations remain parseable for retirement, but not selection.
+    if "darwinFormat" in generation:
+        require(
+            generation["darwinFormat"] == DARWIN_FORMAT, "invalid Darwin cache format"
+        )
     components = generation.get("components", {})
     require(
         set(components) == set(COMPONENTS),
@@ -295,6 +301,10 @@ def resolve(repo, output, release_id=None):
     if output.exists():
         raise FileExistsError(output)
     generation, pin = load_generation(repo, release_id)
+    require(
+        generation.get("darwinFormat") == DARWIN_FORMAT,
+        "incompatible Darwin cache format",
+    )
     selection = {
         "schema": "ci-cache-selection-v1",
         "repo": repo,
@@ -322,6 +332,10 @@ def read_selection(path, repo):
         "selection requires explicit trust mode",
     )
     validate_generation(selection["generation"])
+    require(
+        selection["generation"].get("darwinFormat") == DARWIN_FORMAT,
+        "incompatible Darwin cache format",
+    )
     require(
         selection["manifest"]["name"] == MANIFEST, "invalid generation manifest name"
     )
@@ -390,6 +404,9 @@ def candidate(repo, release_id):
     plan = json.loads(asset_body(repo, release, identity(assets[0]), 65536))
     require(plan["releaseId"] == release_id, "candidate identity mismatch")
     require(
+        plan.get("darwinFormat") == DARWIN_FORMAT, "incompatible Darwin cache format"
+    )
+    require(
         publisher_context(repo, plan["source"]["revision"], False)
         == plan["publisherRunId"],
         "candidate belongs to another publisher",
@@ -402,6 +419,7 @@ def begin(repo, source, coverage):
     publisher = publisher_context(repo, source["revision"], False)
     plan = {
         "schema": SCHEMA,
+        "darwinFormat": DARWIN_FORMAT,
         "releaseId": 1,
         "source": source,
         "publisherRunId": publisher,
@@ -467,7 +485,8 @@ def upload_component(repo, release_id, component, directory):
         require(
             "hotPack" in manifest
             and manifest.get("filesystemGate", {}).get("imageSha256")
-            == manifest["imageSha256"],
+            == manifest["imageSha256"]
+            and manifest["filesystemGate"].get("filesystem") == "APFS",
             "Darwin image needs exact-image gate and hot pack",
         )
     # Prefix names per component. Hard links avoid another multi-GB payload copy.

@@ -107,11 +107,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Temporary APFS sparsebundle comparison: always create a cold image.
       - name: Select cache generation
         uses: ./.github/actions/ci-cache-select
         with:
-          mode: cold
+          mode: ${{ inputs.cache_mode || 'warm' }}
+          release-id: ${{ inputs.cache_release_id }}
       - name: Prepare Darwin build environment
         uses: ./.github/actions/ci-darwin-prepare
         with:
@@ -179,6 +179,32 @@ jobs:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
+
+      # Temporary proof of the selected release; remove after a successful hosted run.
+      - name: Probe Proxmox MCP Plus 0.5.21 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.outPath)"
+          test "$(nix eval --raw .#packages.x86_64-linux.proxmox-mcp-plus.version)" = 0.5.21
+          nix path-info --store https://whitestrake.cachix.org "$out" >/dev/null
+          nix copy --from https://whitestrake.cachix.org "$out"
+          python_env="$(nix build --impure --no-link --print-out-paths --expr 'let f = builtins.getFlake (toString ./.); p = f.packages.x86_64-linux.proxmox-mcp-plus; in (builtins.head p.dependencies).pythonModule.withPackages (_: [p])')"
+          test -x "$out/bin/proxmox-mcp-plus"
+          "$python_env/bin/python3" - <<'PYTHON'
+          from importlib.metadata import distribution
+          import proxmox_mcp
+          from proxmox_mcp.server import main
+
+          installed = distribution("proxmox-mcp-plus")
+          assert installed.version == proxmox_mcp.__version__ == "0.5.21"
+          assert callable(main)
+          assert any(
+              entry.name == "proxmox-mcp-plus" and entry.value == "proxmox_mcp.server:main"
+              for entry in installed.entry_points
+          )
+          PYTHON
+          printf 'PROXMOX_MCP_PLUS_RUNTIME_OK version=0.5.21 outPath=%s\n' "$out"
 
       - name: Assemble build manifest
         shell: bash
