@@ -107,28 +107,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Select cache generation
-        uses: ./.github/actions/ci-cache-select
+      # Temporary APFS comparison: use the standard installer without a cache image.
+      - name: Select host Python
+        run: echo "HOST_PYTHON=$(command -v python3)" >> "$GITHUB_ENV"
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+      - name: Configure Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
-          mode: ${{ inputs.cache_mode || 'warm' }}
-          release-id: ${{ inputs.cache_release_id }}
-      - name: Prepare Darwin build environment
-        uses: ./.github/actions/ci-darwin-prepare
-        with:
-          mode: eager
-          configure-cachix: "true"
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
       - name: Build Darwin configurations
         timeout-minutes: ${{ inputs.cache_mode == 'cold' && 330 || 60 }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: |
-          "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" \
-            -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
-      - name: Publish selected Darwin records
+        run: bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
+      - name: Publish Darwin build records
         id: records
-        run: echo "records=$(cat "$RUNNER_TEMP/darwin/selected/records.json")" >> "$GITHUB_OUTPUT"
-        # The hosted VM owns final store disposal; recovery still detaches before reuse.
+        run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"
   all-builds:
     name: "All Builds"
     needs:
