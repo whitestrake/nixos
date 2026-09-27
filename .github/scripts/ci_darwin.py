@@ -332,6 +332,17 @@ def attach(root, source, shadow=False):
     if shadow:
         args += ["-shadow", root / "image.shadow", "-noautofsck"]
     command(*args)
+    try:
+        command("/usr/bin/mdutil", "-s", "/nix", timeout=30)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print(f"warning: Spotlight status probe failed: {error}", file=sys.stderr)
+    try:
+        command("sudo", "/usr/bin/mdutil", "-i", "off", "/nix", timeout=30)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print(
+            f"warning: could not disable Spotlight indexing for /nix: {error}",
+            file=sys.stderr,
+        )
     command("sudo", "chown", os.environ["USER"], "/nix")
     Path("/nix").chmod(Path("/nix").stat().st_mode | 0o700)
 
