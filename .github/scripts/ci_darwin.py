@@ -350,7 +350,7 @@ def mount(root, mode, repo):
             "-type",
             "SPARSEBUNDLE",
             "-fs",
-            "Case-sensitive Journaled HFS+",
+            "Case-sensitive APFS",
             "-volname",
             "NixStore",
             bundle,
