@@ -63,6 +63,7 @@ in {
   perSystem = {pkgs, ...}: {
     checks.ci-cache = pkgs.runCommand "ci-cache-check" {} ''
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts/check_ci_cache.py}
+      PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts/check_package_report.py}
       touch $out
     '';
   };

@@ -33,6 +33,35 @@ EVENT = {
 
 
 class PackageReportChecks(unittest.TestCase):
+    def test_render_requires_every_ci_lane(self):
+        systems = ("aarch64-linux", "x86_64-linux", "aarch64-darwin")
+        with tempfile.TemporaryDirectory() as directory:
+            for system in systems:
+                path = Path(directory, system, "record.json")
+                path.parent.mkdir()
+                path.write_text(
+                    json.dumps(
+                        {
+                            "name": system,
+                            "system": system,
+                            "baseSha": BASE,
+                            "headSha": HEAD,
+                            "packageReport": {
+                                "status": "success",
+                                "message": "",
+                                "diff": {"diffs": []},
+                            },
+                        }
+                    )
+                )
+            self.assertIn(
+                "No package updates detected",
+                renderer.render(directory, BASE, HEAD, systems),
+            )
+            Path(directory, systems[-1], "record.json").unlink()
+            with self.assertRaisesRegex(SystemExit, "lanes incomplete"):
+                renderer.render(directory, BASE, HEAD, systems)
+
     def test_mixed_pairs_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for index, base in enumerate((BASE, "c" * 40)):

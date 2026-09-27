@@ -156,11 +156,16 @@ def package_updates(reports):
     ]
 
 
-def render(diff_dir, base_sha, head_sha):
+def render(diff_dir, base_sha, head_sha, required_systems=()):
     reports, pair = load_reports(diff_dir)
     if pair != (base_sha, head_sha):
         raise SystemExit(
             "package report fragments differ from requested base/head pair"
+        )
+    actual_systems = {report["system"] for report in reports}
+    if required_systems and actual_systems != set(required_systems):
+        raise SystemExit(
+            f"package report lanes incomplete: expected {sorted(required_systems)}, got {sorted(actual_systems)}"
         )
     successful = [report for report in reports if report["status"] == "success"]
     failed = [report for report in reports if report["status"] != "success"]
@@ -192,10 +197,13 @@ def main():
     parser.add_argument("--diff-dir", required=True)
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--required-system", action="append", default=[])
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    Path(args.output).write_text(render(args.diff_dir, args.base_sha, args.head_sha))
+    Path(args.output).write_text(
+        render(args.diff_dir, args.base_sha, args.head_sha, args.required_system)
+    )
 
 
 if __name__ == "__main__":

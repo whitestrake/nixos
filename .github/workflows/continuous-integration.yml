@@ -115,9 +115,11 @@ jobs:
       - name: Prepare Darwin build environment
         uses: ./.github/actions/ci-darwin-prepare
         with:
+          mode: eager
           configure-cachix: "true"
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build Darwin configurations
+        timeout-minutes: ${{ inputs.cache_mode == 'cold' && 330 || 60 }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |

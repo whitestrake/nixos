@@ -176,25 +176,23 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  publish:
-    name: "Publish"
+  render:
+    name: "Render"
     needs: [context, compile]
     if: ${{ needs.compile.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
-      pull-requests: write
+      pull-requests: read
     env:
       BASE_SHA: ${{ needs.context.outputs.base }}
       HEAD_SHA: ${{ needs.context.outputs.head }}
-      TRUSTED_SHA: ${{ needs.context.outputs.trusted }}
-      PR_NUMBER: ${{ needs.context.outputs.number }}
     steps:
       - name: Check out report tooling
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ env.TRUSTED_SHA }}
+          ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
 
       - name: Download package reports
@@ -213,7 +211,37 @@ jobs:
             --diff-dir package-reports \
             --base-sha "$BASE_SHA" \
             --head-sha "$HEAD_SHA" \
+            --required-system aarch64-linux \
+            --required-system x86_64-linux \
+            --required-system aarch64-darwin \
             --output package-report.md
+
+      - name: Upload rendered report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rendered-package-report
+          path: package-report.md
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: "Publish"
+    needs: [context, render]
+    if: ${{ needs.render.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      BASE_SHA: ${{ needs.context.outputs.base }}
+      HEAD_SHA: ${{ needs.context.outputs.head }}
+      PR_NUMBER: ${{ needs.context.outputs.number }}
+    steps:
+      - name: Download rendered report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: rendered-package-report
 
       - name: Revalidate pull request revisions
         shell: bash
