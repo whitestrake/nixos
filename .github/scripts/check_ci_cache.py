@@ -64,6 +64,47 @@ def complete_generation():
 
 
 class CacheCheck(unittest.TestCase):
+    def test_darwin_cleanup_retries_after_diagnostic_timeout_and_keeps_failed_mount(
+        self,
+    ):
+        failure = subprocess.CalledProcessError(1, ["hdiutil", "detach", "/nix"])
+        for remains in (False, True):
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                self.subTest(remains=remains),
+            ):
+                root = Path(directory)
+                marker = root / "mounted"
+                marker.touch()
+                with (
+                    mock.patch.object(
+                        darwin.subprocess,
+                        "run",
+                        side_effect=[
+                            subprocess.CompletedProcess(
+                                [], 0, "/dev/disk1 on /nix (apfs, local)\n"
+                            ),
+                            subprocess.TimeoutExpired(["lsof"], 5),
+                        ],
+                    ),
+                    mock.patch.object(
+                        darwin,
+                        "command",
+                        side_effect=[failure, failure if remains else None],
+                    ) as detach,
+                    mock.patch("sys.stderr", new_callable=io.StringIO),
+                ):
+                    if remains:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            darwin.cleanup(root)
+                    else:
+                        darwin.cleanup(root)
+                self.assertEqual(marker.exists(), remains)
+                self.assertEqual(
+                    [call.args for call in detach.call_args_list],
+                    [("sudo", "hdiutil", "detach", "/nix")] * 2,
+                )
+
     def test_range_download_retries_truncation_once_and_rejects_bad_headers(self):
         url = "https://example.invalid/shard"
         asset = {"size": len(DATA), "browser_download_url": url}
@@ -276,6 +317,38 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generation.validate_generation(value)
 
+    def test_apfs_generation_selection_rejects_legacy_images(self):
+        legacy = complete_generation()
+        with tempfile.TemporaryDirectory() as directory:
+            selection_path = Path(directory) / "selection.json"
+            pin = {
+                "assetId": 10,
+                "name": generation.MANIFEST,
+                "size": 1,
+                "sha256": "a" * 64,
+            }
+            with mock.patch.object(
+                generation, "load_generation", return_value=(legacy, pin)
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "incompatible Darwin cache format"
+                ):
+                    generation.resolve("owner/repo", selection_path)
+            self.assertFalse(selection_path.exists())
+            selection_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "ci-cache-selection-v1",
+                        "repo": "owner/repo",
+                        "generation": legacy,
+                        "manifest": pin,
+                        "production": True,
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "incompatible Darwin cache format"):
+                generation.read_selection(selection_path, "owner/repo")
+
     def test_retirement_expires_each_generation_and_protects_current_previous(self):
         now = 200_000
         releases = [
@@ -467,6 +540,20 @@ class CacheCheck(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "promotion journal"),
             ):
                 ready({**release, "body": body}, run)
+        with (
+            mock.patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}),
+            mock.patch.object(generation, "publisher_context", return_value=999),
+            mock.patch.object(
+                generation, "release_inventory", return_value=[{**release, "id": 5}]
+            ),
+            mock.patch.object(
+                generation, "gh_api", side_effect=subprocess.TimeoutExpired(["gh"], 60)
+            ),
+            mock.patch.object(generation, "delete_release_and_tag") as delete,
+            self.assertRaisesRegex(RuntimeError, "TimeoutExpired"),
+        ):
+            generation.prune_candidates("owner/repo", execute=True)
+        delete.assert_not_called()
 
 
 if __name__ == "__main__":

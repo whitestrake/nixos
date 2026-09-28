@@ -180,7 +180,8 @@ def validate_manifest(manifest, require_assets=True):
     ):
         gate = manifest.get("filesystemGate", {})
         require(
-            gate.get("imageSha256") == manifest["imageSha256"],
+            gate.get("imageSha256") == manifest["imageSha256"]
+            and gate.get("filesystem") == "APFS",
             "missing exact-image filesystem gate",
         )
     block_size = manifest.get("blockSize")
@@ -374,7 +375,6 @@ def gh_upload(repo, tag, path):
         ["gh", "release", "upload", tag, str(path), "--repo", repo],
         stdout=subprocess.PIPE,
         check=True,
-        timeout=600,
     )
 
 

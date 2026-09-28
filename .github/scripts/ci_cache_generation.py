@@ -30,6 +30,7 @@ from ci_cache_image import (
 )
 
 SCHEMA = "ci-cache-generation-v1"
+DARWIN_FORMAT = "apfs-case-sensitive-v1"
 PROMOTION_SCHEMA = "ci-cache-promotion-v1"
 MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
@@ -125,6 +126,11 @@ def validate_generation(generation):
     require(positive(generation.get("publisherRunId")), "invalid publisher run")
     validate_source(generation.get("source", {}))
     fingerprint(generation.get("coverage"))
+    # Legacy HFS generations remain parseable for retirement, but not selection.
+    if "darwinFormat" in generation:
+        require(
+            generation["darwinFormat"] == DARWIN_FORMAT, "invalid Darwin cache format"
+        )
     components = generation.get("components", {})
     require(
         set(components) == set(COMPONENTS),
@@ -295,6 +301,10 @@ def resolve(repo, output, release_id=None):
     if output.exists():
         raise FileExistsError(output)
     generation, pin = load_generation(repo, release_id)
+    require(
+        generation.get("darwinFormat") == DARWIN_FORMAT,
+        "incompatible Darwin cache format",
+    )
     selection = {
         "schema": "ci-cache-selection-v1",
         "repo": repo,
@@ -322,6 +332,10 @@ def read_selection(path, repo):
         "selection requires explicit trust mode",
     )
     validate_generation(selection["generation"])
+    require(
+        selection["generation"].get("darwinFormat") == DARWIN_FORMAT,
+        "incompatible Darwin cache format",
+    )
     require(
         selection["manifest"]["name"] == MANIFEST, "invalid generation manifest name"
     )
@@ -390,6 +404,9 @@ def candidate(repo, release_id):
     plan = json.loads(asset_body(repo, release, identity(assets[0]), 65536))
     require(plan["releaseId"] == release_id, "candidate identity mismatch")
     require(
+        plan.get("darwinFormat") == DARWIN_FORMAT, "incompatible Darwin cache format"
+    )
+    require(
         publisher_context(repo, plan["source"]["revision"], False)
         == plan["publisherRunId"],
         "candidate belongs to another publisher",
@@ -402,6 +419,7 @@ def begin(repo, source, coverage):
     publisher = publisher_context(repo, source["revision"], False)
     plan = {
         "schema": SCHEMA,
+        "darwinFormat": DARWIN_FORMAT,
         "releaseId": 1,
         "source": source,
         "publisherRunId": publisher,
@@ -467,7 +485,8 @@ def upload_component(repo, release_id, component, directory):
         require(
             "hotPack" in manifest
             and manifest.get("filesystemGate", {}).get("imageSha256")
-            == manifest["imageSha256"],
+            == manifest["imageSha256"]
+            and manifest["filesystemGate"].get("filesystem") == "APFS",
             "Darwin image needs exact-image gate and hot pack",
         )
     # Prefix names per component. Hard links avoid another multi-GB payload copy.
@@ -933,38 +952,39 @@ def prune_candidates(repo, execute=False):
                     and candidate["source"]["revision"] == run["head_sha"],
                     "candidate identity mismatch",
                 )
+            if execute:
+                ref = tag_ref(repo, release["tag_name"])
+                if ref is not None:
+                    require(
+                        ref["object"]["type"] == "commit"
+                        and ref["object"]["sha"] == run["head_sha"],
+                        "candidate tag target changed",
+                    )
+                fresh = gh_api(repo, f"releases/{release['id']}")
+                require(
+                    candidate_ready(
+                        fresh,
+                        gh_api(repo, f"actions/runs/{run['id']}"),
+                        repo,
+                        time.time(),
+                    ),
+                    "candidate is no longer eligible for cleanup",
+                )
+                require(
+                    tag_ref(repo, release["tag_name"]) == ref,
+                    "candidate tag changed before cleanup",
+                )
         except (
             ValueError,
             KeyError,
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
         ) as error:
-            print(
-                f"::warning ::Leaving unverifiable cache candidate {release['id']}: {type(error).__name__}"
-            )
-            continue
+            raise RuntimeError(
+                f"Cannot inspect cache candidate {release['id']}: "
+                f"{type(error).__name__}: {error}"
+            ) from error
         if execute:
-            ref = tag_ref(repo, release["tag_name"])
-            if ref is not None:
-                require(
-                    ref["object"]["type"] == "commit"
-                    and ref["object"]["sha"] == run["head_sha"],
-                    "candidate tag target changed",
-                )
-            fresh = gh_api(repo, f"releases/{release['id']}")
-            require(
-                candidate_ready(
-                    fresh,
-                    gh_api(repo, f"actions/runs/{run['id']}"),
-                    repo,
-                    time.time(),
-                ),
-                "candidate is no longer eligible for cleanup",
-            )
-            require(
-                tag_ref(repo, release["tag_name"]) == ref,
-                "candidate tag changed before cleanup",
-            )
             delete_release_and_tag(repo, fresh, ref)
         removed.append(release["id"])
     return {"candidateIds": removed, "executed": execute}

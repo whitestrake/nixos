@@ -27,7 +27,7 @@ if [ "${#nfb[@]}" -eq 0 ]; then
 fi
 wrapper=("${HOST_PYTHON:-python3}" .github/scripts/nix_fast_build.py)
 if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then wrapper+=(--publish-checks); fi
-if [ -n "${CI_PACKAGE_REPORT_DIR:-}" ]; then wrapper+=(--build-hook .github/scripts/nix_fast_build_package_report.py); fi
+if [ -n "${CI_NFB_JOURNAL:-}" ]; then wrapper+=(--defer-checks "$CI_NFB_JOURNAL"); fi
 options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto)
 flake=".#ci.$projection"
 case "$projection" in

@@ -31,7 +31,7 @@ class CacheRestoreError(RuntimeError):
 
 def command(*args, **kwargs):
     argv = [str(arg) for arg in args]
-    timeout = kwargs.pop("timeout", 600)
+    timeout = kwargs.pop("timeout", None)
     data = kwargs.pop("input", None)
     if data is not None:
         kwargs["stdin"] = subprocess.PIPE
@@ -282,39 +282,27 @@ def helper_pid(root):
     return json.loads(path.read_text())["pid"] if path.exists() else None
 
 
-def cleanup(root):
-    # Refuse to detach while any unexpected process still has store files open.
+def detach_nix(root):
     mount = root / "mounted"
-    if mount.exists():
-        # ReportCrash can retain store files briefly after owned children exit.
-        deadline = time.monotonic() + 10
-        while True:
-            users = subprocess.run(
-                ["sudo", "lsof", "-t", "+f", "--", "/nix"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if (
-                users.returncode not in (0, 1)
-                or not users.stdout.strip()
-                or time.monotonic() >= deadline
-            ):
-                break
-            time.sleep(0.2)
-        if users.returncode not in (0, 1) or users.stdout.strip():
-            subprocess.run(["sudo", "lsof", "+f", "--", "/nix"], timeout=5)
-        image.require(
-            users.returncode in (0, 1) and not users.stdout.strip(),
-            "store users remain; refusing detach",
-        )
-    if mount.exists():
-        mounted = subprocess.run(
-            ["mount"], capture_output=True, text=True, check=True
-        ).stdout
-        if " on /nix (" in mounted:
+    if not mount.exists():
+        return
+    mounted = subprocess.run(
+        ["mount"], capture_output=True, text=True, check=True
+    ).stdout
+    if " on /nix (" in mounted:
+        try:
             command("sudo", "hdiutil", "detach", "/nix", timeout=120)
-        mount.unlink()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            try:
+                subprocess.run(["sudo", "lsof", "+f", "--", "/nix"], timeout=5)
+            except subprocess.TimeoutExpired:
+                print("lsof timed out; retrying normal /nix detach", file=sys.stderr)
+            command("sudo", "hdiutil", "detach", "/nix", timeout=120)
+    mount.unlink()
+
+
+def cleanup(root):
+    detach_nix(root)
     # Native unmount may still read the HTTP base image beneath the shadow.
     stop_group(helper_pid(root))
     for name in ("reader", "restore", "bundle", "image.shadow", "helper.json"):
@@ -362,7 +350,7 @@ def mount(root, mode, repo):
             "-type",
             "SPARSEBUNDLE",
             "-fs",
-            "Case-sensitive Journaled HFS+",
+            "Case-sensitive APFS",
             "-volname",
             "NixStore",
             bundle,
@@ -548,30 +536,50 @@ def filesystem_gate(path):
     entities = plistlib.loads(result.stdout)["system-entities"]
     whole = next(entry["dev-entry"] for entry in entities if entry.get("dev-entry"))
     try:
-        devices = [
+        containers = [
             entry["dev-entry"]
             for entry in entities
-            if entry.get("content-hint") == "Apple_HFS"
+            if entry.get("content-hint") == "Apple_APFS"
         ]
-        image.require(len(devices) == 1, "expected exactly one HFS filesystem")
-        checked = command(
-            "sudo",
-            "/sbin/fsck_hfs",
-            "-fn",
-            devices[0],
-            capture_output=True,
-            text=True,
-            timeout=900,
+        volumes = [
+            entry["dev-entry"]
+            for entry in entities
+            if entry.get("volume-kind") == "apfs"
+        ]
+        image.require(
+            len(containers) == len(volumes) == 1,
+            "expected exactly one APFS container and volume",
         )
         image.require(
-            "appears to be OK" in checked.stdout,
-            "filesystem check did not confirm healthy HFS",
+            containers[0].startswith("/dev/disk")
+            and volumes[0].startswith("/dev/disk"),
+            "unexpected APFS device",
+        )
+        container = containers[0].replace("/dev/disk", "/dev/rdisk", 1)
+        volume = volumes[0].replace("/dev/disk", "/dev/rdisk", 1)
+        checked = command(
+            "sudo",
+            "/sbin/fsck_apfs",
+            "-n",
+            container,
+            capture_output=True,
+            text=True,
+        )
+        report = checked.stdout + "\n" + checked.stderr
+        image.require(
+            f"The container {container} appears to be OK." in report
+            and any(
+                line.strip().startswith(f"** The volume {volume} ")
+                and line.strip().endswith(" appears to be OK.")
+                for line in report.splitlines()
+            ),
+            "filesystem check did not confirm healthy APFS",
         )
     finally:
         command("hdiutil", "detach", whole, timeout=120)
     after = image.file_sha256(path)
     image.require(before == after, "filesystem validation changed image")
-    return {"imageSha256": before}
+    return {"imageSha256": before, "filesystem": "APFS"}
 
 
 def validate_hot(exported, manifest, hot, directory):
@@ -616,9 +624,8 @@ def produce(root, output, coverage, argv, deep=False):
         )
     command("nix", "store", "gc")
     command("sync")
-    command("sudo", "hdiutil", "detach", "/nix", timeout=120)
-    (root / "mounted").unlink()
-    command("hdiutil", "compact", bundle, timeout=600)
+    detach_nix(root)
+    command("hdiutil", "compact", bundle)
     output.mkdir()
     archive = output / "nix-root.sparsebundle.tar.zst"
     command(
@@ -632,12 +639,9 @@ def produce(root, output, coverage, argv, deep=False):
         bundle.parent,
         bundle.name,
         env={**os.environ, "COPYFILE_DISABLE": "1"},
-        timeout=1800,
     )
     exported = output / "nix-root.dmg"
-    command(
-        "hdiutil", "convert", bundle, "-format", "ULFO", "-o", exported, timeout=1800
-    )
+    command("hdiutil", "convert", bundle, "-format", "ULFO", "-o", exported)
     gate = filesystem_gate(exported)
     packed = output / IMAGE
     image.pack_image(exported, packed, coverage=coverage, filesystem_gate=gate)
