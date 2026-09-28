@@ -826,9 +826,7 @@ def serve(repo, release_id, manifest_identity, directory, ready):
         pin = manifest["hotPack"]
         validate_identity(pin)
         require(
-            pin["assetId"] in assets
-            and identity(assets[pin["assetId"]]) == pin
-            and pin["size"] <= SHARD_SIZE,
+            pin["assetId"] in assets and identity(assets[pin["assetId"]]) == pin,
             "hot pack asset mismatch",
         )
         hot_pack = Path(directory) / "hot.zip"

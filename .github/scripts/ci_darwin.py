@@ -272,6 +272,7 @@ def start_helper(root, argv, profile=None):
         if fault or time.monotonic() >= deadline:
             stop_group(process.pid, process)
             process.wait()
+            print(log.read_text(errors="replace"), file=sys.stderr, end="")
             raise CacheRestoreError(fault or "helper-start-timeout")
         time.sleep(0.1)
     return ready.read_text().strip()
