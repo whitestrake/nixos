@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 
@@ -23,6 +24,7 @@ IMAGE = "darwin-image-aarch64-darwin"
 MAINTENANCE = "darwin-maintenance-aarch64-darwin"
 SCRIPTS = Path(__file__).resolve().parent
 ROOTS = Path("/nix/var/nix/gcroots/github-ci/aarch64-darwin")
+NO_PROGRESS_SECONDS = 180
 
 
 class CacheRestoreError(RuntimeError):
@@ -115,13 +117,54 @@ def helper_fault(pid, marker):
     return None
 
 
+def descendants(pid):
+    """Process tree by parentage; Nix builders leave the process group."""
+    listing = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,time="], capture_output=True, text=True
+    ).stdout
+    children, times = {}, {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            children.setdefault(fields[1], []).append(fields[0])
+            times[fields[0]] = fields[2]
+    tree, pending = {}, [str(pid)]
+    while pending:
+        current = pending.pop()
+        if current in times and current not in tree:
+            tree[current] = times[current]
+            pending += children.get(current, [])
+    return tree
+
+
+def forward(stream, activity):
+    # Relay build output unchanged while recording when it last arrived.
+    while data := os.read(stream.fileno(), 65536):
+        activity[0] = time.monotonic()
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+
 def supervise(argv, directory, helper_pid=None, marker=None):
     marker = marker or directory / "backing-failure"
     env = {**os.environ, "CI_DARWIN_ATTEMPT_DIR": str(directory)}
     for name in ("GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STATE"):
         if name in env:
             env[name] = str(directory / name.lower())
-    process = subprocess.Popen(argv, env=env, start_new_session=True)
+    sys.stdout.flush()
+    process = subprocess.Popen(
+        argv,
+        env=env,
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    activity = [time.monotonic()]
+    relay = threading.Thread(
+        target=forward, args=(process.stdout, activity), daemon=True
+    )
+    relay.start()
+    tree, sampled = {}, 0.0
     reason = None
     previous = {}
 
@@ -135,11 +178,38 @@ def supervise(argv, directory, helper_pid=None, marker=None):
             previous[signum] = signal.signal(signum, interrupt)
         while process.poll() is None:
             reason = helper_fault(helper_pid, marker)
+            now = time.monotonic()
+            if not reason and now - sampled >= 5:
+                sampled, current = now, descendants(process.pid)
+                # Any CPU-time change, start or exit in the tree is progress.
+                if current != tree:
+                    tree, activity[0] = current, max(activity[0], now)
+                elif now - activity[0] >= NO_PROGRESS_SECONDS:
+                    print(
+                        f"::warning ::No build output or CPU progress for {NO_PROGRESS_SECONDS}s; stopping attempt",
+                        flush=True,
+                    )
+                    subprocess.run(
+                        [
+                            "ps",
+                            "-o",
+                            "pid,ppid,stat,time,wchan,command",
+                            "-p",
+                            ",".join(tree),
+                        ]
+                    )
+                    reason = "no-progress"
             if reason:
                 stop_group(process.pid, process)
+                for pid in tree:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 break
             time.sleep(0.1)
         status = process.wait()
+        relay.join(10)
         reason = reason or helper_fault(helper_pid, marker)
         # A successful command still cannot select results from failed backing.
         return (status or 1, reason) if reason else (status, None)
@@ -498,11 +568,12 @@ def run(root, argv):
             flush=True,
         )
         if reason and number == 1:
-            image.require(hot, "recovery is only supported for the hot reader")
             shutil.rmtree(directory)
-            cleanup(root)
-            mount(root, "maintenance", settings["repo"])
-            recovery_ready()
+            if hot:
+                # Replace the remote backing; other stores restart in place.
+                cleanup(root)
+                mount(root, "maintenance", settings["repo"])
+                recovery_ready()
             continue
 
         # Only a confirmed discarded cache attempt suppresses Checks API output.
