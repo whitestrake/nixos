@@ -358,15 +358,20 @@ def gh_api(repo, endpoint, method="GET", payload=None, *, token=None):
         args += ["--method", method]
     if payload is not None:
         args += ["--input", "-"]
-    result = subprocess.run(
-        args,
-        input=json.dumps(payload).encode() if payload is not None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-        timeout=60,
-        env={**os.environ, "GH_TOKEN": token} if token else None,
-    )
+    try:
+        result = subprocess.run(
+            args,
+            input=json.dumps(payload).encode() if payload is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=60,
+            env={**os.environ, "GH_TOKEN": token} if token else None,
+        )
+    except subprocess.CalledProcessError as error:
+        # Shown only in uncaught tracebacks; callers still match error.stderr.
+        error.add_note((error.stderr or b"").decode("utf-8", errors="replace").strip())
+        raise
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
