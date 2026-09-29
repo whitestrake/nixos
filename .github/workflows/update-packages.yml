@@ -45,6 +45,22 @@ jobs:
           echo "body_path=$BODY" >> "$GITHUB_OUTPUT"
           failures=()
 
+          # Not --use-update-script: its flake path realises the package's build environment via nix develop first.
+          update() {
+            local none script
+            none="$(nix eval ".#$1" --apply 'p: (p.updateScript or null) == null')" || return
+            if [ "$none" = true ]; then
+              nix run nixpkgs#nix-update -- --flake "$1"
+              return
+            fi
+            script="$(nix build --no-link --print-out-paths --impure --expr "
+              with import <nixpkgs> {};
+              let p = (builtins.getFlake (toString ./.)).packages.\${builtins.currentSystem}.\"$1\";
+              in writeScript \"update-$1\" (lib.escapeShellArgs (lib.toList (p.updateScript.command or p.updateScript)))")" || return
+            UPDATE_NIX_ATTR_PATH="$1" UPDATE_NIX_PNAME="$1" UPDATE_NIX_OLD_VERSION="$2" \
+              UPDATE_NIX_NAME="$1-$2" "$script"
+          }
+
           while IFS= read -r package; do
             before_diff="$(git diff | git hash-object --stdin)"
 
@@ -53,7 +69,7 @@ jobs:
               continue
             fi
 
-            if nix run nixpkgs#nix-update -- --flake --use-update-script "$package" && \
+            if update "$package" "$old_version" && \
               new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
               after_diff="$(git diff | git hash-object --stdin)"
 
