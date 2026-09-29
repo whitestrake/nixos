@@ -45,6 +45,22 @@ jobs:
           echo "body_path=$BODY" >> "$GITHUB_OUTPUT"
           failures=()
 
+          # Not --use-update-script: its flake path realises the package's build environment via nix develop first.
+          update() {
+            local none script
+            none="$(nix eval ".#$1" --apply 'p: (p.updateScript or null) == null')" || return
+            if [ "$none" = true ]; then
+              nix run nixpkgs#nix-update -- --flake "$1"
+              return
+            fi
+            script="$(nix build --no-link --print-out-paths --impure --expr "
+              with import <nixpkgs> {};
+              let p = (builtins.getFlake (toString ./.)).packages.\${builtins.currentSystem}.\"$1\";
+              in writeScript \"update-$1\" (lib.escapeShellArgs (lib.toList (p.updateScript.command or p.updateScript)))")" || return
+            UPDATE_NIX_ATTR_PATH="$1" UPDATE_NIX_PNAME="$1" UPDATE_NIX_OLD_VERSION="$2" \
+              UPDATE_NIX_NAME="$1-$2" "$script"
+          }
+
           while IFS= read -r package; do
             before_diff="$(git diff | git hash-object --stdin)"
 
@@ -53,30 +69,7 @@ jobs:
               continue
             fi
 
-            update_args=(--flake --use-update-script)
-            if [ "$package" = proxmox-mcp-plus ]; then
-              context="$RUNNER_TEMP/proxmox-mcp-plus-context.json"
-              if ! nix eval --json .#packages --accept-flake-config \
-                --apply 'systems: builtins.mapAttrs (system: packages: let p = packages.proxmox-mcp-plus; in { version = p.version; python = (builtins.head p.dependencies).pythonModule.version; dependencies = map (d: { name = d.pname or d.name; version = d.version or null; }) p.dependencies; relax = p.pythonRelaxDeps or []; remove = p.pythonRemoveDeps or []; }) systems' \
-                > "$context"; then
-                failures+=("$package")
-                continue
-              fi
-              if ! python_env="$(nix build --impure --no-link --print-out-paths --expr 'let pkgs = import (builtins.getFlake "nixpkgs").outPath { system = builtins.currentSystem; }; in pkgs.python3.withPackages (ps: [ ps.packaging ])')"; then
-                failures+=("$package")
-                continue
-              fi
-              if ! selected="$("$python_env/bin/python3" .github/scripts/select_proxmox_mcp_plus.py "$context")"; then
-                failures+=("$package")
-                continue
-              fi
-              if [ -z "$selected" ]; then
-                continue
-              fi
-              update_args=(--flake --version "$selected")
-            fi
-
-            if nix run nixpkgs#nix-update -- "${update_args[@]}" "$package" && \
+            if update "$package" "$old_version" && \
               new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
               after_diff="$(git diff | git hash-object --stdin)"
 
@@ -113,7 +106,7 @@ jobs:
       - name: Create GitHub App token
         id: app-token
         if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
@@ -121,7 +114,7 @@ jobs:
           permission-pull-requests: write
       - name: Open package update pull request
         if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
-        uses: peter-evans/create-pull-request@v8
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           branch: nix-update/packages

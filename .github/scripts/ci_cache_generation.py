@@ -203,14 +203,7 @@ def verify_proof(source, production=False):
         len(body) <= 1024 * 1024 and sha256(body) == source["proof"]["sha256"],
         "proof digest mismatch",
     )
-    canonical = subprocess.run(
-        ["jq", "-ceS", "-f", str(Path(__file__).with_name("ci-build-proof.jq"))],
-        input=body,
-        stdout=subprocess.PIPE,
-        check=True,
-        timeout=30,
-    ).stdout
-    proof = json.loads(canonical)
+    proof = json.loads(body)
     if production:
         pins = json.loads(
             subprocess.check_output(

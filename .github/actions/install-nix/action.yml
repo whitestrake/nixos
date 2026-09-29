@@ -47,9 +47,20 @@ runs:
           "$HOST_PYTHON" .github/scripts/ci_darwin.py activate-nix --state "$DARWIN_STATE"
         fi
 
+    # The installer's bounded retry needs Bash >= 4.1; macOS ships 3.2.
+    - name: Provide Bash 5 for the Nix installer
+      if: runner.os == 'macOS' && steps.prepare.outputs.activated != 'true'
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+        HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      run: |
+        brew list bash >/dev/null 2>&1 || brew install bash
+        echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
     - name: Install Nix when no compatible cached runtime is available
       if: steps.prepare.outputs.activated != 'true'
-      uses: whitestrake/nix-quick-install-action@5f21485631edff028d7d901364e33e1e63726c9e # v35 with bounded Bash 3.2 retries
+      uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
       with:
         nix_version: ${{ steps.prepare.outputs.nix-version }}
         nix_conf: ${{ steps.prepare.outputs.nix-conf }}
