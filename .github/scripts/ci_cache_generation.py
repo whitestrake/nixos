@@ -2,6 +2,7 @@
 """Immutable complete Release generations, authenticated through GitHub Actions."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 import os
@@ -474,6 +475,7 @@ def upload_component(repo, release_id, component, directory):
         )
     # Prefix names per component. Hard links avoid another multi-GB payload copy.
     with tempfile.TemporaryDirectory(dir=directory) as temporary:
+        items, paths = [], []
         for item in manifest["shards"] + (
             [manifest["hotPack"]] if "hotPack" in manifest else []
         ):
@@ -490,8 +492,14 @@ def upload_component(repo, release_id, component, directory):
             )
             path = Path(temporary) / (component + "-" + item["name"])
             os.link(source, path)
-            pin = upload(repo, release, path)
-            item.update(pin)
+            items.append(item)
+            paths.append(path)
+        # Single uploads are per-connection bound; each is still verified by upload().
+        with ThreadPoolExecutor(4) as pool:
+            for item, pin in zip(
+                items, pool.map(lambda path: upload(repo, release, path), paths)
+            ):
+                item.update(pin)
         manifest["releaseId"] = release_id
         manifest["component"] = component
         validate_manifest(manifest)
