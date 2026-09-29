@@ -169,7 +169,12 @@ class CheckPublisher:
             if attr in self.seen:
                 return
             self.seen.add(attr)
-            if success:
+            if success and event.get("cacheStatus") == "cached":
+                self._call(
+                    self.checks.create,
+                    **self._completed(attr, "success", "Already in the binary cache."),
+                )
+            elif success:
                 check_id = self._call(
                     self.checks.create,
                     name=display_name(attr),

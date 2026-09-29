@@ -27,7 +27,8 @@ def configuration:
   | configuration
   ] | unique_by(.attr) | sort_by(.attr)) as $evaluated
 | ([.results[]
-  | select(.type == "BUILD" and .success)
+  # --skip-cached reports substitutable outputs as cached EVAL results, never built.
+  | select(.success and (.type == "BUILD" or (.type == "EVAL" and .cacheStatus == "cached")))
   | . as $record
   | ($record.attr | configuration) as $configuration
   | {attr: $configuration.attr, storePath: $record.outputs.out}

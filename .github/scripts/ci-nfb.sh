@@ -32,7 +32,7 @@ flake=".#ci.$projection"
 case "$projection" in
   linux-hosts)
     flake='.#ci.linux'
-    options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --no-download --option max-jobs 2 --select 'ci: { inherit (ci) nixosConfigurations; }')
+    options=(--systems 'x86_64-linux aarch64-linux' --eval-workers 3 --store ssh-ng://eu.nixbuild.net --no-download --skip-cached --option max-jobs 2 --select 'ci: { inherit (ci) nixosConfigurations; }')
     ;;
   linux-checks)
     flake='.#ci.linux'
