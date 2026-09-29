@@ -1,13 +1,8 @@
-#!/usr/bin/env python3
-import argparse
 import html
-import json
 import re
 from collections import defaultdict
-from pathlib import Path
 
 COMMENT_MARKER = "<!-- flake-lock-package-report:comment -->"
-REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 
 def safe_text(value):
@@ -16,36 +11,6 @@ def safe_text(value):
         r"\\\1",
         html.escape(value.replace("\n", " ").replace("\r", " ")),
     )
-
-
-def load_reports(diff_dir):
-    reports = []
-    pair = None
-    for path in sorted(Path(diff_dir).rglob("record.json")):
-        data = json.loads(path.read_text())
-        current_pair = (data.get("baseSha"), data.get("headSha"))
-        if not all(
-            isinstance(sha, str) and REVISION.fullmatch(sha) for sha in current_pair
-        ):
-            raise SystemExit(f"invalid comparison revisions in {path}")
-        if pair is None:
-            pair = current_pair
-        elif current_pair != pair:
-            raise SystemExit("package report fragments use mixed base/head pairs")
-        report = data["packageReport"]
-        reports.append(
-            {
-                "name": data["name"],
-                "system": data["system"],
-                "status": report["status"],
-                "message": report["message"],
-                "diff": report["diff"],
-            }
-        )
-
-    if not reports:
-        raise SystemExit("no GHCI record.json artifacts found")
-    return reports, pair
 
 
 def version_text(diff):
@@ -156,17 +121,7 @@ def package_updates(reports):
     ]
 
 
-def render(diff_dir, base_sha, head_sha, required_systems=()):
-    reports, pair = load_reports(diff_dir)
-    if pair != (base_sha, head_sha):
-        raise SystemExit(
-            "package report fragments differ from requested base/head pair"
-        )
-    actual_systems = {report["system"] for report in reports}
-    if required_systems and actual_systems != set(required_systems):
-        raise SystemExit(
-            f"package report lanes incomplete: expected {sorted(required_systems)}, got {sorted(actual_systems)}"
-        )
+def render(reports, base_sha, head_sha):
     successful = [report for report in reports if report["status"] == "success"]
     failed = [report for report in reports if report["status"] != "success"]
     updates = package_updates(successful)
@@ -190,21 +145,3 @@ def render(diff_dir, base_sha, head_sha, required_systems=()):
         )
 
     return "\n".join(lines) + "\n"
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--diff-dir", required=True)
-    parser.add_argument("--base-sha", required=True)
-    parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--required-system", action="append", default=[])
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args()
-
-    Path(args.output).write_text(
-        render(args.diff_dir, args.base_sha, args.head_sha, args.required_system)
-    )
-
-
-if __name__ == "__main__":
-    main()
