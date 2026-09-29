@@ -181,7 +181,7 @@ def validate_manifest(manifest, require_assets=True):
         gate = manifest.get("filesystemGate", {})
         require(
             gate.get("imageSha256") == manifest["imageSha256"]
-            and gate.get("filesystem") == "APFS",
+            and gate.get("filesystem") == "HFS+",
             "missing exact-image filesystem gate",
         )
     block_size = manifest.get("blockSize")

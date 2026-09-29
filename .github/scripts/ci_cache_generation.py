@@ -30,7 +30,9 @@ from ci_cache_image import (
 )
 
 SCHEMA = "ci-cache-generation-v1"
-DARWIN_FORMAT = "apfs-case-sensitive-v1"
+DARWIN_FORMAT = "hfs-case-sensitive-v1"
+# Retired formats stay parseable for retirement, but not selection.
+RETIRED_FORMATS = ("apfs-case-sensitive-v1",)
 PROMOTION_SCHEMA = "ci-cache-promotion-v1"
 MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
@@ -126,10 +128,10 @@ def validate_generation(generation):
     require(positive(generation.get("publisherRunId")), "invalid publisher run")
     validate_source(generation.get("source", {}))
     fingerprint(generation.get("coverage"))
-    # Legacy HFS generations remain parseable for retirement, but not selection.
     if "darwinFormat" in generation:
         require(
-            generation["darwinFormat"] == DARWIN_FORMAT, "invalid Darwin cache format"
+            generation["darwinFormat"] in (DARWIN_FORMAT, *RETIRED_FORMATS),
+            "invalid Darwin cache format",
         )
     components = generation.get("components", {})
     require(
@@ -486,7 +488,7 @@ def upload_component(repo, release_id, component, directory):
             "hotPack" in manifest
             and manifest.get("filesystemGate", {}).get("imageSha256")
             == manifest["imageSha256"]
-            and manifest["filesystemGate"].get("filesystem") == "APFS",
+            and manifest["filesystemGate"].get("filesystem") == "HFS+",
             "Darwin image needs exact-image gate and hot pack",
         )
     # Prefix names per component. Hard links avoid another multi-GB payload copy.

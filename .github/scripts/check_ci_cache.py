@@ -317,8 +317,15 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaises(ValueError):
                 generation.validate_generation(value)
 
-    def test_apfs_generation_selection_rejects_legacy_images(self):
-        legacy = complete_generation()
+    def test_hfs_generation_selection_rejects_other_images(self):
+        for marker in (None, *generation.RETIRED_FORMATS):
+            legacy = complete_generation()
+            if marker:
+                legacy["darwinFormat"] = marker
+            generation.validate_generation(legacy)
+            self.reject_selection(legacy)
+
+    def reject_selection(self, legacy):
         with tempfile.TemporaryDirectory() as directory:
             selection_path = Path(directory) / "selection.json"
             pin = {
