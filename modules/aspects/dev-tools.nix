@@ -141,8 +141,14 @@
 
       programs.codex = {
         enable = true;
-        package = pkgs.myPkgs.codex-bin;
+        package = pkgs.unstable.codex;
         enableMcpIntegration = false;
+      };
+
+      programs.claude-code = {
+        enable = true;
+        package = pkgs.unstable.claude-code;
+        enableMcpIntegration = true;
       };
 
       programs.antigravity-cli = {
