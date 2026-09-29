@@ -131,7 +131,7 @@
         enable = true;
         dotDir = config.home.homeDirectory;
         initContent = lib.mkOrder 500 ''
-          if [[ -n ''${CODEX_SHELL:-} || -n ''${CLAUDECODE:-} ]]; then
+          if [[ -n ''${CODEX_SHELL:-} ]]; then
             typeset -g _ZSH_AUTOSUGGEST_DISABLED
           fi
 
