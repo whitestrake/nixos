@@ -170,8 +170,6 @@ jobs:
         include:
           - system: x86_64-linux
             runner: ubuntu-24.04
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
           - system: aarch64-darwin
             runner: macos-26
     env:
@@ -199,11 +197,10 @@ jobs:
           if [ -f "$RUNNER_TEMP/plan/previous.json" ]; then
            cp "$RUNNER_TEMP/plan/previous.json" "$RUNNER_TEMP/selection.json"
           fi
-      - name: Prepare Linux build environment
+      - name: Install Nix
         if: runner.os == 'Linux'
-        uses: ./.github/actions/ci-cache-restore
+        uses: ./.github/actions/install-nix
         with:
-          component: linux-full-${{ matrix.system }}
           extra-nix-conf: |
             extra-substituters = https://whitestrake.cachix.org?priority=50
             extra-trusted-public-keys = whitestrake.cachix.org-1:UYcyluINGeeyAQgGOrEmOarylMNU5kLMagM0nXOkQK8=
@@ -218,35 +215,33 @@ jobs:
           configure-cachix: 'true'
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build accepted platform outputs
+        if: runner.os == 'macOS'
         timeout-minutes: 30
         run: bash .github/scripts/ci-nfb.sh "$CI_LANE_SYSTEM" "$CI_LANE_SYSTEM"
       - name: Prepare current tooling, inputs and roots
         timeout-minutes: 30
         run: |
           set -euo pipefail
+          # The Linux seed holds only nix-fast-build and flake inputs, no host closures.
+          records="$RUNNER_TEMP/ci-results/records.json"
+          if [ "$RUNNER_OS" = Linux ]; then
+           mkdir -p "$(dirname "$records")"
+           echo '[]' > "$records"
+          fi
           "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py retain \
-            "$RUNNER_TEMP/plan/coverage.json" "$RUNNER_TEMP/ci-results/records.json" "$CI_LANE_SYSTEM"
-      - name: Produce and upload Linux images
+            "$RUNNER_TEMP/plan/coverage.json" "$records" "$CI_LANE_SYSTEM"
+      - name: Produce and upload Linux seed
         timeout-minutes: 60
         env:
           SYSTEM: ${{ matrix.system }}
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y squashfs-tools
-          python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json" "$SYSTEM" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
-          if [ "$SYSTEM" = x86_64-linux ]; then
-           nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
-           bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
-           python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" --shard-size 67108864
-           python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
-           rm "$RUNNER_TEMP/erofs-tool"
-          fi
-          nix store gc
-          bash .github/scripts/ci-linux-image.sh pack-full "$RUNNER_TEMP/full.squashfs" 2
-          python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/full.squashfs" --output "$RUNNER_TEMP/full-packed" --coverage "$RUNNER_TEMP/plan/linux-full-$SYSTEM.json"
-          python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-full-$SYSTEM" --directory "$RUNNER_TEMP/full-packed"
+          python3 .github/scripts/ci_cache_workflow.py verify "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" "$SYSTEM" ${{ inputs.exhaustive_checks && '--exhaustive-checks' || '' }}
+          nix build --inputs-from . nixpkgs-unstable#erofs-utils --out-link "$RUNNER_TEMP/erofs-tool"
+          bash .github/scripts/ci-linux-image.sh pack-seed "$SYSTEM" "$RUNNER_TEMP/seed" "$RUNNER_TEMP/seed-store" "$RUNNER_TEMP/erofs-tool/bin/mkfs.erofs"
+          python3 .github/scripts/ci_cache_image.py pack --image "$RUNNER_TEMP/seed/image" --output "$RUNNER_TEMP/seed-packed" --coverage "$RUNNER_TEMP/plan/linux-seed-$SYSTEM.json" --shard-size 67108864
+          python3 .github/scripts/ci_cache_generation.py upload-component --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" --component "linux-seed-$SYSTEM" --directory "$RUNNER_TEMP/seed-packed"
       - name: Produce, profile and upload Darwin images
         timeout-minutes: 60
         if: runner.os == 'macOS'
@@ -330,17 +325,11 @@ jobs:
         run: |
           set -euo pipefail
           "${HOST_PYTHON:-python3}" .github/scripts/ci_cache_workflow.py check-roots "$RUNNER_TEMP/plan/$COMPONENT.json" "$CI_LANE_SYSTEM"
-      - name: Run fresh full-image workload
-        env:
-          SYSTEM: ${{ matrix.system }}
-        if: matrix.component != 'linux-seed-x86_64-linux'
+      - name: Run fresh Darwin workload
+        if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = macOS ]; then
-           "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
-          else
-           bash .github/scripts/ci-nfb.sh "$SYSTEM" "$SYSTEM"
-          fi
+          "$HOST_PYTHON" .github/scripts/ci_darwin.py run --state "$RUNNER_TEMP/darwin" -- /bin/bash .github/scripts/ci-nfb.sh darwin aarch64-darwin
       - name: Validate exact candidate reader
         env:
           COMPONENT: ${{ matrix.component }}
