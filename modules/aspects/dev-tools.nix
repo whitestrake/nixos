@@ -64,6 +64,35 @@
         .home.file.".codex/whitestrake.config.toml".source;
     };
 
+    # Claude Code reads MCP servers from ~/.claude.json, which it rewrites at
+    # runtime, and the Home Manager --plugin-dir wrapper only reaches the claude
+    # on PATH, not the binary Claude Desktop runs for local and SSH sessions.
+    # A managed-settings drop-in that enables a store-backed plugin reaches both
+    # without taking exclusive control the way managed-mcp.json would.
+    provides.whitestrake.nixos = {
+      user,
+      config,
+      ...
+    }: {
+      environment.etc."claude-code/managed-settings.d/whitestrake.json".source =
+        config.home-manager.users.${user.userName}
+        .home.file.".claude/whitestrake.managed-settings.json".source;
+    };
+
+    provides.whitestrake.darwin = {
+      user,
+      config,
+      ...
+    }: {
+      system.activationScripts.postActivation.text = ''
+        mkdir -p "/Library/Application Support/ClaudeCode/managed-settings.d"
+        ln -sfn ${
+          config.home-manager.users.${user.userName}
+          .home.file.".claude/whitestrake.managed-settings.json".source
+        } "/Library/Application Support/ClaudeCode/managed-settings.d/whitestrake.json"
+      '';
+    };
+
     provides.whitestrake.homeManager = {
       host,
       lib,
@@ -90,6 +119,36 @@
             }
         )
         config.programs.mcp.servers;
+      claudeMcpServers =
+        lib.mapAttrs (
+          name: server:
+            lib.hm.mcp.transformMcpServer {
+              inherit server;
+              extraTransforms = [
+                lib.hm.mcp.addType
+                (lib.hm.mcp.wrapEnvFilesCommand {inherit pkgs name;})
+              ];
+            }
+        )
+        config.programs.mcp.servers;
+      json = pkgs.formats.json {};
+      # Local plugin marketplace carrying the shared MCP servers as one plugin.
+      claudeMarketplace = pkgs.runCommand "claude-code-whitestrake-marketplace" {} ''
+        install -Dm644 ${json.generate "marketplace.json" {
+          name = "whitestrake";
+          owner.name = "whitestrake";
+          plugins = [
+            {
+              name = "homelab-mcp";
+              source = "./homelab-mcp";
+            }
+          ];
+        }} $out/.claude-plugin/marketplace.json
+        install -Dm644 ${json.generate "plugin.json" {name = "homelab-mcp";}} \
+          $out/homelab-mcp/.claude-plugin/plugin.json
+        install -Dm644 ${json.generate "mcp.json" {mcpServers = claudeMcpServers;}} \
+          $out/homelab-mcp/.mcp.json
+      '';
       antigravityMcpServers =
         lib.mapAttrs (
           name: server: let
@@ -148,7 +207,8 @@
       programs.claude-code = {
         enable = true;
         package = pkgs.unstable.claude-code;
-        enableMcpIntegration = true;
+        # MCP servers arrive through the managed-settings plugin below instead.
+        enableMcpIntegration = false;
       };
 
       programs.antigravity-cli = {
@@ -185,6 +245,14 @@
             };
             mcp_servers = codexMcpServers;
           };
+
+        ".claude/whitestrake.managed-settings.json".source = json.generate "claude-code-whitestrake-managed-settings" {
+          extraKnownMarketplaces.whitestrake.source = {
+            source = "directory";
+            path = claudeMarketplace;
+          };
+          enabledPlugins."homelab-mcp@whitestrake" = true;
+        };
 
         ".gemini/config/mcp_config.json".source =
           (pkgs.formats.json {}).generate
