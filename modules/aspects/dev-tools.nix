@@ -25,11 +25,16 @@
       ];
     };
 
-    wsl-host = {pkgs, ...}: {
-      environment.systemPackages = [
-        pkgs.bubblewrap
+    # Claude Code and Codex sandbox commands with bubblewrap; Claude Code also
+    # needs socat. Desktop's bundled Claude CLI relies on these being on PATH.
+    nixos = {pkgs, ...}: {
+      environment.systemPackages = with pkgs; [
+        bubblewrap
+        socat
       ];
+    };
 
+    wsl-host = {
       # Codex Desktop for Windows assumes these FHS entrypoints exist when
       # launching commands inside a WSL agent.
       systemd.tmpfiles.rules = [
@@ -103,11 +108,12 @@
         )
         config.programs.mcp.servers;
       json = pkgs.formats.json {};
-      # Local plugin marketplace carrying the shared MCP servers as one plugin.
+      # Local plugin marketplace carrying the shared MCP servers and a Nix
+      # language server as one plugin.
       # It is linked at a stable path so ~/.claude/settings.json, which Claude
       # rewrites at runtime, can refer to it once and follow each rebuild:
       #   claude plugin marketplace add ~/.local/share/claude-code/whitestrake-marketplace
-      #   claude plugin install homelab-mcp@whitestrake
+      #   claude plugin install dev-tools@whitestrake
       # Unlike the HM --plugin-dir wrapper, this also reaches the CLI Claude
       # Desktop runs for local and SSH sessions.
       claudeMarketplace = pkgs.runCommand "claude-code-whitestrake-marketplace" {} ''
@@ -116,15 +122,21 @@
           owner.name = "whitestrake";
           plugins = [
             {
-              name = "homelab-mcp";
-              source = "./homelab-mcp";
+              name = "dev-tools";
+              source = "./dev-tools";
             }
           ];
         }} $out/.claude-plugin/marketplace.json
-        install -Dm644 ${json.generate "plugin.json" {name = "homelab-mcp";}} \
-          $out/homelab-mcp/.claude-plugin/plugin.json
+        install -Dm644 ${json.generate "plugin.json" {name = "dev-tools";}} \
+          $out/dev-tools/.claude-plugin/plugin.json
         install -Dm644 ${json.generate "mcp.json" {mcpServers = claudeMcpServers;}} \
-          $out/homelab-mcp/.mcp.json
+          $out/dev-tools/.mcp.json
+        install -Dm644 ${json.generate "lsp.json" {
+          nix = {
+            command = lib.getExe pkgs.nil;
+            extensionToLanguage.".nix" = "nix";
+          };
+        }} $out/dev-tools/.lsp.json
       '';
       antigravityMcpServers =
         lib.mapAttrs (
