@@ -16,9 +16,10 @@ on:
         default: ""
 permissions:
   contents: read
+# The newest run on a ref wins; a cancelled deploy is picked up from the deployed-host pins.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  cancel-in-progress: true
 jobs:
   linux-builds:
     name: Linux
