@@ -82,11 +82,7 @@ def plan(directory, proof_path, run_id, release_id=None):
     raw = subprocess.check_output(
         ["nix", "store", "cat", "--store", "https://whitestrake.cachix.org", proof_path]
     )
-    proof = json.loads(
-        subprocess.check_output(
-            ["jq", "-ceS", "-f", ".github/scripts/ci-build-proof.jq"], input=raw
-        )
-    )
+    proof = json.loads(raw)
     revision = run("git", "rev-parse", "HEAD")
     image.require(proof["revision"] == revision, "proof does not match checkout")
     source = {
