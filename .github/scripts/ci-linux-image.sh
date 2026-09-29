@@ -13,8 +13,6 @@ mount_dir() {
 component_settings() {
   case "${1:-}" in
     linux-seed-x86_64-linux) system=x86_64-linux format=erofs ;;
-    linux-full-x86_64-linux) system=x86_64-linux format=squashfs ;;
-    linux-full-aarch64-linux) system=aarch64-linux format=squashfs ;;
     *) die "unsupported Linux component: ${1:-}" ;;
   esac
 }
@@ -57,11 +55,10 @@ checkpoint_database() {
 }
 
 cleanup_overlay() {
-  local format="$1" root mount root_pre_existing=false status=0
+  local format="$1" root mount status=0
   root=/nix
   mount="$(mount_dir "$format")"
   [ -f "$mount/owned" ] || return 0
-  [ ! -f "$mount/root-pre-existing" ] || root_pre_existing=true
 
   if mountpoint -q "$root"; then
     sudo umount "$root" || status=$?
@@ -69,7 +66,7 @@ cleanup_overlay() {
   if mountpoint -q "$mount/lower"; then
     sudo umount "$mount/lower" || status=$?
   fi
-  if [ "$root_pre_existing" = false ] && [ -d "$root" ] && ! mountpoint -q "$root"; then
+  if [ -d "$root" ] && ! mountpoint -q "$root"; then
     sudo rmdir "$root" || status=$?
   fi
   [ "$status" -ne 0 ] || remove_temp_path "$mount"
@@ -152,52 +149,17 @@ restore_mount() {
 }
 
 validate_mounted() {
-  local system format root links
+  local system format root
   component_settings "$1"
   root=/nix
   mountpoint -q "$root" || die "$root is not mounted"
   nfb_path "$system" >/dev/null
   [ "$(nix config show auto-optimise-store)" = false ] || die "automatic Nix store optimisation is enabled"
-  if [ "$format" = squashfs ]; then
-    links="$root/store/.links"
-    [ ! -d "$links" ] || [ -z "$(find "$links" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
-      die "Nix store optimisation index is not empty"
-  fi
   echo "CI_LINUX_IMAGE_VALID format=$format"
 }
 
-pack_full() {
-  local image="$1" workers="$2" root mount options
-  [[ "$workers" =~ ^[1-9][0-9]*$ ]] || die "workers must be a positive integer"
-  root=/nix
-  mount="$(mount_dir squashfs)"
-  if [ ! -f "$mount/owned" ]; then
-    [ -d "$root" ] || die "Nix store is missing: $root"
-    [ ! -e "$mount" ] || die "unowned mount state already exists: $mount"
-    mkdir -p "$mount"
-    touch "$mount/owned" "$mount/root-pre-existing"
-    if ! sudo mount --bind "$root" "$root"; then
-      remove_temp_path "$mount"
-      return 1
-    fi
-  fi
-  checkpoint_database "$root/var/nix/db/db.sqlite"
-  if [ -f "$mount/root-pre-existing" ]; then
-    sudo mount -o remount,bind,ro "$root"
-  else
-    sudo mount -o remount,ro "$root"
-  fi
-  options="$(findmnt -no OPTIONS "$root")"
-  [[ ",$options," == *,ro,* ]] || die "$root must be read-only before packing"
-  [ ! -e "$image" ] || die "immutable output already exists: $image"
-  command -v mksquashfs >/dev/null || die "mksquashfs is required"
-  mkdir -p "$(dirname "$image")"
-  sudo mksquashfs "$root" "$image" -noappend -comp zstd -Xcompression-level 3 \
-    -processors "$workers" -no-progress -wildcards -e 'store/.links/*'
-}
-
 pack_seed() {
-  local system="$1" output="$2" store="$3" packer="$4" full_roots checkout_root
+  local system="$1" output="$2" store="$3" packer="$4" roots_dir checkout_root
   local nfb name path index destination_roots
   local -a names=() roots=()
   [ "$system" = x86_64-linux ] || die "the selected evaluator seed is x86_64-linux only"
@@ -207,11 +169,11 @@ pack_seed() {
   [ ! -e "$output" ] || die "seed output already exists: $output"
   [ ! -e "$store" ] || die "seed store already exists: $store"
   [ -x "$packer" ] || die "mkfs.erofs is not executable: $packer"
-  full_roots="/nix/var/nix/gcroots/github-ci/$system"
-  [ -d "$full_roots" ] || die "full root directory is missing: $full_roots"
+  roots_dir="/nix/var/nix/gcroots/github-ci/$system"
+  [ -d "$roots_dir" ] || die "root directory is missing: $roots_dir"
   checkout_root="$(nix flake archive --json path:. | jq -er .path)"
 
-  for path in "$full_roots"/nix-fast-build "$full_roots"/flake-input-*; do
+  for path in "$roots_dir"/nix-fast-build "$roots_dir"/flake-input-*; do
     [ -L "$path" ] || continue
     name="${path##*/}"
     path="$(readlink -e "$path")"
@@ -222,7 +184,7 @@ pack_seed() {
     roots+=("$path")
   done
   [ "${#roots[@]}" -gt 1 ] || die "seed requires nix-fast-build and external flake inputs"
-  nfb="$(readlink -e "$full_roots/nix-fast-build")"
+  nfb="$(readlink -e "$roots_dir/nix-fast-build")"
   if [ ! -x "$nfb/bin/nix-fast-build" ] || ! "$nfb/bin/nix-fast-build" --help >/dev/null; then
     die "nix-fast-build seed root is unusable"
   fi
@@ -247,7 +209,6 @@ shift || true
 case "$command" in
   cleanup-component) component_settings "$1"; cleanup_overlay "$format" ;;
   discard-temp) remove_temp_path "$@" ;;
-  pack-full) pack_full "$@" ;;
   pack-seed) pack_seed "$@" ;;
   restore-mount) restore_mount "$@" ;;
   validate-mounted) validate_mounted "$@" ;;

@@ -47,20 +47,6 @@ READERS = (
         "mode": "",
     },
     {
-        "name": "Check x86_64-linux full",
-        "component": "linux-full-x86_64-linux",
-        "system": "x86_64-linux",
-        "runner": "ubuntu-24.04",
-        "mode": "",
-    },
-    {
-        "name": "Check aarch64-linux full",
-        "component": "linux-full-aarch64-linux",
-        "system": "aarch64-linux",
-        "runner": "ubuntu-24.04-arm",
-        "mode": "",
-    },
-    {
         "name": "Check aarch64-darwin dmg",
         "component": "darwin-image-aarch64-darwin",
         "system": "aarch64-darwin",
@@ -134,15 +120,17 @@ def validate_generation(generation):
             "invalid Darwin cache format",
         )
     components = generation.get("components", {})
+    # Generations published before the full Linux images were dropped carry two
+    # extra components; they stay readable until retired.
     require(
-        set(components) == set(COMPONENTS),
-        "generation must contain exactly five components",
+        set(components) >= set(COMPONENTS),
+        "generation is missing components",
     )
     for name, asset in components.items():
         validate_identity(asset)
         require(asset["name"] == name + ".json", "component manifest name mismatch")
     require(
-        len({v["assetId"] for v in components.values()}) == len(COMPONENTS),
+        len({v["assetId"] for v in components.values()}) == len(components),
         "duplicate component assets",
     )
 

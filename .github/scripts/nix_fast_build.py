@@ -361,7 +361,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-checks", action="store_true")
     parser.add_argument("--build-hook")
-    parser.add_argument("--defer-checks")
     parser.add_argument("--replay-checks")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -370,10 +369,9 @@ def main():
     ):
         parser.error("a nix-fast-build command is required after --")
     args.command = args.command[1:]
+    deferred = None
     if args.publish_checks and os.environ.get("CI_DARWIN_ATTEMPT_DIR"):
-        args.defer_checks = os.path.join(
-            os.environ["CI_DARWIN_ATTEMPT_DIR"], "checks.json"
-        )
+        deferred = os.path.join(os.environ["CI_DARWIN_ATTEMPT_DIR"], "checks.json")
 
     publisher = None
     if args.publish_checks or args.replay_checks:
@@ -395,9 +393,7 @@ def main():
     if args.replay_checks:
         replay_checks(publisher, args.replay_checks)
         return 0
-    return_code, hook_failed = run(
-        args.command, publisher, args.build_hook, args.defer_checks
-    )
+    return_code, hook_failed = run(args.command, publisher, args.build_hook, deferred)
     if return_code < 0:
         os.kill(os.getpid(), -return_code)
     return return_code or hook_failed

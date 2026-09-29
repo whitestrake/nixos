@@ -296,7 +296,7 @@ class CacheCheck(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "block digest mismatch"):
                 store.read(8, 4)
 
-    def test_generation_requires_exact_components_and_identities(self):
+    def test_generation_requires_components_and_identities(self):
         valid = complete_generation()
         generation.validate_generation(valid)
         mutations = (

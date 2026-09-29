@@ -13,7 +13,7 @@ import tempfile
 import ci_cache_generation as generation
 import ci_cache_image as image
 
-SYSTEMS = ("x86_64-linux", "aarch64-linux", "aarch64-darwin")
+SYSTEMS = ("x86_64-linux", "aarch64-darwin")
 STORE_PATH = re.compile(
     r"/nix/store/([0123456789abcdfghijklmnpqrsvwxyz]{32})-[A-Za-z0-9+._?=-]+"
 )
