@@ -69,11 +69,21 @@ jobs:
       checks: write
       contents: read
       actions: read
+    outputs:
+      lock-changed: ${{ steps.lock.outputs.changed }}
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
     steps:
+      # Off the critical path: decides whether Package Report runs at all.
+      - name: Detect flake.lock changes against master
+        id: lock
+        if: github.ref != 'refs/heads/master'
+        run: |
+          changed="$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" \
+            --jq '[.files[]?.filename] | index("flake.lock") != null')"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -274,10 +284,10 @@ jobs:
   package-report:
     name: Package Report
     needs:
+      - source-checks
       - linux-builds
       - darwin-builds
-      - all-builds
-    if: ${{ github.ref != 'refs/heads/master' }}
+    if: ${{ needs.source-checks.outputs.lock-changed == 'true' }}
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -293,27 +303,20 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Detect flake.lock changes
+      - name: Check out merge base
         id: lock
         run: |
           set -euo pipefail
           base="$(git merge-base origin/master HEAD)"
-          if git diff --quiet "$base" HEAD -- flake.lock; then
-            echo "flake.lock matches the master merge base; no package report."
-            exit 0
-          fi
           git worktree add --detach "$RUNNER_TEMP/base" "$base"
           echo "base=$base" >> "$GITHUB_OUTPUT"
       - name: Select cache generation
-        if: steps.lock.outputs.base
         uses: ./.github/actions/ci-cache-select
       - name: Prepare Linux evaluation environment
-        if: steps.lock.outputs.base
         uses: ./.github/actions/ci-cache-restore
         with:
           component: linux-seed-x86_64-linux
       - name: Configure remote Linux builders
-        if: steps.lock.outputs.base
         uses: nixbuild/nixbuild-action@ccd11ee76c26c018e8470835dc2e286a5a024a14 # v27
         with:
           nixbuild_token: ${{ secrets.NIXBUILD_TOKEN }}
@@ -321,7 +324,6 @@ jobs:
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Report package changes
-        if: steps.lock.outputs.base
         env:
           BASE_SHA: ${{ steps.lock.outputs.base }}
           LINUX_RECORDS: ${{ needs.linux-builds.outputs.records }}
