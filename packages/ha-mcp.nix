@@ -15,14 +15,14 @@
 in
   pythonPackages.buildPythonApplication rec {
     pname = "ha-mcp";
-    version = "8.5.0";
+    version = "8.6.0";
     pyproject = true;
 
     src = fetchFromGitHub {
       owner = "homeassistant-ai";
       repo = "ha-mcp";
       tag = "v${version}";
-      hash = "sha256-jbwV5uX6gHEislpraewKesnjVamCwYihOGA667DSaog=";
+      hash = "sha256-Ime1/iHhFLwMUg3IzWliMGxchwDAFmDt51zJdCnjxfM=";
       fetchSubmodules = true;
     };
 
