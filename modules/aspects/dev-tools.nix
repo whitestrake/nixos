@@ -181,7 +181,6 @@
           proxmox.url = mcpServiceUrl "proxmox";
           grafana.url = mcpServiceUrl "grafana";
           tailscale.url = mcpServiceUrl "tailscale";
-          cloudflare.url = "https://mcp.cloudflare.com/mcp";
         };
       };
 
