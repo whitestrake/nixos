@@ -123,6 +123,7 @@ jobs:
           labels: dependencies
           commit-message: "chore(pkgs): update packages"
           delete-branch: true
+          sign-commits: true
       - name: Report update failures
         if: always() && steps.update.outputs.failed == 'true'
         run: exit 1
