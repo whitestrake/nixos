@@ -1,15 +1,15 @@
 {pkgs, ...}: let
-  version = "2.11.4";
+  version = "2.11.6";
   cloudflareDnsVersion = "0.2.4";
 
   src = pkgs.fetchFromGitHub {
     owner = "caddyserver";
     repo = "caddy";
     tag = "v${version}";
-    hash = "sha256-wzk8KRZfDCbbjRlBwkoKAoMjOhV4xF3yuXUueqtl1xM=";
+    hash = "sha256-AvItXV37XL+chgubNpfv9kvfbcQ8UzxcvS5rIrATXDw=";
   };
 
-  vendorHash = "sha256-2GwSM7EKN9GwN6kte7CekpXIJ0vzHhhsnrs3TC6vTW4=";
+  vendorHash = "sha256-RRaUAZzxCu+LQGU6pHZi5mVfj6tJC9WpOFRzH6MNVus=";
 
   overriddenCaddy = pkgs.caddy.overrideAttrs (oldAttrs: {
     inherit version src vendorHash;
@@ -20,7 +20,7 @@
       caddy = overriddenCaddy;
     }).withPlugins {
       plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
-      hash = "sha256-dQvk6ezY6TQ1J7PjhCXnThF/SqVgPwBO8/RXzHCY+js=";
+      hash = "sha256-YqYgGxKIhK81IzVBR94s1Q8SmFGXUIfxJ1d0LHI13X4=";
     };
 in
   # Wrap in a transparent derivation so 'position' points to this file for nix-update
