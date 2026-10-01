@@ -5,7 +5,7 @@
   fetchFromGitHub,
   nix-update-script,
 }: let
-  # ha-mcp 8.5.0 needs httpx2 >= 2.5.0 for EventSource. Use the complete
+  # ha-mcp needs httpx2 >= 2.5.0 for EventSource. Use the complete
   # unstable Python package set to avoid mixing interpreters and dependencies,
   # and return to stable automatically once its pinned httpx2 catches up.
   pythonPackages =
@@ -15,14 +15,14 @@
 in
   pythonPackages.buildPythonApplication rec {
     pname = "ha-mcp";
-    version = "8.5.0";
+    version = "8.6.0";
     pyproject = true;
 
     src = fetchFromGitHub {
       owner = "homeassistant-ai";
       repo = "ha-mcp";
       tag = "v${version}";
-      hash = "sha256-jbwV5uX6gHEislpraewKesnjVamCwYihOGA667DSaog=";
+      hash = "sha256-Ime1/iHhFLwMUg3IzWliMGxchwDAFmDt51zJdCnjxfM=";
       fetchSubmodules = true;
     };
 
@@ -45,6 +45,7 @@ in
         griffelib
         httpx
         httpx2
+        psutil
         pydantic
         pydantic-monty
         python-dotenv
