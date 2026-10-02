@@ -1,4 +1,15 @@
-{...}: {
+{lib, ...}: {
+  den.default.nixos.options.den.alloy.fleetAttributes = lib.mkOption {
+    type = lib.types.attrsOf lib.types.bool;
+    default = {};
+    example = {"telemetry.komodo" = true;};
+    description = ''
+      Remote configuration attributes this collector reports to Grafana Fleet
+      Management. Fleet pipelines match on them, so an aspect can opt its host
+      into a pipeline without the Alloy aspect knowing about it.
+    '';
+  };
+
   den.aspects.alloy = {
     nixos = {
       config,
@@ -132,6 +143,12 @@
           };
       };
 
+      den.alloy.fleetAttributes = {
+        "telemetry.docker" = config.virtualisation.docker.enable;
+        "telemetry.tailscale" = config.services.tailscale.enable;
+        "telemetry.zfs" = config.boot.zfs.enabled;
+      };
+
       den.deploy.health = {
         requiredSystemdUnits = ["telegraf.service"];
         requiredCommands.telegraf = ''
@@ -147,10 +164,8 @@
           poll_frequency = sys.env("GCLOUD_FM_POLL_FREQUENCY")
 
           attributes = {
-            "telemetry.docker" = "${lib.boolToString config.virtualisation.docker.enable}",
-            "telemetry.tailscale" = "${lib.boolToString config.services.tailscale.enable}",
-            "telemetry.zfs" = "${lib.boolToString config.boot.zfs.enabled}",
-          }
+        ${lib.concatStrings (lib.mapAttrsToList (name: value: "    \"${name}\" = \"${lib.boolToString value}\",\n")
+            config.den.alloy.fleetAttributes)}  }
 
           basic_auth {
             username = sys.env("GCLOUD_FM_HOSTED_ID")

@@ -28,8 +28,14 @@
     hostName = config.networking.hostName;
     healthCfg = config.den.deploy.health;
 
+    # Units that can legitimately take longer than the default to come up:
+    # tailscaled re-establishing the tailnet, and Komodo Core waiting on a
+    # MongoDB that has just been restarted (TimeoutStartSec = 120).
+    slowUnits = ["tailscaled.service" "mongodb.service" "komodo-core.service"];
+    slowCommands = ["tailscale" "komodo-core"];
+
     unitCheckBudget = unit:
-      if unit == "tailscaled.service"
+      if lib.elem unit slowUnits
       then {
         attempts = "45";
         delay = "2";
@@ -40,7 +46,7 @@
       };
 
     commandCheckBudget = cmdName:
-      if cmdName == "tailscale"
+      if lib.elem cmdName slowCommands
       then {
         attempts = "45";
         delay = "2";

@@ -3,6 +3,7 @@
     includes = [
       den.aspects.server
       den.aspects.docker
+      den.aspects.komodo-core
     ];
 
     nixos = {lib, ...}: {
