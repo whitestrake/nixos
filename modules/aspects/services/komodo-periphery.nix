@@ -14,7 +14,7 @@ in {
       sops.secrets.komodoOnboardingKey = {};
       services.komodo-periphery = {
         enable = true;
-        package = pkgs.myPkgs.komodo-periphery-bin;
+        package = pkgs.unstable.komodo;
         user = "root";
         group = "root";
         outbound = {
