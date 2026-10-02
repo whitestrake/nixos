@@ -2,12 +2,19 @@ name: "Update Packages"
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "packages: update local packages against master. lock: bump flake.lock, then update local packages on top of it."
+        required: true
+        default: packages
+        type: choice
+        options: [packages, lock]
       package:
-        description: "Comma-separated packages to update (leave empty for all)"
+        description: "Comma-separated packages to update (leave empty for all). Packages mode only."
         required: false
         type: string
   schedule:
-    - cron: "0 12 * * *" # Daily at 12:00 UTC
+    - cron: "0 12 * * *" # Daily at 12:00 UTC: packages mode
+    - cron: "0 12 * * 6" # Saturdays at 12:00 UTC: lock mode
 permissions:
   contents: read
 concurrency:
@@ -16,34 +23,101 @@ concurrency:
 jobs:
   update-packages:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Nix
-        uses: ./.github/actions/install-nix
-      - name: Update selected packages
-        id: update
+      - name: Select mode
+        id: mode
         run: |
           set -euo pipefail
 
-          if [ -n "$PACKAGE" ]; then
-            # shellcheck disable=SC2016
-            PACKAGES="$(jq -cn --arg package "$PACKAGE" '$package | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+          if [ "$EVENT" = schedule ]; then
+            if [ "$SCHEDULE" = "0 12 * * 6" ]; then
+              mode=lock
+            elif [ "$(date -u +%u)" = 6 ]; then
+              # The lock run covers Saturday; skip the overlapping daily run.
+              mode=skip
+            else
+              mode=packages
+            fi
           else
-            # shellcheck disable=SC2016
-            PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
+            mode="$INPUT_MODE"
           fi
 
-          BODY="$RUNNER_TEMP/package-update-pr.md"
-          cat > "$BODY" <<'EOF'
-          Automated package updates via `nix-update`.
+          if [ "$mode" = lock ] && [ -n "$INPUT_PACKAGE" ]; then
+            echo "::error ::The package input applies to packages mode only."
+            exit 1
+          fi
 
-          | Package | Before | After |
-          |---|---:|---:|
-          EOF
+          echo "Mode: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+      - name: Check out source
+        if: steps.mode.outputs.mode != 'skip'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Nix
+        if: steps.mode.outputs.mode != 'skip'
+        uses: ./.github/actions/install-nix
+      - name: Update flake.lock and packages
+        id: update
+        if: steps.mode.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+
+          BODY="$RUNNER_TEMP/package-update-pr.md"
           echo "body_path=$BODY" >> "$GITHUB_OUTPUT"
           failures=()
+          declare -A before=()
+
+          if [ "$MODE" = lock ]; then
+            # Every local package is updated on top of the new lock in the
+            # same commit, so packages whose version follows an input (such
+            # as komodo-ui) never ship out of step with it.
+            PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
+
+            # Read versions before the lock moves, so the table shows the
+            # real "Before" for packages whose version comes from an input.
+            while IFS= read -r package; do
+              before[$package]="$(nix eval --raw ".#${package}.version" --accept-flake-config)" || true
+            done < <(jq -r '.[]' <<< "$PACKAGES")
+
+            lock_log="$RUNNER_TEMP/flake-update.log"
+            nix flake update --accept-flake-config 2> "$lock_log" || { cat "$lock_log" >&2; exit 1; }
+            cat "$lock_log" >&2
+
+            {
+              # shellcheck disable=SC2016
+              echo 'Automated `nix flake update`, with local package updates on top in the same commit.'
+              echo
+              echo '```text'
+              echo 'Flake lock file updates:'
+              echo
+              grep -E '^(•|  )' "$lock_log" || echo '(no input changes)'
+              echo '```'
+              echo
+            } > "$BODY"
+          else
+            if [ -n "$PACKAGE" ]; then
+              # shellcheck disable=SC2016
+              PACKAGES="$(jq -cn --arg package "$PACKAGE" '$package | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+            else
+              PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
+            fi
+
+            {
+              # shellcheck disable=SC2016
+              echo 'Automated package updates via `nix-update`.'
+              echo
+            } > "$BODY"
+          fi
+
+          {
+            echo '| Package | Before | After |'
+            echo '|---|---:|---:|'
+          } >> "$BODY"
 
           # Not --use-update-script: its flake path realises the package's build environment via nix develop first.
           update() {
@@ -61,8 +135,9 @@ jobs:
               UPDATE_NIX_NAME="$1-$2" "$script"
           }
 
+          rows=0
           while IFS= read -r package; do
-            before_diff="$(git diff | git hash-object --stdin)"
+            before_diff="$(git diff -- packages | git hash-object --stdin)"
 
             if ! old_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
               failures+=("$package")
@@ -71,18 +146,23 @@ jobs:
 
             if update "$package" "$old_version" && \
               new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
-              after_diff="$(git diff | git hash-object --stdin)"
+              after_diff="$(git diff -- packages | git hash-object --stdin)"
 
               if [ "$before_diff" != "$after_diff" ]; then
                 # shellcheck disable=SC2016
                 printf '| `%s` | `%s` | `%s` |\n' \
-                  "$package" "$old_version" "$new_version" >> "$BODY"
+                  "$package" "${before[$package]:-$old_version}" "$new_version" >> "$BODY"
+                rows=$((rows + 1))
               fi
             else
               failures+=("$package")
               git restore --worktree -- "packages/$package.nix"
             fi
           done < <(jq -r '.[]' <<< "$PACKAGES")
+
+          if [ "$MODE" = lock ] && [ "$rows" = 0 ]; then
+            echo '| _none_ | | |' >> "$BODY"
+          fi
 
           if ((${#failures[@]})); then
             echo "failed=true" >> "$GITHUB_OUTPUT"
@@ -98,30 +178,50 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
         env:
+          MODE: ${{ steps.mode.outputs.mode }}
           PACKAGE: ${{ inputs.package }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Format package updates
         if: steps.update.outputs.changed == 'true'
         run: nix fmt
+      - name: Describe pull request
+        id: pr
+        if: steps.mode.outputs.mode != 'skip'
+        run: |
+          set -euo pipefail
+
+          if [ "$MODE" = lock ]; then
+            {
+              echo "branch=update-flake-lock"
+              echo "title=chore: bump flake.lock"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "branch=nix-update/packages"
+              echo "title=chore(pkgs): update packages"
+            } >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
       - name: Create GitHub App token
         id: app-token
-        if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
+        if: steps.mode.outputs.mode != 'skip' && (steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true'))
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
           private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
-      - name: Open package update pull request
-        if: steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true')
+      - name: Open update pull request
+        if: steps.mode.outputs.mode != 'skip' && (steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true'))
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
-          branch: nix-update/packages
-          title: "chore(pkgs): update packages"
+          branch: ${{ steps.pr.outputs.branch }}
+          title: ${{ steps.pr.outputs.title }}
           body-path: ${{ steps.update.outputs.body_path }}
           labels: dependencies
-          commit-message: "chore(pkgs): update packages"
+          commit-message: ${{ steps.pr.outputs.title }}
           delete-branch: true
           sign-commits: true
       - name: Report update failures
