@@ -1,8 +1,8 @@
 {...}: let
-  # Staged until cutover: both services are installed but not started at boot,
-  # not health-checked on deploy, and the host does not opt into the Komodo
-  # Fleet pipeline. Cutover flips this to true.
-  active = false;
+  # When false, both services are installed but not started at boot, not
+  # health-checked on deploy, and the host does not opt into the Komodo Fleet
+  # pipeline. Used to stage the services before cutover.
+  active = true;
 
   stateDir = "/var/lib/komodo-core";
   # Nightly `km database backup` dumps stay under /opt/docker, which the host
@@ -40,6 +40,9 @@ in {
         environment.GLIBC_TUNABLES = "glibc.cpu.hwcaps=-SHSTK";
         serviceConfig.LimitNOFILE = 64000;
       };
+
+      # For administration and the runbook's featureCompatibilityVersion raise.
+      environment.systemPackages = [pkgs.mongosh];
 
       users.users.komodo-core = {
         isSystemUser = true;
