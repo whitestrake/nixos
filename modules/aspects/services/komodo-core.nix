@@ -76,8 +76,9 @@ in {
         after = ["network-online.target" "mongodb.service"];
         wants = ["network-online.target"];
         requires = ["mongodb.service"];
-        # git for repos and syncs; km for scheduled database backups.
-        path = [komodo pkgs.git];
+        # git for repos and syncs; km for scheduled database backups. Komodo
+        # checks for git with `which git` before every clone or pull.
+        path = [komodo pkgs.git pkgs.which];
 
         environment = {
           HOME = stateDir;
