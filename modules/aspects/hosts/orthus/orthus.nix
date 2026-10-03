@@ -26,7 +26,6 @@
       networking.firewall.trustedInterfaces = [
         # Docker container to agent communication
         "beszel0"
-        "komodo0"
         "dockhand0"
       ];
     };
