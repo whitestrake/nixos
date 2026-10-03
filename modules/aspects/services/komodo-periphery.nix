@@ -24,6 +24,9 @@ in {
         };
       };
       systemd.services.komodo-periphery.path = [config.system.path];
+      # The module sets ProtectHome=read-only, but Docker's build tooling writes
+      # state under /root/.docker, so stacks that build an image failed to deploy.
+      systemd.services.komodo-periphery.serviceConfig.ReadWritePaths = ["-/root/.docker"];
 
       services.networkLiveness.checks.komodo-periphery = {};
       den.deploy.health.requiredSystemdUnits = ["komodo-periphery.service"];
