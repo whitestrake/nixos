@@ -18,7 +18,10 @@ in {
         user = "root";
         group = "root";
         outbound = {
-          coreAddress = "https://komodo.whitestrake.net";
+          # Tailscale Service (svc:komodo) on the Core host. Periphery stays on
+          # the tailnet; komodo.whitestrake.net (Pangolin) remains the address
+          # for OIDC users and GitHub webhooks.
+          coreAddress = "https://komodo.fell-monitor.ts.net";
           connectAs = config.networking.hostName;
           onboardingKeyFile = config.sops.secrets.komodoOnboardingKey.path;
         };
