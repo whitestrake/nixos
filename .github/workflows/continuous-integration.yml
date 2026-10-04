@@ -99,6 +99,61 @@ jobs:
           component: linux-seed-x86_64-linux
       - name: Run source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
+  # Nix substitutes a locked input from a binary cache before it contacts GitHub,
+  # so caching every input's source tree lets a store without GitHub API access
+  # (such as a Claude cloud session) evaluate this flake. Off the critical path.
+  cache-sources:
+    name: Cache sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: ./.github/actions/install-nix
+      - name: Configure Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Push flake input sources to Cachix
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          # cache.nixos.org already serves the nixpkgs trees, so only push what neither cache has.
+          caches=(https://whitestrake.cachix.org https://cache.nixos.org)
+          # The dry run derives every source path from the lock file's narHash
+          # without fetching, so an unchanged lock costs a few narinfo lookups.
+          archive="$(nix flake archive --dry-run --json)"
+          mapfile -t sources < <(jq -r '.inputs | .. | .path? // empty' <<< "$archive" | sort -u)
+          missing=()
+          for source in "${sources[@]}"; do
+            for cache in "${caches[@]}"; do
+              if nix path-info --store "$cache" "$source" >/dev/null 2>&1; then continue 2; fi
+            done
+            missing+=("$source")
+          done
+          if [ "${#missing[@]}" = 0 ]; then
+            echo "Every flake input source is already cached"
+            exit 0
+          fi
+          printf 'Caching %s\n' "${missing[@]}"
+          nix flake archive
+          # den fetches nix-effects (and gen, when inputs.gen is absent) with
+          # builtins.fetchTarball pinned by sha256, which Nix substitutes the same way.
+          lock="$(jq -r '.inputs.den.path' <<< "$archive")/templates/ci/flake.lock"
+          while IFS= read -r expr; do
+            missing+=("$(nix eval --raw --expr "$expr")")
+          done < <(jq -r '(.nodes["nix-effects"], .nodes.gen) | .locked | select(.type == "github")
+            | "builtins.fetchTarball { url = \"https://github.com/\(.owner)/\(.repo)/archive/\(.rev).zip\"; sha256 = \"\(.narHash)\"; }"' \
+            "$lock" 2>/dev/null || true)
+          cachix push whitestrake "${missing[@]}"
   darwin-builds:
     name: Darwin
     runs-on: macos-26
