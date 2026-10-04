@@ -19,10 +19,15 @@
         inputs.nixpkgs.follows = "nixpkgs";
       };
       flake-file.url = "github:denful/flake-file";
+      # flake-parts only needs nixpkgs.lib, but flake-file defaults its
+      # nixpkgs-lib input to follow nixpkgs, which made every darwin eval
+      # fetch the full nixos-26.05 tree as well as nixpkgs-darwin. Point it at
+      # flake-parts' own lib-only default instead (a few hundred KB).
       flake-parts = {
         url = "github:hercules-ci/flake-parts";
-        inputs.nixpkgs-lib.follows = "nixpkgs";
+        inputs.nixpkgs-lib.follows = "nixpkgs-lib";
       };
+      nixpkgs-lib.url = "github:nix-community/nixpkgs.lib";
       # den loads gen-schema through the gen hub: this input when declared,
       # otherwise its own CI pin via builtins.fetchTree, which Nix never
       # substitutes from a binary cache. A lock-file input is substitutable,

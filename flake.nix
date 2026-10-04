@@ -26,7 +26,7 @@
     flake-file.url = "github:denful/flake-file";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
-      inputs.nixpkgs-lib.follows = "nixpkgs";
+      inputs.nixpkgs-lib.follows = "nixpkgs-lib";
     };
     gen = {
       url = "github:sini/gen";
@@ -48,16 +48,13 @@
       url = "github:whitestrake/nix-amp";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nix-mcp = {
-      url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
     nixos-wsl = {
       url = "github:nix-community/NixOS-WSL/main";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
+    nixpkgs-lib.url = "github:nix-community/nixpkgs.lib";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     nixpkgs-unstable-darwin.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     sops-nix = {

@@ -1,13 +1,4 @@
-{
-  config,
-  inputs,
-  ...
-}: {
-  flake-file.inputs.nix-mcp = {
-    url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
-    inputs.nixpkgs.follows = "nixpkgs-unstable";
-  };
-
+{config, ...}: {
   den.aspects.dev-tools = {
     os = {pkgs, ...}: {
       environment.systemPackages = with pkgs; [
@@ -161,10 +152,6 @@
       programs.mcp = {
         enable = true;
         servers = {
-          nixos = {
-            command = lib.getExe inputs.nix-mcp.packages.${host.system}.nix-mcp;
-            env.PATH = lib.makeBinPath [pkgs.nix];
-          };
           homeassistant.url = mcpServiceUrl "homeassistant";
           komodo = {
             command = lib.getExe pkgs.myPkgs.komodo-mcp-server;
