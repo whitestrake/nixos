@@ -151,7 +151,9 @@
         "gen-settings": "gen-settings",
         "gen-types": "gen-types",
         "gen-view": "gen-view",
-        "import-tree": "import-tree",
+        "import-tree": [
+          "import-tree"
+        ],
         "nixpkgs": [
           "nixpkgs"
         ]
@@ -866,22 +868,6 @@
     },
     "import-tree": {
       "locked": {
-        "lastModified": 1783029876,
-        "narHash": "sha256-iI88R3wHz8wTKQb5orvpc51L/Xr64AJyxid/0MKa/b8=",
-        "owner": "denful",
-        "repo": "import-tree",
-        "rev": "a164a12202f58eb67559bd33b5592f20660d9baf",
-        "type": "github"
-      },
-      "original": {
-        "owner": "denful",
-        "repo": "import-tree",
-        "rev": "a164a12202f58eb67559bd33b5592f20660d9baf",
-        "type": "github"
-      }
-    },
-    "import-tree_2": {
-      "locked": {
         "lastModified": 1788467110,
         "narHash": "sha256-ljEMTXP/rH0tOvDzc9gzwww6KcHRPRnEHzd9lK48V7s=",
         "owner": "denful",
@@ -1017,7 +1003,7 @@
         "gen": "gen",
         "home-manager": "home-manager",
         "i915-sriov": "i915-sriov",
-        "import-tree": "import-tree_2",
+        "import-tree": "import-tree",
         "nix-amp": "nix-amp",
         "nix-mcp": "nix-mcp",
         "nixos-wsl": "nixos-wsl",

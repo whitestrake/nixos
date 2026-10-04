@@ -30,7 +30,10 @@
     };
     gen = {
       url = "github:sini/gen";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs = {
+        import-tree.follows = "import-tree";
+        nixpkgs.follows = "nixpkgs";
+      };
     };
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";

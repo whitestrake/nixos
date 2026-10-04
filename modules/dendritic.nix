@@ -29,6 +29,7 @@
       # so stores without GitHub API access can still evaluate this flake.
       gen = {
         url = "github:sini/gen";
+        inputs.import-tree.follows = "import-tree";
         inputs.nixpkgs.follows = "nixpkgs";
       };
       import-tree.url = "github:denful/import-tree";
