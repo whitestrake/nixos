@@ -20,6 +20,9 @@ permissions:
 concurrency:
   group: update-packages
   queue: max
+env:
+  # One branch for both modes, so a lock run and a packages run share one PR.
+  BRANCH: update-flake-lock
 jobs:
   update-packages:
     runs-on: ubuntu-latest
@@ -58,6 +61,9 @@ jobs:
       - name: Check out source
         if: steps.mode.outputs.mode != 'skip'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history, so the open update branch can be diffed against its merge base.
+          fetch-depth: 0
       - name: Install Nix
         if: steps.mode.outputs.mode != 'skip'
         uses: ./.github/actions/install-nix
@@ -72,52 +78,40 @@ jobs:
           failures=()
           declare -A before=()
 
-          if [ "$MODE" = lock ]; then
-            # Every local package is updated on top of the new lock in the
-            # same commit, so packages whose version follows an input (such
-            # as komodo-ui) never ship out of step with it.
-            PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
-
-            # Read versions before the lock moves, so the table shows the
-            # real "Before" for packages whose version comes from an input.
-            while IFS= read -r package; do
-              before[$package]="$(nix eval --raw ".#${package}.version" --accept-flake-config)" || true
-            done < <(jq -r '.[]' <<< "$PACKAGES")
-
-            lock_log="$RUNNER_TEMP/flake-update.log"
-            nix flake update --accept-flake-config 2> "$lock_log" || { cat "$lock_log" >&2; exit 1; }
-            cat "$lock_log" >&2
-
-            {
-              # shellcheck disable=SC2016
-              echo 'Automated `nix flake update`, with local package updates on top in the same commit.'
-              echo
-              echo '```text'
-              echo 'Flake lock file updates:'
-              echo
-              grep -E '^(•|  )' "$lock_log" || echo '(no input changes)'
-              echo '```'
-              echo
-            } > "$BODY"
+          ALL="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
+          if [ -n "$PACKAGE" ]; then
+            # shellcheck disable=SC2016
+            PACKAGES="$(jq -cn --arg package "$PACKAGE" '$package | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
           else
-            if [ -n "$PACKAGE" ]; then
-              # shellcheck disable=SC2016
-              PACKAGES="$(jq -cn --arg package "$PACKAGE" '$package | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
-            else
-              PACKAGES="$(nix eval --json '.#updatablePackages' --accept-flake-config)"
-            fi
-
-            {
-              # shellcheck disable=SC2016
-              echo 'Automated package updates via `nix-update`.'
-              echo
-            } > "$BODY"
+            PACKAGES="$ALL"
           fi
 
-          {
-            echo '| Package | Before | After |'
-            echo '|---|---:|---:|'
-          } >> "$BODY"
+          # Read versions on the base before anything moves, so the table
+          # shows the real "Before" for every package the PR changes,
+          # including ones whose version follows an input (such as komodo-ui).
+          while IFS= read -r package; do
+            before[$package]="$(nix eval --raw ".#${package}.version" --accept-flake-config)" || true
+          done < <(jq -r '.[]' <<< "$ALL")
+
+          # Both modes share one branch. Start from whatever the open update
+          # PR already carries (a lock bump, earlier package updates, hand
+          # fixes) so a run adds to it instead of force-pushing over it.
+          carried=false
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            git fetch --no-tags origin "$BRANCH"
+            if ! git diff --binary HEAD...FETCH_HEAD | git apply --3way; then
+              echo "::error ::$BRANCH no longer applies cleanly on $(git rev-parse --abbrev-ref HEAD). Merge or close its PR, or resolve the conflict on the branch, then re-run."
+              exit 1
+            fi
+            git reset --quiet
+            if [ -n "$(git status --porcelain)" ]; then
+              carried=true
+            fi
+          fi
+
+          if [ "$MODE" = lock ]; then
+            nix flake update --accept-flake-config
+          fi
 
           # Not --use-update-script: its flake path realises the package's build environment via nix develop first.
           update() {
@@ -135,32 +129,76 @@ jobs:
               UPDATE_NIX_NAME="$1-$2" "$script"
           }
 
-          rows=0
           while IFS= read -r package; do
-            before_diff="$(git diff -- packages | git hash-object --stdin)"
+            file="packages/$package.nix"
+            saved="$RUNNER_TEMP/$package.nix"
+            cp "$file" "$saved"
 
-            if ! old_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
-              failures+=("$package")
+            if old_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)" && \
+              update "$package" "$old_version" && \
+              nix eval --raw ".#${package}.version" --accept-flake-config > /dev/null; then
               continue
             fi
 
-            if update "$package" "$old_version" && \
-              new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)"; then
-              after_diff="$(git diff -- packages | git hash-object --stdin)"
-
-              if [ "$before_diff" != "$after_diff" ]; then
-                # shellcheck disable=SC2016
-                printf '| `%s` | `%s` | `%s` |\n' \
-                  "$package" "${before[$package]:-$old_version}" "$new_version" >> "$BODY"
-                rows=$((rows + 1))
-              fi
-            else
-              failures+=("$package")
-              git restore --worktree -- "packages/$package.nix"
-            fi
+            failures+=("$package")
+            # Back to what this run started with, keeping any carried update.
+            cp "$saved" "$file"
           done < <(jq -r '.[]' <<< "$PACKAGES")
 
-          if [ "$MODE" = lock ] && [ "$rows" = 0 ]; then
+          lock_changed=false
+          if ! git diff --quiet HEAD -- flake.lock; then
+            lock_changed=true
+          fi
+
+          {
+            if [ "$lock_changed" = true ]; then
+              # shellcheck disable=SC2016
+              echo 'Automated `nix flake update` and local package updates.'
+            else
+              # shellcheck disable=SC2016
+              echo 'Automated package updates via `nix-update`.'
+            fi
+            if [ "$carried" = true ]; then
+              echo
+              echo "Each run rebuilds this branch from the base plus what it already carried, then updates on top."
+            fi
+            echo
+
+            if [ "$lock_changed" = true ]; then
+              echo '```text'
+              echo 'Flake lock file updates:'
+              echo
+              # shellcheck disable=SC2016
+              jq -rn --slurpfile old <(git show HEAD:flake.lock) --slurpfile new flake.lock '
+                def fmt: if . == null then "(none)"
+                  else "\((.rev // .narHash // "?")[:12]) (\((.lastModified // 0) | todate[:10]))" end;
+                $old[0].nodes as $o | $new[0].nodes as $n
+                | ($o + $n) | keys[] | select(. != "root") as $k
+                | select($o[$k].locked != $n[$k].locked)
+                | "• \($k): \($o[$k].locked | fmt) → \($n[$k].locked | fmt)"'
+              echo '```'
+              echo
+            fi
+
+            echo '| Package | Before | After |'
+            echo '|---|---:|---:|'
+          } > "$BODY"
+
+          rows=0
+          while IFS= read -r package; do
+            if git diff --quiet HEAD -- "packages/$package.nix" && [ "$lock_changed" = false ]; then
+              continue
+            fi
+            new_version="$(nix eval --raw ".#${package}.version" --accept-flake-config)" || new_version="?"
+            if [ "$new_version" != "${before[$package]:-}" ] || ! git diff --quiet HEAD -- "packages/$package.nix"; then
+              # shellcheck disable=SC2016
+              printf '| `%s` | `%s` | `%s` |\n' \
+                "$package" "${before[$package]:-none}" "$new_version" >> "$BODY"
+              rows=$((rows + 1))
+            fi
+          done < <(jq -r '.[]' <<< "$ALL")
+
+          if [ "$rows" = 0 ]; then
             echo '| _none_ | | |' >> "$BODY"
           fi
 
@@ -174,7 +212,13 @@ jobs:
             } >> "$BODY"
           fi
 
-          if ! git diff --quiet; then
+          if [ "$lock_changed" = true ]; then
+            echo "title=chore: bump flake.lock" >> "$GITHUB_OUTPUT"
+          else
+            echo "title=chore(pkgs): update packages" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$(git status --porcelain)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
         env:
@@ -184,25 +228,6 @@ jobs:
       - name: Format package updates
         if: steps.update.outputs.changed == 'true'
         run: nix fmt
-      - name: Describe pull request
-        id: pr
-        if: steps.mode.outputs.mode != 'skip'
-        run: |
-          set -euo pipefail
-
-          if [ "$MODE" = lock ]; then
-            {
-              echo "branch=update-flake-lock"
-              echo "title=chore: bump flake.lock"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "branch=nix-update/packages"
-              echo "title=chore(pkgs): update packages"
-            } >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          MODE: ${{ steps.mode.outputs.mode }}
       - name: Create GitHub App token
         id: app-token
         if: steps.mode.outputs.mode != 'skip' && (steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true'))
@@ -217,11 +242,11 @@ jobs:
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app-token.outputs.token }}
-          branch: ${{ steps.pr.outputs.branch }}
-          title: ${{ steps.pr.outputs.title }}
+          branch: ${{ env.BRANCH }}
+          title: ${{ steps.update.outputs.title }}
           body-path: ${{ steps.update.outputs.body_path }}
           labels: dependencies
-          commit-message: ${{ steps.pr.outputs.title }}
+          commit-message: ${{ steps.update.outputs.title }}
           delete-branch: true
           sign-commits: true
       - name: Report update failures
