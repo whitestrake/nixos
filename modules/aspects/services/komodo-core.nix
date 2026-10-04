@@ -105,7 +105,7 @@ in {
           KOMODO_RESOURCE_POLL_INTERVAL = "5-min";
           KOMODO_JWT_TTL = "1-day";
           KOMODO_DISABLE_CONFIRM_DIALOG = "false";
-          KOMODO_DISABLE_USER_REGISTRATION = "false";
+          KOMODO_DISABLE_USER_REGISTRATION = "true";
           KOMODO_ENABLE_NEW_USERS = "false";
           KOMODO_DISABLE_NON_ADMIN_CREATE = "false";
           KOMODO_TRANSPARENT_MODE = "false";
