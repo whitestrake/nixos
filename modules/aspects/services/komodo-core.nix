@@ -57,6 +57,8 @@ in {
         komodoCoreWebhookSecret = {};
         komodoCoreOidcClientSecret = {};
         komodoMongoMonitorPassword = {};
+        komodoMonitorKey = {};
+        komodoMonitorSecret = {};
       };
       # Read by systemd as root before dropping privileges, and inherited by the
       # `km` processes Core spawns for database backups.
@@ -151,6 +153,93 @@ in {
         config.sops.templates."alloy-komodo.env".path
       ];
       den.alloy.fleetAttributes."telemetry.komodo" = active;
+
+      # Telegraf polls Core's read API for failed operations, sync state and
+      # resource names, for alerts in Grafana. Core has no metrics endpoint and
+      # raises no alert of its own for a failed DeployStack or RunSync. The key
+      # belongs to the telegraf-monitor service user, which has Read on stacks,
+      # syncs and procedures only.
+      sops.templates."telegraf-komodo.env".content = ''
+        KOMODO_MONITOR_KEY=${placeholder.komodoMonitorKey}
+        KOMODO_MONITOR_SECRET=${placeholder.komodoMonitorSecret}
+      '';
+      services.telegraf = lib.mkIf active {
+        environmentFiles = [config.sops.templates."telegraf-komodo.env".path];
+        extraConfig = let
+          komodoRead = name: type: params: object: {
+            urls = ["http://127.0.0.1:9120/read"];
+            method = "POST";
+            body = builtins.toJSON {inherit type params;};
+            headers = {
+              "Content-Type" = "application/json";
+              "x-api-key" = "\${KOMODO_MONITOR_KEY}";
+              "x-api-secret" = "\${KOMODO_MONITOR_SECRET}";
+            };
+            timeout = "10s";
+            data_format = "json_v2";
+            name_override = name;
+            tagexclude = ["url"];
+            json_v2 = [{object = [object];}];
+          };
+          resourceNames = type:
+            komodoRead "komodo_resource" type {} {
+              path = "@this";
+              tags = ["id" "name" "type"];
+              included_keys = ["id" "name" "type" "template"];
+            };
+        in {
+          inputs.http = [
+            # The 100 most recent failures; basicstats keeps the newest per target.
+            (komodoRead "komodo_update" "ListUpdates" {
+                query.success = false;
+                page = 0;
+              } {
+                path = "updates";
+                tags = ["operation" "target_type" "target_id"];
+                included_keys = ["start_ts" "operation" "target_type" "target_id"];
+              })
+            (komodoRead "komodo_sync" "ListResourceSyncs" {} {
+              path = "@this";
+              tags = ["name" "info_state"];
+              included_keys = ["name" "info_state" "info_last_sync_ts"];
+            })
+            # Names for alert labels. Stacks have no numeric field, so the
+            # `template` boolean carries the sample: converted to an integer
+            # (prometheus_client drops booleans), then renamed to `info`.
+            (resourceNames "ListStacks")
+            (resourceNames "ListProcedures")
+            (resourceNames "ListResourceSyncs")
+          ];
+          # Explicit order: the boolean must become an integer before the rename.
+          processors.converter = [
+            {
+              order = 1;
+              namepass = ["komodo_resource"];
+              fields.integer = ["template"];
+            }
+          ];
+          processors.rename = [
+            {
+              order = 2;
+              namepass = ["komodo_resource"];
+              replace = [
+                {
+                  field = "template";
+                  dest = "info";
+                }
+              ];
+            }
+          ];
+          aggregators.basicstats = [
+            {
+              namepass = ["komodo_update"];
+              period = "60s";
+              drop_original = true;
+              stats = ["max"];
+            }
+          ];
+        };
+      };
 
       den.deploy.health = lib.mkIf active {
         requiredSystemdUnits = ["mongodb.service" "komodo-core.service"];
