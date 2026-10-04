@@ -1,4 +1,14 @@
 {inputs, ...}: let
+  unstableFor = system:
+    import (
+      if builtins.match ".*-darwin" system != null
+      then inputs.nixpkgs-unstable-darwin
+      else inputs.nixpkgs-unstable
+    ) {
+      inherit system;
+      config.allowUnfree = true;
+    };
+
   # Single access path for the local package set. Both the perSystem packages
   # output and the myPkgs overlay consume this, so the definition and its
   # argument wiring live in exactly one place.
@@ -15,10 +25,7 @@
   localPackagesFor = pkgs: system:
     mkLocalPackages {
       inherit pkgs;
-      unstablePkgs = import inputs.nixpkgs-unstable {
-        inherit system;
-        config.allowUnfree = true;
-      };
+      unstablePkgs = unstableFor system;
     };
 
   # updatablePackages is currently based on x86_64-linux evaluation.
@@ -42,10 +49,7 @@
 in {
   den.default.os.nixpkgs.overlays = [
     (final: prev: let
-      unstablePkgs = import inputs.nixpkgs-unstable {
-        system = prev.stdenv.hostPlatform.system;
-        config.allowUnfree = true;
-      };
+      unstablePkgs = unstableFor prev.stdenv.hostPlatform.system;
     in {
       unstable = unstablePkgs;
       myPkgs = mkLocalPackages {

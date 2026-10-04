@@ -294,6 +294,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-unstable-darwin": {
+      "locked": {
+        "lastModified": 1790981744,
+        "narHash": "sha256-sm6DclXJudZfP/pcDBQQsRqyMxBcQsuw+7yQr4rBBLE=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "55ba7f49ef2962b42cbd126522b7df5f95037679",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "darwin": "darwin",
@@ -310,6 +326,7 @@
         "nixpkgs": "nixpkgs",
         "nixpkgs-darwin": "nixpkgs-darwin",
         "nixpkgs-unstable": "nixpkgs-unstable",
+        "nixpkgs-unstable-darwin": "nixpkgs-unstable-darwin",
         "sops-nix": "sops-nix",
         "treefmt-nix": "treefmt-nix",
         "whitestrake-github-keys": "whitestrake-github-keys"
