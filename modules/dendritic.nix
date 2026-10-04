@@ -23,6 +23,15 @@
         url = "github:hercules-ci/flake-parts";
         inputs.nixpkgs-lib.follows = "nixpkgs";
       };
+      # den loads gen-schema through the gen hub: this input when declared,
+      # otherwise its own CI pin via builtins.fetchTree, which Nix never
+      # substitutes from a binary cache. A lock-file input is substitutable,
+      # so stores without GitHub API access can still evaluate this flake.
+      gen = {
+        url = "github:sini/gen";
+        inputs.import-tree.follows = "import-tree";
+        inputs.nixpkgs.follows = "nixpkgs";
+      };
       import-tree.url = "github:denful/import-tree";
       nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
       nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
