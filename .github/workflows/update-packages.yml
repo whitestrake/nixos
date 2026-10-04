@@ -22,7 +22,7 @@ concurrency:
   queue: max
 env:
   # One branch for both modes, so a lock run and a packages run share one PR.
-  BRANCH: update-flake-lock
+  BRANCH: update-dependencies
 jobs:
   update-packages:
     runs-on: ubuntu-latest
