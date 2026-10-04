@@ -726,6 +726,14 @@ def produce(root, output, coverage, argv, deep=False):
                 status == 0 and fault is None, "exact-image profile workload failed"
             )
     finally:
+        # Nothing after this reads /nix and the runner is discarded, so a busy
+        # profile mount must not fail a run whose image already passed.
+        if (profile / "mounted").exists():
+            try:
+                command("sudo", "hdiutil", "detach", "/nix", timeout=120)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                print("::warning ::Could not detach the profile mount; leaving it")
+            (profile / "mounted").unlink()
         cleanup(profile)
     hot = packed / "hot.zip"
     image.pack_hot(exported, manifest_path, block_profile, hot)
