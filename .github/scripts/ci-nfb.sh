@@ -1,7 +1,26 @@
 #!/usr/bin/env bash
 # Shared ordinary CI and exact-image validation workload.
 set -euo pipefail
-trap 'echo "CI_NFB_COMPLETE status=$? durationSeconds=$SECONDS"' EXIT
+# Track the lowest MemAvailable on Linux and show kernel complaints on failure,
+# so an evaluator killed by a signal leaves evidence of why.
+memory_log=
+if [ -r /proc/meminfo ]; then
+  memory_log="$(mktemp)"
+  (while sleep 2; do awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo; done >> "$memory_log") &
+  memory_sampler=$!
+fi
+finish() {
+  local status=$?
+  if [ -n "$memory_log" ]; then
+    kill "$memory_sampler" 2>/dev/null || true
+    echo "CI_NFB_MEMORY minAvailableMiB=$(sort -n "$memory_log" | head -1) totalMiB=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+    if [ "$status" -ne 0 ]; then
+      sudo dmesg --ctime 2>/dev/null | grep -iE 'erofs|overlay|loop[0-9]|oom|out of memory|killed process|bus error|i/o error' | tail -40 || true
+    fi
+  fi
+  echo "CI_NFB_COMPLETE status=$status durationSeconds=$SECONDS"
+}
+trap finish EXIT
 projection="$1"
 system="$2"
 result_dir="${CI_DARWIN_ATTEMPT_DIR:-$RUNNER_TEMP/ci-results}"
