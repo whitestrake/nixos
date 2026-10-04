@@ -36,6 +36,9 @@
       nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
       nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
       nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+      # nixos-unstable only waits on Linux builds, so its darwin outputs are often
+      # uncached; darwin hosts take unstable packages from the Hydra-gated branch.
+      nixpkgs-unstable-darwin.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
       darwin = {
         url = "github:LnL7/nix-darwin/nix-darwin-26.05";
         inputs.nixpkgs.follows = "nixpkgs-darwin";
