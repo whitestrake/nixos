@@ -5,7 +5,10 @@
 }: {
   flake-file.inputs.nix-mcp = {
     url = "github:whitestrake/nix-mcp/feat/nix-mcp-hm-live-index";
-    inputs.nixpkgs.follows = "nixpkgs-unstable";
+    # Follow the darwin unstable tree, not nixos-unstable: this was the only
+    # thing making darwin evals fetch the Linux unstable nixpkgs as well.
+    # Linux hosts fetch one extra tree instead, which Linux runners do quickly.
+    inputs.nixpkgs.follows = "nixpkgs-unstable-darwin";
   };
 
   den.aspects.dev-tools = {
