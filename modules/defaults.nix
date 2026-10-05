@@ -191,6 +191,9 @@
         SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         CURL_CA_BUNDLE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+
+        # nix-darwin has no programs.nh module, so set nh's default flake here.
+        NH_FLAKE = "github:whitestrake/nixos";
       };
     };
 
