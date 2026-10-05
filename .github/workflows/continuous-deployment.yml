@@ -84,7 +84,7 @@ jobs:
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
   deploy:
-    name: "Deploy ${{ matrix.host }}"
+    name: "${{ matrix.host }}"
     needs: preflight
     if: ${{ needs.preflight.outputs.proceed == 'true' }}
     runs-on: ubuntu-latest
