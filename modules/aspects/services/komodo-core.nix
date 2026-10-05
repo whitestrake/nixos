@@ -210,6 +210,17 @@ in {
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
           ];
+          # Age of the newest database backup on disk, for an alert when the
+          # nightly backup keeps missing. Komodo does not catch up a schedule
+          # missed while Core is down, and records nothing when it does.
+          inputs.filecount = [
+            {
+              directories = [backupsDir];
+              name = "*.gz";
+              recursive = true;
+              fieldinclude = ["newest_file_timestamp"];
+            }
+          ];
           # Explicit order: the boolean must become an integer before the rename.
           processors.converter = [
             {
