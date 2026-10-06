@@ -3,19 +3,19 @@
   pkgs,
   ...
 }: let
-  version = "0.15.0";
+  version = "0.16.0";
   assets = {
     "aarch64-darwin" = {
       name = "netronome_${version}_darwin_arm64.tar.gz";
-      hash = "sha256-5DxDN9356WTLDKpFud/nCX1lizGKXeGE08rex5FiCtM=";
+      hash = "sha256-2gYbp/F8IOxSeq7mg5SFQH3w1hev2ukKD56vXzbW8nQ=";
     };
     "x86_64-linux" = {
       name = "netronome_${version}_linux_x86_64.tar.gz";
-      hash = "sha256-t34TqHFuGA5Xe1D9SPFZsKqTF/d8nDOcV9IVVkWeuBk=";
+      hash = "sha256-DRee9T4YfcteOVRDgEPlAXJ35YMDbcNpb7h3MbuV0WM=";
     };
     "aarch64-linux" = {
       name = "netronome_${version}_linux_arm64.tar.gz";
-      hash = "sha256-hCaWln+Gs0IRC66TaxnRJt5lfWqFaajRZ4K2sLR6wgQ=";
+      hash = "sha256-I1m7Z58OpHEP+l33HkMbHYg5MxAx7v4zagJnQEQvyP8=";
     };
   };
   system = pkgs.stdenv.hostPlatform.system;
