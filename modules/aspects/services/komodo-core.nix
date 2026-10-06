@@ -187,17 +187,28 @@ in {
               tags = ["id" "name" "type"];
               included_keys = ["id" "name" "type" "template"];
             };
+          # The 100 most recent finished updates with this outcome; basicstats
+          # keeps the newest per target and operation. Komodo creates updates
+          # with success = true and only clears it if the run fails, so an
+          # update still running would pass for a success; only Complete counts.
+          finishedUpdates = name: success:
+            komodoRead name "ListUpdates" {
+              query = {
+                inherit success;
+                status = "Complete";
+              };
+              page = 0;
+            } {
+              path = "updates";
+              tags = ["operation" "target_type" "target_id"];
+              included_keys = ["start_ts" "operation" "target_type" "target_id"];
+            };
         in {
           inputs.http = [
-            # The 100 most recent failures; basicstats keeps the newest per target.
-            (komodoRead "komodo_update" "ListUpdates" {
-                query.success = false;
-                page = 0;
-              } {
-                path = "updates";
-                tags = ["operation" "target_type" "target_id"];
-                included_keys = ["start_ts" "operation" "target_type" "target_id"];
-              })
+            # Failures, and the successes that supersede them: a failure is
+            # resolved once the same operation on the same target succeeds.
+            (finishedUpdates "komodo_update" false)
+            (finishedUpdates "komodo_update_success" true)
             (komodoRead "komodo_sync" "ListResourceSyncs" {} {
               path = "@this";
               tags = ["name" "info_state"];
@@ -243,7 +254,7 @@ in {
           ];
           aggregators.basicstats = [
             {
-              namepass = ["komodo_update"];
+              namepass = ["komodo_update" "komodo_update_success"];
               period = "60s";
               drop_original = true;
               stats = ["max"];
