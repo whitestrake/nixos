@@ -50,6 +50,10 @@
       networking.firewall.trustedInterfaces = [
         "netronome0" # Netronome container to agent communication
       ];
+
+      # NetAlertX runs with host networking for ARP scanning, so Newt on the
+      # proxy bridge reaches its web UI and GraphQL API through the host.
+      networking.firewall.interfaces."br-+".allowedTCPPorts = [20211 20212];
     };
   };
 }
