@@ -32,8 +32,12 @@
       # otherwise its own CI pin via builtins.fetchTree, which Nix never
       # substitutes from a binary cache. A lock-file input is substitutable,
       # so stores without GitHub API access can still evaluate this flake.
+      # Held at a51ec1d (2026-10-04): later gen-schema takes mkInstanceType's
+      # options first and the kind last, and den master still passes the kind
+      # first. Drop the rev once den lands its options-first migration
+      # (denful/den branch chore/gen-schema-options-first).
       gen = {
-        url = "github:sini/gen";
+        url = "github:sini/gen/a51ec1d9272badc400c08b8e498346b73d1ab061";
         inputs.import-tree.follows = "import-tree";
         inputs.nixpkgs.follows = "nixpkgs";
       };
