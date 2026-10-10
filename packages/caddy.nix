@@ -15,13 +15,17 @@
     inherit version src vendorHash;
   });
 
-  caddyWithPlugins =
-    (pkgs.caddy.override {
-      caddy = overriddenCaddy;
-    }).withPlugins {
-      plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
-      hash = "sha256-MUVqEItbBsBWbpRhe2eoDY/6EGybJFQXpAtZnZo0gZQ=";
-    };
+  # Older nixpkgs builds withPlugins from a `caddy` argument; newer builds it
+  # from finalAttrs.finalPackage and has no such argument.
+  caddyBase =
+    if pkgs.lib.functionArgs pkgs.caddy.override ? caddy
+    then pkgs.caddy.override {caddy = overriddenCaddy;}
+    else overriddenCaddy;
+
+  caddyWithPlugins = caddyBase.withPlugins {
+    plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
+    hash = "sha256-MUVqEItbBsBWbpRhe2eoDY/6EGybJFQXpAtZnZo0gZQ=";
+  };
 in
   # Wrap in a transparent derivation so 'position' points to this file for nix-update
   pkgs.stdenv.mkDerivation {
