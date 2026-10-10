@@ -21,6 +21,9 @@
       sops.secrets.alloyEnv = {};
       services.alloy.enable = lib.mkDefault true;
       services.alloy.extraFlags = ["--stability.level=public-preview"];
+      # Alloy can deadlock at startup before it opens any socket while systemd
+      # still reports it active, so restart it when its ingress stalls.
+      services.networkLiveness.checks.alloy = {};
       services.telegraf = {
         enable = true;
         extraConfig = {
