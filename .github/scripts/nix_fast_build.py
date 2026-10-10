@@ -3,9 +3,11 @@
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -228,6 +230,76 @@ class CheckPublisher:
                 self.outstanding.pop(attr, None)
 
 
+# Builders' own downloads have no stall timeout of Nix's, so name any that linger.
+DOWNLOAD_COMMANDS = {"curl", "git", "git-remote-https"}
+DOWNLOAD_REPEAT_SECONDS = 600
+URL_USERINFO = re.compile(r"://[^/@\s]+@")
+
+
+def elapsed_seconds(value):
+    days, _, clock = value.rpartition("-")
+    seconds = 0
+    for part in clock.split(":"):
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
+
+
+def long_downloads(threshold):
+    listing = subprocess.run(
+        ["ps", "-axww", "-o", "pid=,etime=,command="],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout
+    for line in listing.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) < 3:
+            continue
+        pid, etime, command = fields
+        if os.path.basename(command.split()[0]) not in DOWNLOAD_COMMANDS:
+            continue
+        if elapsed_seconds(etime) >= threshold:
+            yield int(pid), etime, URL_USERINFO.sub("://***@", command)
+
+
+def watch_downloads(stop, threshold, interval):
+    reported = {}
+    while not stop.wait(interval):
+        try:
+            found = list(long_downloads(threshold))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        for pid, etime, command in found:
+            if (
+                time.monotonic() - reported.get(pid, -DOWNLOAD_REPEAT_SECONDS)
+                < DOWNLOAD_REPEAT_SECONDS
+            ):
+                continue
+            reported[pid] = time.monotonic()
+            print(
+                f"::warning::Download running for {etime} (pid {pid}): {command}",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                sockets = subprocess.run(
+                    ["lsof", "-nP", "-a", "-i", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                ).stdout
+            except (OSError, subprocess.SubprocessError):
+                continue
+            for socket in sockets.splitlines()[1:]:
+                print(
+                    f"CI_DOWNLOAD_SOCKET pid={pid} {socket}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+
 def run(command, publisher, build_hook, deferred=None):
     process = subprocess.Popen(
         [*command, "--stream-json-lines"],
@@ -242,6 +314,16 @@ def run(command, publisher, build_hook, deferred=None):
     terminating = False
     previous_handlers = {}
     process_groups = {process.pid}
+    stop_watch = threading.Event()
+    threading.Thread(
+        target=watch_downloads,
+        args=(
+            stop_watch,
+            int(os.environ.get("CI_DOWNLOAD_WATCH_SECONDS", "300")),
+            int(os.environ.get("CI_DOWNLOAD_WATCH_INTERVAL", "30")),
+        ),
+        daemon=True,
+    ).start()
 
     def signal_process_group(pgid, signum):
         try:
@@ -322,6 +404,7 @@ def run(command, publisher, build_hook, deferred=None):
                         active_hook = None
         return_code = process.wait()
     finally:
+        stop_watch.set()
         # NFB and hooks may leave Cachix descendants after their leader exits.
         for pgid in process_groups:
             signal_process_group(pgid, signal.SIGTERM)

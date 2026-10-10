@@ -22,7 +22,7 @@ runs:
         GITHUB_ACCESS_TOKEN: ${{ github.token }}
         NIX_VERSION: "2.34.7"
         NIX_CONF: |
-          experimental-features = nix-command flakes
+          experimental-features = nix-command flakes configurable-impure-env
           accept-flake-config = true
           nix-path = nixpkgs=flake:nixpkgs
           auto-optimise-store = false
@@ -30,6 +30,8 @@ runs:
           connect-timeout = 10
           download-attempts = 2
           stalled-download-timeout = 60
+          # Builders' fetchurl curl has no stall timeout; abort under 1 KiB/s for 30 s so its retries run.
+          impure-env = NIX_CURL_FLAGS=-Y1024
           ${{ inputs.extra-nix-conf }}
       run: |
         set -euo pipefail
