@@ -39,6 +39,8 @@
       config,
       ...
     }: {
+      # Komodo API credentials, readable by the user so local sessions can
+      # call the API directly.
       sops.secrets = {
         githubToken = {};
         komodoURL.owner = user.userName;
@@ -61,46 +63,14 @@
     };
 
     provides.whitestrake.homeManager = {
-      host,
       lib,
       pkgs,
       config,
       osConfig,
       ...
     }: let
-      mcpServiceUrl = name: "https://mcp-${name}.${host.tailnetSuffix}/mcp";
-      codexMcpServers =
-        lib.mapAttrs (
-          name: server:
-            lib.hm.mcp.transformMcpServer {
-              inherit server;
-              exclude = [
-                "headers"
-                "type"
-              ];
-              extraTransforms = [
-                (s: s // lib.optionalAttrs (s.headers or {} != {}) {http_headers = s.headers;})
-                lib.hm.mcp.addType
-                (lib.hm.mcp.wrapEnvFilesCommand {inherit pkgs name;})
-              ];
-            }
-        )
-        config.programs.mcp.servers;
-      claudeMcpServers =
-        lib.mapAttrs (
-          name: server:
-            lib.hm.mcp.transformMcpServer {
-              inherit server;
-              extraTransforms = [
-                lib.hm.mcp.addType
-                (lib.hm.mcp.wrapEnvFilesCommand {inherit pkgs name;})
-              ];
-            }
-        )
-        config.programs.mcp.servers;
       json = pkgs.formats.json {};
-      # Local plugin marketplace carrying the shared MCP servers and a Nix
-      # language server as one plugin.
+      # Local plugin marketplace carrying a Nix language server as one plugin.
       # It is linked at a stable path so ~/.claude/settings.json, which Claude
       # rewrites at runtime, can refer to it once and follow each rebuild:
       #   claude plugin marketplace add ~/.local/share/claude-code/whitestrake-marketplace
@@ -120,8 +90,6 @@
         }} $out/.claude-plugin/marketplace.json
         install -Dm644 ${json.generate "plugin.json" {name = "dev-tools";}} \
           $out/dev-tools/.claude-plugin/plugin.json
-        install -Dm644 ${json.generate "mcp.json" {mcpServers = claudeMcpServers;}} \
-          $out/dev-tools/.mcp.json
         install -Dm644 ${json.generate "lsp.json" {
           nix = {
             command = lib.getExe pkgs.nil;
@@ -129,62 +97,17 @@
           };
         }} $out/dev-tools/.lsp.json
       '';
-      antigravityMcpServers =
-        lib.mapAttrs (
-          name: server: let
-            transformed = lib.hm.mcp.transformMcpServer {
-              inherit server;
-              exclude = [
-                "enabled"
-                "type"
-              ];
-              extraTransforms = [
-                (lib.hm.mcp.wrapEnvFilesCommand {inherit pkgs name;})
-              ];
-            };
-          in
-            # transformMcpServer drops serverUrl after extraTransforms, so rename after it returns.
-            builtins.removeAttrs transformed ["url"]
-            // lib.optionalAttrs (transformed ? url) {serverUrl = transformed.url;}
-        )
-        config.programs.mcp.servers;
     in {
-      programs.mcp = {
-        enable = true;
-        servers = {
-          homeassistant.url = mcpServiceUrl "homeassistant";
-          komodo = {
-            command = lib.getExe pkgs.myPkgs.komodo-mcp-server;
-            cwd = "${config.xdg.stateHome}/komodo-mcp-server";
-            env = {
-              LOG_LEVEL = "error";
-              LOG_AUDIT_FILE = "/dev/null";
-              LOG_AUDIT_TOOL_IO = "off";
-              KOMODO_URL.file = osConfig.sops.secrets.komodoURL.path;
-              KOMODO_API_KEY.file = osConfig.sops.secrets.komodoKey.path;
-              KOMODO_API_SECRET.file = osConfig.sops.secrets.komodoSecret.path;
-            };
-          };
-          proxmox.url = mcpServiceUrl "proxmox";
-          grafana.url = mcpServiceUrl "grafana";
-          tailscale.url = mcpServiceUrl "tailscale";
-        };
-      };
-
-      xdg.stateFile."komodo-mcp-server/.keep".text = "";
       xdg.dataFile."claude-code/whitestrake-marketplace".source = claudeMarketplace;
 
       programs.codex = {
         enable = true;
         package = pkgs.unstable.codex;
-        enableMcpIntegration = false;
       };
 
       programs.claude-code = {
         enable = true;
         package = pkgs.unstable.claude-code;
-        # MCP servers arrive through the whitestrake marketplace plugin instead.
-        enableMcpIntegration = false;
       };
 
       programs.antigravity-cli = {
@@ -219,13 +142,7 @@
                 "run-state"
               ];
             };
-            mcp_servers = codexMcpServers;
           };
-
-        ".gemini/config/mcp_config.json".source =
-          (pkgs.formats.json {}).generate
-          "antigravity-mcp-config"
-          {mcpServers = antigravityMcpServers;};
       };
     };
   };
