@@ -129,6 +129,7 @@
 
       programs.zsh = {
         enable = true;
+        shellAliases.sudo = "sudo ";
         dotDir = config.home.homeDirectory;
         initContent = lib.mkOrder 500 ''
           if [[ -n ''${CODEX_SHELL:-} ]]; then
