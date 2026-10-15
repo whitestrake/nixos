@@ -5,18 +5,21 @@ Usage: check_komodo_alerts.py SCRIPT
 Runs SCRIPT (modules/aspects/services/komodo-alerts.sh) under bash with
 errexit, nounset and pipefail, as writeShellApplication does, and checks that
 it follows ListAlerts' pages, reports when its page cap cuts the list short,
-keeps alerts that share a server and severity apart, and fails outright when a
-page cannot be read.
+keeps alerts that share a server and severity apart, fails outright when a page
+cannot be read, and never puts the API key or secret in a process's arguments.
 """
 
 import http.server
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
 
 PAGE = 100
+KEY = "fixture-key-4f1c"
+SECRET = "fixture-secret-9b7e"
 
 
 def alerts():
@@ -71,15 +74,26 @@ ALERTS = alerts()
 
 class Core(http.server.BaseHTTPRequestHandler):
     fail_page = None
+    requests = 0
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert request["type"] == "ListAlerts", request
         assert request["params"]["query"] == {"resolved": False}, request
         assert (
-            self.headers["x-api-key"] == "key"
-            and self.headers["x-api-secret"] == "secret"
+            self.headers["x-api-key"] == KEY and self.headers["x-api-secret"] == SECRET
         )
+        # curl is still running while this request is served, so its
+        # arguments are visible to anyone listing processes.
+        for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+            try:
+                args = cmdline.read_bytes()
+            except OSError:
+                continue
+            assert KEY.encode() not in args and SECRET.encode() not in args, (
+                f"credentials in {cmdline}: {args!r}"
+            )
+        Core.requests += 1
         page = request["params"]["page"]
         if page == Core.fail_page:
             self.send_response(500)
@@ -102,8 +116,8 @@ def run(script, url, **env):
     environment = dict(
         os.environ,
         KOMODO_READ_URL=url,
-        KOMODO_MONITOR_KEY="key",
-        KOMODO_MONITOR_SECRET="secret",
+        KOMODO_MONITOR_KEY=KEY,
+        KOMODO_MONITOR_SECRET=SECRET,
         **env,
     )
     return subprocess.run(
@@ -150,6 +164,7 @@ def main():
     result = run(script, url)
     assert result.returncode != 0, "a failed page must fail the run"
     assert result.stdout == "", "a failed run must print nothing"
+    assert Core.requests >= 3, "the fake Core was never asked"
     print("komodo-alerts: ok")
 
 

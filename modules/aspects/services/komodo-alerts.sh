@@ -14,13 +14,15 @@ pages=0
 overflow=0
 lines=""
 while :; do
+  # The key and secret reach curl on stdin, never in its arguments, which any
+  # local user can read from the process list.
   response="$(curl --fail --silent --show-error --max-time 5 \
     --header 'Content-Type: application/json' \
-    --header "x-api-key: $KOMODO_MONITOR_KEY" \
-    --header "x-api-secret: $KOMODO_MONITOR_SECRET" \
+    --header @- \
     --data "$(jq --null-input --compact-output --argjson page "$page" \
       '{type: "ListAlerts", params: {query: {resolved: false}, page: $page}}')" \
-    "$url")"
+    "$url" <<<"x-api-key: $KOMODO_MONITOR_KEY
+x-api-secret: $KOMODO_MONITOR_SECRET")"
   pages=$((pages + 1))
   # Tags identify each alert: its id, and the disk path for disk alerts, which
   # Komodo opens per path. Tag values escape spaces, commas and equals signs.
