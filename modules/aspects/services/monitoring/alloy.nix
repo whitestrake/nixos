@@ -100,7 +100,7 @@
               {
                 listen = "127.0.0.1:9273";
                 # Komodo Core hosts serve their 10s alert poll separately.
-                namedrop = ["komodo_alert" "komodo_alert_collection"];
+                namedrop = ["komodo_alert" "komodo_alert_open" "komodo_alert_collection"];
                 metric_version = 1;
                 string_as_label = true;
                 export_timestamp = true;

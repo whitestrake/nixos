@@ -20,7 +20,7 @@ in {
       placeholder = config.sops.placeholder;
       komodoAlerts = pkgs.writeShellApplication {
         name = "komodo-alerts";
-        runtimeInputs = [pkgs.curl pkgs.jq];
+        runtimeInputs = [pkgs.coreutils pkgs.curl pkgs.jq];
         text = builtins.readFile ./komodo-alerts.sh;
       };
     in {
@@ -227,11 +227,12 @@ in {
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
           ];
-          # Komodo's open alerts (unreachable servers, disk and the like), one
-          # series per alert, valued with the time Komodo opened it. Polled
-          # every 10s for short-outage alerting, and served on their own
-          # endpoint so the 10s scrape does not cover every other series. The
-          # script follows ListAlerts' pages, which the http input cannot.
+          # Komodo's open alerts, in at most 50 series: one per unreachable
+          # server, valued with the time Komodo opened its alert, and 18 counts
+          # of every other open alert by type and level. Polled every 10s for
+          # short-outage alerting, and served on their own endpoint so the 10s
+          # scrape does not cover every other series. The script follows
+          # ListAlerts' pages, which the http input cannot.
           inputs.exec = [
             {
               alias = "komodo_alerts";
@@ -241,15 +242,15 @@ in {
               data_format = "influx";
             }
           ];
-          # Resolved alerts drop out of the poll; expire them within a few
-          # polls so the series ends soon after Komodo resolves the alert.
+          # A server whose alert resolves drops out of the poll; expire it
+          # within a few polls so its series ends soon after.
           outputs.prometheus_client = [
             {
               listen = "127.0.0.1:9275";
               metric_version = 1;
               export_timestamp = true;
               expiration_interval = "25s";
-              namepass = ["komodo_alert" "komodo_alert_collection"];
+              namepass = ["komodo_alert" "komodo_alert_open" "komodo_alert_collection"];
               collectors_exclude = ["gocollector" "process"];
             }
           ];
