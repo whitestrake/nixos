@@ -154,11 +154,12 @@ in {
       ];
       den.alloy.fleetAttributes."telemetry.komodo" = active;
 
-      # Telegraf polls Core's read API for failed operations, sync state and
-      # resource names, for alerts in Grafana. Core has no metrics endpoint and
+      # Telegraf polls Core's read API for failed operations, sync state,
+      # resource names and open alerts, for alerts in Grafana. Core has no metrics endpoint and
       # raises no alert of its own for a failed DeployStack or RunSync. The key
       # belongs to the telegraf-monitor service user, which has Read on stacks,
-      # syncs and procedures only.
+      # syncs, procedures and servers only; ListAlerts returns only alerts on
+      # resources it can read.
       sops.templates."telegraf-komodo.env".content = ''
         KOMODO_MONITOR_KEY=${placeholder.komodoMonitorKey}
         KOMODO_MONITOR_SECRET=${placeholder.komodoMonitorSecret}
@@ -220,6 +221,35 @@ in {
             (resourceNames "ListStacks")
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
+            # Komodo's open alerts (unreachable servers, disk and the like),
+            # one series per alert, valued with the time Komodo opened it.
+            # Polled every 10s for short-outage alerting, and served on their
+            # own endpoint so the 10s scrape does not cover every other series.
+            (komodoRead "komodo_alert" "ListAlerts" {
+                query.resolved = false;
+                page = 0;
+              } {
+                path = "alerts";
+                tags = ["level" "target_type" "target_id" "data_type" "data_data_name"];
+                included_keys = ["ts" "level" "target_type" "target_id" "data_type" "data_data_name"];
+                renames = {
+                  data_type = "alert_type";
+                  data_data_name = "name";
+                };
+              }
+              // {interval = "10s";})
+          ];
+          # Resolved alerts drop out of the poll; expire them within a few
+          # polls so the series ends soon after Komodo resolves the alert.
+          outputs.prometheus_client = [
+            {
+              listen = "127.0.0.1:9275";
+              metric_version = 1;
+              export_timestamp = true;
+              expiration_interval = "25s";
+              namepass = ["komodo_alert"];
+              collectors_exclude = ["gocollector" "process"];
+            }
           ];
           # Age of the newest database backup on disk, for an alert when the
           # nightly backup keeps missing. Komodo does not catch up a schedule
