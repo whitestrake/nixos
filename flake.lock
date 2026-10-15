@@ -1051,7 +1051,7 @@
     "whitestrake-github-keys": {
       "flake": false,
       "locked": {
-        "narHash": "sha256-7GAV6dLhov6hOd4psL7Hh5AloreXOZGF8NABikQZOjI=",
+        "narHash": "sha256-3qN58x+jTNXyNIjmMVkQUE0IWfPFimuSh17v5WYcb7I=",
         "type": "file",
         "url": "https://github.com/whitestrake.keys"
       },
