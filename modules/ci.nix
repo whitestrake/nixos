@@ -30,6 +30,10 @@
         path = ["x86_64-linux" "checks" "ci-cache"];
         output = self.checks.x86_64-linux.ci-cache;
       }
+      {
+        path = ["x86_64-linux" "checks" "komodo-alerts"];
+        output = self.checks.x86_64-linux.komodo-alerts;
+      }
     ];
 
   systemRoots =
@@ -65,6 +69,11 @@ in {
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_ci_cache.py
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_package_report.py
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_nix_fast_build.py
+      touch $out
+    '';
+    # The Komodo Core host's open-alert collector, against a fake read API.
+    checks.komodo-alerts = pkgs.runCommand "komodo-alerts-check" {nativeBuildInputs = [pkgs.bash pkgs.curl pkgs.jq];} ''
+      ${pkgs.python3}/bin/python3 -I ${../.github/scripts/check_komodo_alerts.py} ${./aspects/services/komodo-alerts.sh}
       touch $out
     '';
   };

@@ -18,6 +18,11 @@ in {
     }: let
       komodo = pkgs.unstable.komodo;
       placeholder = config.sops.placeholder;
+      komodoAlerts = pkgs.writeShellApplication {
+        name = "komodo-alerts";
+        runtimeInputs = [pkgs.curl pkgs.jq];
+        text = builtins.readFile ./komodo-alerts.sh;
+      };
     in {
       # MongoDB's own authorisation is on through extraConfig rather than
       # enableAuth: the module's auth bootstrap would add a second root user
@@ -221,23 +226,20 @@ in {
             (resourceNames "ListStacks")
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
-            # Komodo's open alerts (unreachable servers, disk and the like),
-            # one series per alert, valued with the time Komodo opened it.
-            # Polled every 10s for short-outage alerting, and served on their
-            # own endpoint so the 10s scrape does not cover every other series.
-            (komodoRead "komodo_alert" "ListAlerts" {
-                query.resolved = false;
-                page = 0;
-              } {
-                path = "alerts";
-                tags = ["level" "target_type" "target_id" "data_type" "data_data_name"];
-                included_keys = ["ts" "level" "target_type" "target_id" "data_type" "data_data_name"];
-                renames = {
-                  data_type = "alert_type";
-                  data_data_name = "name";
-                };
-              }
-              // {interval = "10s";})
+          ];
+          # Komodo's open alerts (unreachable servers, disk and the like), one
+          # series per alert, valued with the time Komodo opened it. Polled
+          # every 10s for short-outage alerting, and served on their own
+          # endpoint so the 10s scrape does not cover every other series. The
+          # script follows ListAlerts' pages, which the http input cannot.
+          inputs.exec = [
+            {
+              alias = "komodo_alerts";
+              commands = [(lib.getExe komodoAlerts)];
+              interval = "10s";
+              timeout = "8s";
+              data_format = "influx";
+            }
           ];
           # Resolved alerts drop out of the poll; expire them within a few
           # polls so the series ends soon after Komodo resolves the alert.
@@ -247,7 +249,7 @@ in {
               metric_version = 1;
               export_timestamp = true;
               expiration_interval = "25s";
-              namepass = ["komodo_alert"];
+              namepass = ["komodo_alert" "komodo_alert_collection"];
               collectors_exclude = ["gocollector" "process"];
             }
           ];
