@@ -39,8 +39,13 @@
       config,
       ...
     }: {
+      # Komodo API credentials, readable by the user so local sessions can
+      # call the API directly.
       sops.secrets = {
         githubToken = {};
+        komodoURL.owner = user.userName;
+        komodoKey.owner = user.userName;
+        komodoSecret.owner = user.userName;
       };
       sops.templates."gh-hosts" = {
         owner = user.userName;
