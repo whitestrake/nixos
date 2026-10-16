@@ -231,9 +231,9 @@ in {
           # watched server, named, valued with the time Komodo opened its
           # unreachable alert or 0 once Komodo reports it Ok, 18 counts of
           # every other open alert by type and level,
-          # and two collection samples. Polled every 10s for short-outage
-          # alerting, and served on their own endpoint so the 10s scrape does
-          # not cover every other series. The script follows ListAlerts' pages,
+          # and two collection samples. Polled every 60s, the rate Grafana
+          # Cloud evaluates alerts at, and served on their own endpoint so
+          # their scrape has its own sample fuse. The script follows ListAlerts' pages,
           # which the http input cannot, and refuses to run unless
           # telegraf-monitor can read every server (Read on all servers, not
           # per server), since a server it cannot see would read as removed.
@@ -241,7 +241,7 @@ in {
             {
               alias = "komodo_alerts";
               commands = [(lib.getExe komodoAlerts)];
-              interval = "10s";
+              interval = "60s";
               timeout = "8s";
               data_format = "influx";
             }
@@ -253,7 +253,7 @@ in {
               listen = "127.0.0.1:9275";
               metric_version = 1;
               export_timestamp = true;
-              expiration_interval = "25s";
+              expiration_interval = "150s";
               namepass = ["komodo_alert" "komodo_alert_open" "komodo_alert_collection"];
               collectors_exclude = ["gocollector" "process"];
             }
