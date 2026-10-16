@@ -227,12 +227,15 @@ in {
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
           ];
-          # Komodo's open alerts, in at most 50 series: one per unreachable
-          # server, valued with the time Komodo opened its alert, and 18 counts
-          # of every other open alert by type and level. Polled every 10s for
-          # short-outage alerting, and served on their own endpoint so the 10s
-          # scrape does not cover every other series. The script follows
-          # ListAlerts' pages, which the http input cannot.
+          # Komodo's servers and open alerts, in at most 50 series: one per
+          # server, named, valued with the time Komodo opened its unreachable
+          # alert or 0, 18 counts of every other open alert by type and level,
+          # and two collection samples. Polled every 10s for short-outage
+          # alerting, and served on their own endpoint so the 10s scrape does
+          # not cover every other series. The script follows ListAlerts' pages,
+          # which the http input cannot, and refuses to run unless
+          # telegraf-monitor can read every server (Read on all servers, not
+          # per server), since a server it cannot see would read as removed.
           inputs.exec = [
             {
               alias = "komodo_alerts";
@@ -242,8 +245,8 @@ in {
               data_format = "influx";
             }
           ];
-          # A server whose alert resolves drops out of the poll; expire it
-          # within a few polls so its series ends soon after.
+          # A server that leaves the inventory drops out of the poll; expire
+          # it within a few polls so its series ends soon after.
           outputs.prometheus_client = [
             {
               listen = "127.0.0.1:9275";

@@ -1,16 +1,19 @@
-"""Check the Komodo open-alert collector against a fake Core read API.
+"""Check the Komodo alert collector against a fake Core API.
 
 Usage: check_komodo_alerts.py SCRIPT
 
 Runs SCRIPT (modules/aspects/services/komodo-alerts.sh) under bash with
 errexit, nounset and pipefail, as writeShellApplication does, and checks that
-it exports only the fixed series set: one series per unreachable server, 18
-summary counts and two collection samples. It checks that repeated outages on
-one server reuse its series, that counts stay right for many alerts and for
-unknown types and levels, that a run cut short by the page cap or the server
-budget prints only the collection samples, that a failed or malformed read
-prints nothing, and that the API key and secret never reach a process's
-arguments.
+it exports only the fixed series set: one named series per inventory server,
+zero when it has no unreachable alert, 18 summary counts and two collection
+samples. It checks names with awkward characters, duplicate names and
+renames, that repeated outages on one server reuse its series, that counts
+stay right for many alerts and for unknown types and levels, that an alert on
+a server missing from the inventory is ignored, that a run cut short by the
+page cap or the server budget prints only the collection samples, that a
+failed or malformed read, an inconsistent inventory or a monitoring user that
+cannot read every server prints nothing, and that the API key and secret
+never reach a process's arguments.
 """
 
 import http.server
@@ -37,21 +40,44 @@ TYPES = [
     "Other",
 ]
 LEVELS = ["WARNING", "CRITICAL", "OTHER"]
+NAME = r"(?:[^\s,=\\]|\\[ ,=]|\\(?![ ,=]))+"
 LINE = re.compile(
-    r"^(komodo_alert,alert_type=ServerUnreachable,target_id=[A-Za-z0-9_-]+ ts=\d+i"
+    r"^(komodo_alert,alert_type=ServerUnreachable,target_id=[0-9a-f]{24},"
+    r"target_name=" + NAME + r" ts=\d+i"
     r"|komodo_alert_open,alert_type=[A-Za-z]+,level=[A-Z]+ count=\d+i"
-    r"|komodo_alert_collection pages=\d+i,overflow=[01]i) " + NS + "$"
+    r"|komodo_alert_collection servers=(-1|\d+)i,overflow=[01]i) " + NS + "$"
 )
+ADMIN = {"username": "telegraf-monitor", "admin": False, "all": {"Server": "Read"}}
 
 
-def alert(n, kind, ts, target="srv0", level="WARNING", **data):
+def sid(n):
+    """A Komodo server id: a 24-digit hex MongoDB object id."""
+    return f"{n:024x}"
+
+
+def server(n, name=None):
+    return {
+        "id": sid(n),
+        "name": f"host-{n}" if name is None else name,
+        "info": {"state": "Ok", "region": "", "version": "v2.3.3"},
+        "template": False,
+        "tags": [],
+    }
+
+
+def inventory(count):
+    return [server(n) for n in range(count)]
+
+
+def alert(n, kind, ts, target=None, level="WARNING", **data):
+    target = sid(0) if target is None else target
     return {
         "_id": {"$oid": f"a{n:05d}"},
         "ts": ts,
         "resolved": False,
         "level": level,
         "target": {"type": "Server", "id": target},
-        "data": {"type": kind, "data": {"id": target, "name": "host 0", **data}},
+        "data": {"type": kind, "data": {"id": target, "name": "old name", **data}},
         "resolved_ts": None,
     }
 
@@ -62,18 +88,19 @@ def unreachable(n, target, ts=NOW - 5000):
 
 class Core(http.server.BaseHTTPRequestHandler):
     alerts: ClassVar[list] = []
-    fail_page = None
-    # Raw response body for a page, for malformed replies.
+    servers: ClassVar[list] = []
+    user: ClassVar[dict] = ADMIN
+    # A ListAlerts page, or "servers" or "user", to answer with a 500.
+    fail = None
+    # Raw response bodies by ListAlerts page, "servers" or "user".
     raw: ClassVar[dict] = {}
     # Serve each page one alert early, so the last alert of a page shows up
     # again at the top of the next, as an insert between reads would cause.
     overlap = False
     requests = 0
+    order: ClassVar[list] = []
 
-    def do_POST(self):
-        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert request["type"] == "ListAlerts", request
-        assert request["params"]["query"] == {"resolved": False}, request
+    def check(self):
         assert (
             self.headers["x-api-key"] == KEY and self.headers["x-api-secret"] == SECRET
         )
@@ -88,40 +115,62 @@ class Core(http.server.BaseHTTPRequestHandler):
                 f"credentials in {cmdline}: {args!r}"
             )
         Core.requests += 1
-        page = request["params"]["page"]
-        if page == Core.fail_page:
+
+    def reply(self, key, value):
+        Core.order.append(key)
+        if key == Core.fail:
             self.send_response(500)
             self.end_headers()
             return
-        if page in Core.raw:
-            body = Core.raw[page].encode()
-        else:
-            start = page * PAGE - (1 if Core.overlap and page else 0)
-            chunk = Core.alerts[start : start + PAGE]
-            # As Komodo does: a full page always offers a next one.
-            body = json.dumps(
-                {"alerts": chunk, "next_page": page + 1 if len(chunk) == PAGE else None}
-            ).encode()
+        body = Core.raw[key].encode() if key in Core.raw else json.dumps(value).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        assert self.path == "/user", self.path
+        self.check()
+        self.reply("user", Core.user)
+
+    def do_POST(self):
+        assert self.path == "/read", self.path
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.check()
+        if request["type"] == "ListServers":
+            # Komodo pages ListServers at 30 unless asked for every server.
+            assert request["params"] == {"query": {}, "limit": 0}, request
+            self.reply("servers", Core.servers)
+            return
+        assert request["type"] == "ListAlerts", request
+        assert request["params"]["query"] == {"resolved": False}, request
+        page = request["params"]["page"]
+        start = page * PAGE - (1 if Core.overlap and page else 0)
+        chunk = Core.alerts[start : start + PAGE]
+        # As Komodo does: a full page always offers a next one.
+        self.reply(
+            page,
+            {"alerts": chunk, "next_page": page + 1 if len(chunk) == PAGE else None},
+        )
+
     def log_message(self, *args):
         pass
 
 
-def serve(alerts, fail_page=None, raw=None, overlap=False):
+def serve(alerts, servers=None, user=None, fail=None, raw=None, overlap=False):
     Core.alerts = alerts
-    Core.fail_page = fail_page
+    Core.servers = inventory(1) if servers is None else servers
+    Core.user = ADMIN if user is None else user
+    Core.fail = fail
     Core.raw = raw or {}
     Core.overlap = overlap
+    Core.order = []
 
 
 def run(script, url, **env):
     environment = dict(
         os.environ,
-        KOMODO_READ_URL=url,
+        KOMODO_URL=url,
         KOMODO_MONITOR_KEY=KEY,
         KOMODO_MONITOR_SECRET=SECRET,
         KOMODO_ALERT_NOW_MS=str(NOW),
@@ -149,10 +198,11 @@ def collect(script, url, **env):
     return lines
 
 
-def fails(script, url, why):
-    result = run(script, url)
+def fails(script, url, why, **env):
+    result = run(script, url, **env)
     assert result.returncode != 0, f"{why} must fail the run"
     assert result.stdout == "", f"{why} must print nothing"
+    assert KEY not in result.stderr and SECRET not in result.stderr, result.stderr
 
 
 def counts(lines):
@@ -166,38 +216,102 @@ def counts(lines):
     return out
 
 
+def servers_of(lines):
+    """Server series by id: (escaped name, value)."""
+    out = {}
+    for line in lines:
+        m = re.match(
+            r"komodo_alert,alert_type=ServerUnreachable,target_id=(\w+),"
+            r"target_name=(" + NAME + r") ts=(\d+)i ",
+            line,
+        )
+        if m:
+            out[m[1]] = (m[2], int(m[3]))
+    return out
+
+
 def down(lines):
-    return {
-        line.split(" ")[0]: line.split(" ")[1]
-        for line in lines
-        if line.startswith("komodo_alert,")
-    }
+    return {k: v for k, (_, v) in servers_of(lines).items() if v}
 
 
-def complete(lines, pages):
-    """A complete run: every bucket, controls last, nothing over budget."""
+def complete(lines, servers):
+    """A complete run: every server and bucket, controls last."""
+    assert len(servers_of(lines)) == servers, servers_of(lines)
     assert len(counts(lines)) == len(TYPES) * len(LEVELS), "missing summary buckets"
-    assert lines[-1] == f"komodo_alert_collection pages={pages}i,overflow=0i {NS}", (
-        lines[-1]
-    )
-    assert len(lines) <= 29 + 18 + 1, f"{len(lines)} samples is over budget"
+    assert (
+        lines[-1] == f"komodo_alert_collection servers={servers}i,overflow=0i {NS}"
+    ), lines[-1]
+    assert len(lines) == servers + 18 + 1, f"{len(lines)} samples"
+    assert len(lines) + 1 <= 50, f"{len(lines)} samples is over budget"
 
 
-def control_only(lines, pages):
-    assert lines == [f"komodo_alert_collection pages={pages}i,overflow=1i {NS}"], lines
+def control_only(lines):
+    assert lines == [f"komodo_alert_collection servers=-1i,overflow=1i {NS}"], lines
 
 
 def main():
     script = sys.argv[1]
-    server = http.server.HTTPServer(("127.0.0.1", 0), Core)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}/read"
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), Core)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_port}"
 
-    # Nothing open: explicit zeroes for every bucket.
+    # Nothing open: an explicit zero for the one server and every bucket.
     serve([])
     lines = collect(script, url)
     complete(lines, 1)
-    assert set(counts(lines).values()) == {0} and not down(lines)
+    assert set(counts(lines).values()) == {0}
+    assert servers_of(lines) == {sid(0): ("host-0", 0)}
+    # Alerts are read before the inventory, so a server deleted in between
+    # drops out instead of reading as healthy.
+    assert Core.order == ["user", 0, "servers"], Core.order
+
+    # An empty inventory is a complete observation with no server samples.
+    serve([], servers=[])
+    complete(collect(script, url), 0)
+
+    # A named unreachable server among healthy ones; the name comes from the
+    # inventory, not from the alert.
+    serve([unreachable(0, sid(1), NOW - 7000)], servers=inventory(3))
+    lines = collect(script, url)
+    complete(lines, 3)
+    assert servers_of(lines) == {
+        sid(0): ("host-0", 0),
+        sid(1): ("host-1", NOW - 7000),
+        sid(2): ("host-2", 0),
+    }
+
+    # Awkward names are escaped as Influx tag values: Telegraf reads a
+    # backslash before a space, comma or equals sign as an escape and any
+    # other backslash as itself. Two servers may share a name and stay
+    # distinct by id. A server listed twice under one name is one server.
+    names = {
+        0: "web server",
+        1: "a,b=c",
+        2: "back\\slash",
+        3: "café ☕",
+        4: "web server",
+        5: "x\\,y\\ z",
+        6: 'quote"d',
+    }
+    serve(
+        [unreachable(0, sid(4))],
+        servers=[server(n, name) for n, name in names.items()] + [server(0, names[0])],
+    )
+    lines = collect(script, url)
+    complete(lines, 7)
+    assert servers_of(lines) == {
+        sid(0): ("web\\ server", 0),
+        sid(1): ("a\\,b\\=c", 0),
+        sid(2): ("back\\slash", 0),
+        sid(3): ("café\\ ☕", 0),
+        sid(4): ("web\\ server", NOW - 5000),
+        sid(5): ("x\\\\,y\\\\ z", 0),
+        sid(6): ('quote"d', 0),
+    }
+
+    # A rename shows the current name under the same id.
+    serve([unreachable(0, sid(0))], servers=[server(0, "renamed")])
+    assert servers_of(collect(script, url)) == {sid(0): ("renamed", NOW - 5000)}
 
     # 999 alerts across ten pages land in the 18 fixed buckets. Unknown types
     # and levels go to Other and OTHER; two disk alerts on one server count
@@ -217,7 +331,7 @@ def main():
     ]
     serve(many)
     lines = collect(script, url)
-    complete(lines, 10)
+    complete(lines, 1)
     want = {(t, lv): 0 for t in TYPES for lv in LEVELS}
     for a in many:
         t = a["data"]["type"] if a["data"]["type"] in TYPES else "Other"
@@ -229,12 +343,12 @@ def main():
 
     # Exactly 1,000 fills the tenth page, so Komodo offers an eleventh: the
     # page cap stops there and only the collection samples go out.
-    serve(many + [alert(999, "ServerCpu", NOW - 61000)])
-    control_only(collect(script, url), 10)
+    serve([*many, alert(999, "ServerCpu", NOW - 61000)])
+    control_only(collect(script, url))
 
     # The page cap on its own, at one page.
     serve(many[:101])
-    control_only(collect(script, url, KOMODO_ALERT_MAX_PAGES="1"), 1)
+    control_only(collect(script, url, KOMODO_ALERT_MAX_PAGES="1"))
 
     # Only alerts open for more than a minute at the run's start are counted.
     serve(
@@ -247,48 +361,84 @@ def main():
     )
     assert counts(collect(script, url))[("ServerCpu", "WARNING")] == 2
 
-    # Unreachable servers: one series each, valued with the earliest open
-    # alert, whatever their age (Grafana applies the ten seconds).
+    # Unreachable servers are valued with the earliest open alert, whatever
+    # its age (Grafana applies the pending period).
     serve(
         [
-            unreachable(0, "srv0", NOW - 3000),
-            unreachable(1, "srv0", NOW - 9000),
-            unreachable(2, "srv1", NOW - 120000),
-        ]
+            unreachable(0, sid(0), NOW - 3000),
+            unreachable(1, sid(0), NOW - 9000),
+            unreachable(2, sid(1), NOW - 120000),
+        ],
+        servers=inventory(2),
     )
-    assert down(collect(script, url)) == {
-        "komodo_alert,alert_type=ServerUnreachable,target_id=srv0": f"ts={NOW - 9000}i",
-        "komodo_alert,alert_type=ServerUnreachable,target_id=srv1": f"ts={NOW - 120000}i",
-    }
+    assert down(collect(script, url)) == {sid(0): NOW - 9000, sid(1): NOW - 120000}
+
+    # An alert on a server the inventory no longer lists is ignored: it adds
+    # no series, healthy or not, so a removed server can retire.
+    serve([unreachable(0, sid(7)), unreachable(1, sid(1))], servers=inventory(2))
+    lines = collect(script, url)
+    complete(lines, 2)
+    assert servers_of(lines) == {sid(0): ("host-0", 0), sid(1): ("host-1", NOW - 5000)}
 
     # 1,000 outages in turn on one server keep one series; only its value moves.
     seen = set()
     for n in range(1000):
-        serve([unreachable(n, "srv0", NOW - 20000 + n)])
-        series = down(collect(script, url))
-        assert list(series.values()) == [f"ts={NOW - 20000 + n}i"], series
-        seen |= set(series)
-    assert len(seen) == 1, seen
+        serve([unreachable(n, sid(0), NOW - 20000 + n)])
+        lines = collect(script, url)
+        assert down(lines) == {sid(0): NOW - 20000 + n}
+        seen |= {line.split(" ")[0] for line in lines}
+    assert len(seen) == 1 + 18 + 1, len(seen)
 
-    # 29 unreachable servers fit the budget; a 30th sends only the controls.
-    serve([unreachable(n, f"srv{n}") for n in range(29)])
+    # 29 servers fit the budget, healthy or not; a 30th sends only the
+    # controls, whatever the alerts.
+    serve([unreachable(n, sid(n)) for n in range(29)], servers=inventory(29))
     lines = collect(script, url)
-    complete(lines, 1)
+    complete(lines, 29)
     assert len(down(lines)) == 29
-    serve([unreachable(n, f"srv{n}") for n in range(30)])
-    control_only(collect(script, url), 1)
+    serve([], servers=inventory(29))
+    complete(collect(script, url), 29)
+    serve([], servers=inventory(30))
+    control_only(collect(script, url))
     # The budget counts servers, not alerts.
-    serve([unreachable(n, f"srv{n % 29}") for n in range(60)])
+    serve([unreachable(n, sid(n % 29)) for n in range(60)], servers=inventory(29))
     assert len(down(collect(script, url))) == 29
 
     # An alert read twice across pages counts once.
     serve(many[:150], overlap=True)
     lines = collect(script, url)
-    complete(lines, 2)
+    complete(lines, 1)
     assert sum(counts(lines).values()) == 150
 
-    # Failed and malformed reads fail the run and print nothing.
-    serve(many[:150], fail_page=1)
+    # The monitoring user must read every server: an admin, or Read or more on
+    # all servers. Per-server permissions are not enough, since a server the
+    # user cannot see would look removed.
+    for user in [
+        {"admin": True, "all": {}},
+        {"admin": False, "all": {"Server": "Execute"}},
+        {"admin": False, "all": {"Server": {"level": "Write", "specific": []}}},
+    ]:
+        serve([], user=user)
+        complete(collect(script, url), 1)
+    for user, why in [
+        ({"admin": False, "all": {}}, "a user without Read on all servers"),
+        ({"admin": False, "all": {"Server": "None"}}, "a user with None on servers"),
+        (
+            {"admin": False, "all": {"Server": {"level": "None", "specific": []}}},
+            "a user with None on servers and specifics",
+        ),
+        ({"admin": False, "all": {"Stack": "Read"}}, "a user with Read on stacks"),
+        ({"admin": "true"}, "an admin flag that is not a boolean"),
+    ]:
+        serve([], user=user)
+        fails(script, url, why)
+    serve([], fail="user")
+    fails(script, url, "a failed user read")
+    serve([], raw={"user": "not json"})
+    fails(script, url, "a non-JSON user read")
+
+    # Failed and malformed reads fail the run and print nothing, not even the
+    # controls.
+    serve(many[:150], fail=1)
     fails(script, url, "a failed second page")
     for raw, why in [
         ("not json", "a non-JSON page"),
@@ -300,13 +450,41 @@ def main():
     for broken, why in [
         ({"ts": None}, "an alert without a time"),
         ({"level": None}, "an alert without a level"),
-        ({"target": {"type": "Server", "id": "a b,c=d"}}, "an unsafe target id"),
+        ({"target": {"type": "Server", "id": 7}}, "a non-string target id"),
         ({"data": {}}, "an alert without a type"),
     ]:
-        serve([{**unreachable(0, "srv0"), **broken}])
+        serve([{**unreachable(0, sid(0)), **broken}])
+        fails(script, url, why)
+    serve([unreachable(0, sid(0))], fail="servers")
+    fails(script, url, "a failed inventory read")
+    for raw, why in [
+        ("not json", "a non-JSON inventory"),
+        ('{"servers": []}', "an inventory that is not a list"),
+        ("[] []", "two inventories in one response"),
+    ]:
+        serve([], raw={"servers": raw})
+        fails(script, url, why)
+    for servers, why in [
+        ([{**server(0), "name": ""}], "an empty name"),
+        ([{**server(0), "name": None}], "a missing name"),
+        ([{**server(0), "name": "two\nlines"}], "a name with a line break"),
+        ([{**server(0), "name": "tab\there"}], "a name with a tab"),
+        ([{**server(0), "name": "del\x7f"}], "a name with a control character"),
+        ([{**server(0), "name": "ends\\"}], "a name ending in a backslash"),
+        ([{**server(0), "id": "a b,c=d"}], "an unsafe server id"),
+        ([{**server(0), "id": "__collection__"}], "the reserved collection id"),
+        ([{**server(0), "id": sid(0xABC).upper()}], "an id that is not lower hex"),
+        ([server(0, "one"), server(0, "two")], "one id under two names"),
+        (["host-0"], "an inventory entry that is not an object"),
+    ]:
+        serve([], servers=servers)
         fails(script, url, why)
 
-    assert Core.requests >= 1000, "the fake Core was never asked"
+    # A run out of time stops before its next request.
+    serve([])
+    fails(script, url, "a run past its deadline", KOMODO_ALERT_DEADLINE="0")
+
+    assert Core.requests >= 3000, "the fake Core was never asked"
     print("komodo-alerts: ok")
 
 
