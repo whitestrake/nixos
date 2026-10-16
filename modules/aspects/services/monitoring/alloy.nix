@@ -156,9 +156,16 @@
 
       den.deploy.health = {
         requiredSystemdUnits = ["telegraf.service"];
-        requiredCommands.telegraf = ''
+        # --test runs without the service's environment files, so an exec
+        # input that needs them (the Komodo alert collector) would fail here
+        # while working in the service. Exec inputs read remote APIs, and
+        # Grafana alerts on their collection, so a deploy does not hinge on
+        # them.
+        requiredCommands.telegraf = let
+          inputs = lib.filter (name: name != "exec") (lib.attrNames config.services.telegraf.extraConfig.inputs);
+        in ''
           ${lib.getExe pkgs.curl} --fail --silent --show-error --max-time 5 http://127.0.0.1:9273/metrics >/dev/null &&
-          ${config.systemd.services.telegraf.serviceConfig.ExecStart} --test >/dev/null
+          ${config.systemd.services.telegraf.serviceConfig.ExecStart} --test --input-filter ${lib.concatStringsSep ":" inputs} >/dev/null
         '';
       };
 
