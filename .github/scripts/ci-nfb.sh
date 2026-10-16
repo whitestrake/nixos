@@ -56,6 +56,8 @@ case "$projection" in
   linux-checks)
     flake='.#ci.linux'
     options+=(--select 'ci: { inherit (ci) checks; }')
+    # Pushed checks substitute on later runs until their inputs change.
+    if [ -n "${CACHIX_AUTH_TOKEN:-}" ]; then options+=(--cachix-cache whitestrake); fi
     ;;
   darwin)
     if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then options+=(--cachix-cache whitestrake); fi
