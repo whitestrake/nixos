@@ -75,6 +75,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       CI_PUBLISH_CHECKS: "true"
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
     steps:
       # Off the critical path: decides whether Package Report runs at all.
       - name: Detect flake.lock changes against master
@@ -97,6 +98,13 @@ jobs:
         uses: ./.github/actions/ci-cache-restore
         with:
           component: linux-seed-x86_64-linux
+      - name: Configure Cachix
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: whitestrake
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
       - name: Run source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
   # Nix substitutes a locked input from a binary cache before it contacts GitHub,
