@@ -18,6 +18,11 @@ in {
     }: let
       komodo = pkgs.unstable.komodo;
       placeholder = config.sops.placeholder;
+      komodoAlerts = pkgs.writeShellApplication {
+        name = "komodo-alerts";
+        runtimeInputs = [pkgs.coreutils pkgs.curl pkgs.jq];
+        text = builtins.readFile ./komodo-alerts.sh;
+      };
     in {
       # MongoDB's own authorisation is on through extraConfig rather than
       # enableAuth: the module's auth bootstrap would add a second root user
@@ -154,11 +159,12 @@ in {
       ];
       den.alloy.fleetAttributes."telemetry.komodo" = active;
 
-      # Telegraf polls Core's read API for failed operations, sync state and
-      # resource names, for alerts in Grafana. Core has no metrics endpoint and
+      # Telegraf polls Core's read API for failed operations, sync state,
+      # resource names and open alerts, for alerts in Grafana. Core has no metrics endpoint and
       # raises no alert of its own for a failed DeployStack or RunSync. The key
       # belongs to the telegraf-monitor service user, which has Read on stacks,
-      # syncs and procedures only.
+      # syncs, procedures and servers only; ListAlerts returns only alerts on
+      # resources it can read.
       sops.templates."telegraf-komodo.env".content = ''
         KOMODO_MONITOR_KEY=${placeholder.komodoMonitorKey}
         KOMODO_MONITOR_SECRET=${placeholder.komodoMonitorSecret}
@@ -220,6 +226,37 @@ in {
             (resourceNames "ListStacks")
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
+          ];
+          # Komodo's servers and open alerts, in at most 50 series: one per
+          # watched server, named, valued with the time Komodo opened its
+          # unreachable alert or 0 once Komodo reports it Ok, 18 counts of
+          # every other open alert by type and level,
+          # and two collection samples. Polled every 10s for short-outage
+          # alerting, and served on their own endpoint so the 10s scrape does
+          # not cover every other series. The script follows ListAlerts' pages,
+          # which the http input cannot, and refuses to run unless
+          # telegraf-monitor can read every server (Read on all servers, not
+          # per server), since a server it cannot see would read as removed.
+          inputs.exec = [
+            {
+              alias = "komodo_alerts";
+              commands = [(lib.getExe komodoAlerts)];
+              interval = "10s";
+              timeout = "8s";
+              data_format = "influx";
+            }
+          ];
+          # A server that leaves the inventory drops out of the poll; expire
+          # it within a few polls so its series ends soon after.
+          outputs.prometheus_client = [
+            {
+              listen = "127.0.0.1:9275";
+              metric_version = 1;
+              export_timestamp = true;
+              expiration_interval = "25s";
+              namepass = ["komodo_alert" "komodo_alert_open" "komodo_alert_collection"];
+              collectors_exclude = ["gocollector" "process"];
+            }
           ];
           # Age of the newest database backup on disk, for an alert when the
           # nightly backup keeps missing. Komodo does not catch up a schedule
