@@ -228,8 +228,9 @@ in {
             (resourceNames "ListResourceSyncs")
           ];
           # Komodo's servers and open alerts, in at most 50 series: one per
-          # server, named, valued with the time Komodo opened its unreachable
-          # alert or 0, 18 counts of every other open alert by type and level,
+          # watched server, named, valued with the time Komodo opened its
+          # unreachable alert or 0 once Komodo reports it Ok, 18 counts of
+          # every other open alert by type and level,
           # and two collection samples. Polled every 10s for short-outage
           # alerting, and served on their own endpoint so the 10s scrape does
           # not cover every other series. The script follows ListAlerts' pages,

@@ -5,8 +5,11 @@ Usage: check_komodo_alerts.py SCRIPT
 Runs SCRIPT (modules/aspects/services/komodo-alerts.sh) under bash with
 errexit, nounset and pipefail, as writeShellApplication does, and checks that
 it exports only the fixed series set: one named series per inventory server,
-zero when it has no unreachable alert, 18 summary counts and two collection
-samples. It checks names with awkward characters, duplicate names and
+zero only when it has no unreachable alert and Komodo reports it Ok, 18
+summary counts and two collection samples. It checks that an alert resolving
+between page reads cannot hide an older one, that an unreachable server with
+no open alert (as while Komodo deletes it) fails the run, and that disabled
+servers and servers with unreachable alerts off are left out. It checks names with awkward characters, duplicate names and
 renames, that repeated outages on one server reuse its series, that counts
 stay right for many alerts and for unknown types and levels, that an alert on
 a server missing from the inventory is ignored, that a run cut short by the
@@ -55,11 +58,16 @@ def sid(n):
     return f"{n:024x}"
 
 
-def server(n, name=None):
+def server(n, name=None, state="Ok", alerts=True):
     return {
         "id": sid(n),
         "name": f"host-{n}" if name is None else name,
-        "info": {"state": "Ok", "region": "", "version": "v2.3.3"},
+        "info": {
+            "state": state,
+            "send_unreachable_alerts": alerts,
+            "region": "",
+            "version": "v2.3.3",
+        },
         "template": False,
         "tags": [],
     }
@@ -90,13 +98,15 @@ class Core(http.server.BaseHTTPRequestHandler):
     alerts: ClassVar[list] = []
     servers: ClassVar[list] = []
     user: ClassVar[dict] = ADMIN
-    # A ListAlerts page, or "servers" or "user", to answer with a 500.
+    # A ListAlerts read (counted from 0), or "servers" or "user", to answer
+    # with a 500.
     fail = None
-    # Raw response bodies by ListAlerts page, "servers" or "user".
+    # Raw response bodies by ListAlerts read, "servers" or "user".
     raw: ClassVar[dict] = {}
-    # Serve each page one alert early, so the last alert of a page shows up
-    # again at the top of the next, as an insert between reads would cause.
-    overlap = False
+    # Called with each ListAlerts read's number once it is answered, to change
+    # the open alerts between reads.
+    between = None
+    reads = 0
     requests = 0
     order: ClassVar[list] = []
 
@@ -143,27 +153,42 @@ class Core(http.server.BaseHTTPRequestHandler):
             self.reply("servers", Core.servers)
             return
         assert request["type"] == "ListAlerts", request
-        assert request["params"]["query"] == {"resolved": False}, request
-        page = request["params"]["page"]
-        start = page * PAGE - (1 if Core.overlap and page else 0)
-        chunk = Core.alerts[start : start + PAGE]
-        # As Komodo does: a full page always offers a next one.
+        params = request["params"]
+        assert params["page"] == 0, request
+        query = dict(params["query"])
+        bound = query.pop("ts", {"$lte": None})
+        assert query == {"resolved": False} and list(bound) == ["$lte"], request
+
+        # As Komodo does: newest first, 100 a page. The sort is stable, so
+        # alerts sharing a time come back in the same order every read.
+        def ts(a):
+            return a["ts"] if isinstance(a["ts"], (int, float)) else 0
+
+        chunk = sorted(
+            (a for a in Core.alerts if bound["$lte"] is None or ts(a) <= bound["$lte"]),
+            key=lambda a: -ts(a),
+        )[:PAGE]
+        read = Core.reads
+        Core.reads += 1
+        # A full page always offers a next one.
         self.reply(
-            page,
-            {"alerts": chunk, "next_page": page + 1 if len(chunk) == PAGE else None},
+            read, {"alerts": chunk, "next_page": 1 if len(chunk) == PAGE else None}
         )
+        if Core.between:
+            Core.between(read)
 
     def log_message(self, *args):
         pass
 
 
-def serve(alerts, servers=None, user=None, fail=None, raw=None, overlap=False):
-    Core.alerts = alerts
+def serve(alerts, servers=None, user=None, fail=None, raw=None, between=None):
+    Core.alerts = list(alerts)
     Core.servers = inventory(1) if servers is None else servers
     Core.user = ADMIN if user is None else user
     Core.fail = fail
     Core.raw = raw or {}
-    Core.overlap = overlap
+    Core.between = between
+    Core.reads = 0
     Core.order = []
 
 
@@ -313,7 +338,8 @@ def main():
     serve([unreachable(0, sid(0))], servers=[server(0, "renamed")])
     assert servers_of(collect(script, url)) == {sid(0): ("renamed", NOW - 5000)}
 
-    # 999 alerts across ten pages land in the 18 fixed buckets. Unknown types
+    # 990 alerts across ten reads land in the 18 fixed buckets (each read
+    # after the first repeats the oldest alert of the one before). Unknown types
     # and levels go to Other and OTHER; two disk alerts on one server count
     # twice in one bucket.
     kinds = ["ServerCpu", "ServerMem", "ServerDisk", "ServerVersionMismatch"]
@@ -323,11 +349,11 @@ def main():
         alert(
             n,
             kinds[n % len(kinds)],
-            NOW - 61000,
+            NOW - 61000 - n,
             level=levels[n % 3 if n % 7 else 3],
             path=f"/mnt/{n}",
         )
-        for n in range(999)
+        for n in range(990)
     ]
     serve(many)
     lines = collect(script, url)
@@ -338,12 +364,12 @@ def main():
         lv = a["level"] if a["level"] in LEVELS else "OTHER"
         want[(t, lv)] += 1
     assert counts(lines) == want, counts(lines)
-    assert sum(counts(lines).values()) == 999 and not down(lines)
+    assert sum(counts(lines).values()) == 990 and not down(lines)
     assert want[("ServerDisk", "WARNING")] >= 2
 
-    # Exactly 1,000 fills the tenth page, so Komodo offers an eleventh: the
-    # page cap stops there and only the collection samples go out.
-    serve([*many, alert(999, "ServerCpu", NOW - 61000)])
+    # One more fills the tenth read, so Komodo offers another: the read cap
+    # stops there and only the collection samples go out.
+    serve([*many, alert(990, "ServerCpu", NOW - 70000)])
     control_only(collect(script, url))
 
     # The page cap on its own, at one page.
@@ -403,11 +429,85 @@ def main():
     serve([unreachable(n, sid(n % 29)) for n in range(60)], servers=inventory(29))
     assert len(down(collect(script, url))) == 29
 
-    # An alert read twice across pages counts once.
-    serve(many[:150], overlap=True)
+    # Pages are read by time, so an alert resolving between reads cannot push
+    # an older one past a page boundary. With offsets, resolving the newest
+    # of 100 newer alerts after the first page would shift the server's
+    # unreachable alert from the top of page two to the bottom of page one,
+    # already read, and the server would read as healthy.
+    newer = [alert(n, "ServerCpu", NOW - 61000 - n) for n in range(100)]
+    oldest = unreachable(100, sid(0), NOW - 900000)
+
+    def resolve_newest(read):
+        if read == 0:
+            Core.alerts.remove(newer[0])
+
+    serve(
+        [*newer, oldest],
+        servers=[server(0, state="NotOk")],
+        between=resolve_newest,
+    )
     lines = collect(script, url)
     complete(lines, 1)
+    assert down(lines) == {sid(0): NOW - 900000}, servers_of(lines)
+    # The resolved alert was read while open; none of the others is lost.
+    assert counts(lines)[("ServerCpu", "WARNING")] == 100
+    assert Core.order == ["user", 0, 1, "servers"], Core.order
+
+    # An alert opened between reads is newer than every later read asks for,
+    # so it is neither counted twice nor in the way.
+    def open_newer(read):
+        if read == 0:
+            Core.alerts.append(alert(999, "ServerCpu", NOW - 1000))
+
+    serve([*newer, oldest], between=open_newer)
+    lines = collect(script, url)
+    assert counts(lines)[("ServerCpu", "WARNING")] == 100
+    assert down(lines) == {sid(0): NOW - 900000}
+
+    # Alerts sharing a time across a page boundary are each read once.
+    tied = [alert(n, "ServerMem", NOW - 70000) for n in range(80)]
+    serve(
+        [alert(100 + n, "ServerCpu", NOW - 61000 - n) for n in range(60)]
+        + tied
+        + [alert(200 + n, "ServerDisk", NOW - 80000 - n) for n in range(10)]
+    )
+    lines = collect(script, url)
+    complete(lines, 1)
+    assert counts(lines)[("ServerMem", "WARNING")] == 80
     assert sum(counts(lines).values()) == 150
+    # More than a page sharing one time can never be read past: overflow.
+    serve([alert(n, "ServerMem", NOW - 70000) for n in range(101)])
+    control_only(collect(script, url))
+
+    # A server is reported reachable only when Komodo says it is Ok. Komodo
+    # resolves a server's alerts before deleting it, and opens one only on its
+    # second failed check, so an unreachable server with no open alert fails
+    # the run rather than reading as recovered.
+    serve([], servers=[server(0), server(1, state="NotOk")])
+    fails(script, url, "an unreachable server with no open alert")
+    # With its alert open it is reported as unreachable, whatever its state.
+    for state in ["NotOk", "Ok"]:
+        serve([unreachable(0, sid(1))], servers=[server(0), server(1, state=state)])
+        assert down(collect(script, url)) == {sid(1): NOW - 5000}
+    # Komodo never alerts on a disabled server or one with unreachable alerts
+    # off, and closes what it had, so they are left out, alert or not: their
+    # series retire as no longer reported.
+    serve(
+        [unreachable(0, sid(1)), unreachable(1, sid(3))],
+        servers=[
+            server(0),
+            server(1, state="Disabled"),
+            server(2, state="NotOk", alerts=False),
+            server(3, state="NotOk", alerts=False),
+            server(4, alerts=False),
+            server(5, state="NotOk"),
+        ],
+    )
+    fails(script, url, "an unreachable server with no open alert among others")
+    Core.servers.pop()
+    lines = collect(script, url)
+    complete(lines, 1)
+    assert servers_of(lines) == {sid(0): ("host-0", 0)}
 
     # The monitoring user must read every server: an admin, or Read or more on
     # all servers. Per-server permissions are not enough, since a server the
@@ -439,7 +539,7 @@ def main():
     # Failed and malformed reads fail the run and print nothing, not even the
     # controls.
     serve(many[:150], fail=1)
-    fails(script, url, "a failed second page")
+    fails(script, url, "a failed second read")
     for raw, why in [
         ("not json", "a non-JSON page"),
         ('{"alerts": "x", "next_page": null}', "a page without an alert list"),
@@ -449,6 +549,7 @@ def main():
         fails(script, url, why)
     for broken, why in [
         ({"ts": None}, "an alert without a time"),
+        ({"ts": "1"}, "an alert with a time that is not a number"),
         ({"level": None}, "an alert without a level"),
         ({"target": {"type": "Server", "id": 7}}, "a non-string target id"),
         ({"data": {}}, "an alert without a type"),
@@ -475,6 +576,22 @@ def main():
         ([{**server(0), "id": "__collection__"}], "the reserved collection id"),
         ([{**server(0), "id": sid(0xABC).upper()}], "an id that is not lower hex"),
         ([server(0, "one"), server(0, "two")], "one id under two names"),
+        ([server(0), server(0, state="NotOk")], "one id in two states"),
+        ([{**server(0), "info": None}], "a server without info"),
+        (
+            [
+                {
+                    **server(0),
+                    "info": {"state": "Unknown", "send_unreachable_alerts": True},
+                }
+            ],
+            "an unknown state",
+        ),
+        ([{**server(0), "info": {"state": "Ok"}}], "no unreachable alert setting"),
+        (
+            [{**server(0), "info": {"state": "Ok", "send_unreachable_alerts": "true"}}],
+            "a setting that is not a boolean",
+        ),
         (["host-0"], "an inventory entry that is not an object"),
     ]:
         serve([], servers=servers)
