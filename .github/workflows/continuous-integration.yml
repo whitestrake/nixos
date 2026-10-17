@@ -139,7 +139,15 @@ jobs:
           # The dry run derives every source path from the lock file's narHash
           # without fetching, so an unchanged lock costs a few narinfo lookups.
           archive="$(nix flake archive --dry-run --json)"
-          mapfile -t sources < <(jq -r '.inputs | .. | .path? // empty' <<< "$archive" | sort -u)
+          # den also fetches nix-effects and gen with builtins.fetchTarball pinned
+          # by sha256, which Nix substitutes the same way. Evaluating the list
+          # fetches them (small), so they are checked even when every input is cached.
+          fetched="$(nix eval --impure --json --expr \
+            'import ./.github/scripts/den-fetched-sources.nix { den = builtins.fetchTree (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.den.locked; }')"
+          mapfile -t sources < <({
+            jq -r '.inputs | .. | .path? // empty' <<< "$archive"
+            jq -r '.[]' <<< "$fetched"
+          } | sort -u)
           missing=()
           for source in "${sources[@]}"; do
             for cache in "${caches[@]}"; do
@@ -148,19 +156,11 @@ jobs:
             missing+=("$source")
           done
           if [ "${#missing[@]}" = 0 ]; then
-            echo "Every flake input source is already cached"
+            echo "Every source is already cached"
             exit 0
           fi
           printf 'Caching %s\n' "${missing[@]}"
           nix flake archive
-          # den fetches nix-effects (and gen, when inputs.gen is absent) with
-          # builtins.fetchTarball pinned by sha256, which Nix substitutes the same way.
-          lock="$(jq -r '.inputs.den.path' <<< "$archive")/templates/ci/flake.lock"
-          while IFS= read -r expr; do
-            missing+=("$(nix eval --raw --expr "$expr")")
-          done < <(jq -r '(.nodes["nix-effects"], .nodes.gen) | .locked | select(.type == "github")
-            | "builtins.fetchTarball { url = \"https://github.com/\(.owner)/\(.repo)/archive/\(.rev).zip\"; sha256 = \"\(.narHash)\"; }"' \
-            "$lock" 2>/dev/null || true)
           cachix push whitestrake "${missing[@]}"
   darwin-builds:
     name: Darwin

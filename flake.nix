@@ -28,13 +28,6 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs-lib";
     };
-    gen = {
-      url = "github:sini/gen/a51ec1d9272badc400c08b8e498346b73d1ab061";
-      inputs = {
-        import-tree.follows = "import-tree";
-        nixpkgs.follows = "nixpkgs";
-      };
-    };
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
