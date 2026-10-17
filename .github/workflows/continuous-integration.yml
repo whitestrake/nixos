@@ -108,9 +108,8 @@ jobs:
       - name: Run source checks
         run: bash .github/scripts/ci-nfb.sh linux-checks x86_64-linux
   # Nix substitutes a locked input from a binary cache before it contacts GitHub,
-  # so caching every input's source tree, and every source den and gen fetch
-  # during evaluation, lets a store without GitHub archive access (such as a
-  # Claude cloud session) evaluate this flake. Off the critical path.
+  # so caching every input's source tree lets a store without GitHub API access
+  # (such as a Claude cloud session) evaluate this flake. Off the critical path.
   cache-sources:
     name: Cache sources
     runs-on: ubuntu-24.04
@@ -140,11 +139,11 @@ jobs:
           # The dry run derives every source path from the lock file's narHash
           # without fetching, so an unchanged lock costs a few narinfo lookups.
           archive="$(nix flake archive --dry-run --json)"
-          # den also fetches nix-effects and gen, and gen's libraries fetch each
-          # other, with builtins.fetchTarball / fetchTree pinned by narHash, which
-          # Nix substitutes the same way. Evaluating the list fetches them (small).
+          # den also fetches nix-effects and gen with builtins.fetchTarball pinned
+          # by sha256, which Nix substitutes the same way. Evaluating the list
+          # fetches them (small), so they are checked even when every input is cached.
           fetched="$(nix eval --impure --json --expr \
-            'import ./.github/scripts/den-fetched-sources.nix { den = (builtins.getFlake (toString ./.)).inputs.den; }')"
+            'import ./.github/scripts/den-fetched-sources.nix { den = builtins.fetchTree (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.den.locked; }')"
           mapfile -t sources < <({
             jq -r '.inputs | .. | .path? // empty' <<< "$archive"
             jq -r '.[]' <<< "$fetched"
