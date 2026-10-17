@@ -228,6 +228,25 @@ jobs:
       - name: Format package updates
         if: steps.update.outputs.changed == 'true'
         run: nix fmt
+      # Before the PR opens, so its Darwin lane can restore the bumped nixpkgs
+      # trees (see the script). Only a speed-up, so it never blocks the PR.
+      - name: Export Darwin nixpkgs trees
+        id: darwin-sources
+        if: steps.update.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(bash .github/scripts/darwin-sources.sh paths)
+          nix-store --realise "${paths[@]}" > /dev/null
+          nix copy --to "file://$RUNNER_TEMP/darwin-sources?compression=zstd" "${paths[@]}"
+          echo "key=darwin-sources-$(bash .github/scripts/darwin-sources.sh key)" >> "$GITHUB_OUTPUT"
+      - name: Save Darwin nixpkgs trees
+        if: steps.darwin-sources.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/darwin-sources
+          key: ${{ steps.darwin-sources.outputs.key }}
       - name: Create GitHub App token
         id: app-token
         if: steps.mode.outputs.mode != 'skip' && (steps.update.outputs.changed == 'true' || (!inputs.package && steps.update.outputs.failed != 'true'))

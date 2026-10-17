@@ -192,6 +192,25 @@ jobs:
           mode: hot
           configure-cachix: "true"
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Look up Darwin nixpkgs trees
+        id: darwin-sources
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          missing=false
+          while IFS= read -r path; do
+            nix path-info "$path" > /dev/null 2>&1 || missing=true
+          done < <(bash .github/scripts/darwin-sources.sh paths)
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+          echo "key=darwin-sources-$(bash .github/scripts/darwin-sources.sh key)" >> "$GITHUB_OUTPUT"
+      # Saved by Update Packages after a lock bump; ci-nfb.sh substitutes from it.
+      - name: Restore Darwin nixpkgs trees
+        if: steps.darwin-sources.outputs.missing == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/darwin-sources
+          key: ${{ steps.darwin-sources.outputs.key }}
       - name: Build Darwin configurations
         timeout-minutes: ${{ inputs.cache_mode == 'cold' && 330 || 60 }}
         env:
