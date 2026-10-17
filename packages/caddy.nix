@@ -15,14 +15,7 @@
     inherit version src vendorHash;
   });
 
-  # Older nixpkgs builds withPlugins from a `caddy` argument; newer builds it
-  # from finalAttrs.finalPackage and has no such argument.
-  caddyBase =
-    if pkgs.lib.functionArgs pkgs.caddy.override ? caddy
-    then pkgs.caddy.override {caddy = overriddenCaddy;}
-    else overriddenCaddy;
-
-  caddyWithPlugins = caddyBase.withPlugins {
+  caddyWithPlugins = overriddenCaddy.withPlugins {
     plugins = ["github.com/caddy-dns/cloudflare@v${cloudflareDnsVersion}"];
     hash = "sha256-xRJ5evsAJ2akg47j3Bt6YDXJOgX88B/rKNP50KSVyNY=";
   };

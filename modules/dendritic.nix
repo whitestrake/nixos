@@ -13,6 +13,9 @@
     };
 
     inputs = {
+      # No gen input on purpose: den then loads gen at the revision its own CI
+      # tested (templates/ci/flake.lock), so a den bump brings a gen it works
+      # with. CI's Cache sources job pushes those sources to Cachix.
       den.url = "github:denful/den";
       disko = {
         url = "github:nix-community/disko/latest";
@@ -28,19 +31,6 @@
         inputs.nixpkgs-lib.follows = "nixpkgs-lib";
       };
       nixpkgs-lib.url = "github:nix-community/nixpkgs.lib";
-      # den loads gen-schema through the gen hub: this input when declared,
-      # otherwise its own CI pin via builtins.fetchTree, which Nix never
-      # substitutes from a binary cache. A lock-file input is substitutable,
-      # so stores without GitHub API access can still evaluate this flake.
-      # Held at a51ec1d (2026-10-04): later gen-schema takes mkInstanceType's
-      # options first and the kind last, and den master still passes the kind
-      # first. Drop the rev once den lands its options-first migration
-      # (denful/den branch chore/gen-schema-options-first).
-      gen = {
-        url = "github:sini/gen/a51ec1d9272badc400c08b8e498346b73d1ab061";
-        inputs.import-tree.follows = "import-tree";
-        inputs.nixpkgs.follows = "nixpkgs";
-      };
       import-tree.url = "github:denful/import-tree";
       nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
       nixpkgs-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
