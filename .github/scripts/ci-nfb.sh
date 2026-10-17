@@ -46,7 +46,11 @@ if [ "${#nfb[@]}" -eq 0 ]; then
 fi
 wrapper=("${HOST_PYTHON:-python3}" .github/scripts/nix_fast_build.py)
 if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then wrapper+=(--publish-checks); fi
-options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto)
+# nix-fast-build passes --experimental-features "nix-command flakes" to every
+# nix command, which drops nix.conf's configurable-impure-env while impure-env
+# stays set, so Nix would refuse to build fixed-output derivations locally.
+options=(--systems "$system" --eval-workers 1 --option builders '' --option max-jobs auto
+  --option extra-experimental-features configurable-impure-env)
 flake=".#ci.$projection"
 case "$projection" in
   linux-hosts)
