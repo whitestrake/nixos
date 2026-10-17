@@ -29,6 +29,11 @@
       # Explicit ssh-agent enablement in WSL
       wsl.ssh-agent.enable = true;
 
+      # Expose the Windows GPU driver libraries (libcuda, NVENC, D3D12) via
+      # /run/opengl-driver/lib so Nix-built CUDA/NVENC tools find them
+      # without LD_LIBRARY_PATH=/usr/lib/wsl/lib.
+      wsl.useWindowsDriver = true;
+
       # Fix for running Windows binaries (Exec format error)
       environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
 
