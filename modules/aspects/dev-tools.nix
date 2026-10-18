@@ -16,8 +16,8 @@
       ];
     };
 
-    # Claude Code sandboxes commands with bubblewrap and socat. Desktop's
-    # bundled Claude CLI relies on these being on PATH.
+    # Claude Code and Codex sandbox commands with bubblewrap; Claude Code also
+    # needs socat. Desktop's bundled Claude CLI relies on these being on PATH.
     nixos = {pkgs, ...}: {
       environment.systemPackages = with pkgs; [
         bubblewrap
@@ -103,6 +103,11 @@
       '';
     in {
       xdg.dataFile."claude-code/whitestrake-marketplace".source = claudeMarketplace;
+
+      programs.codex = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
+        enable = true;
+        package = pkgs.unstable.codex;
+      };
 
       programs.claude-code = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         enable = true;
