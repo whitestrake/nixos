@@ -16,14 +16,22 @@
       ];
     };
 
-    # Claude Code and Codex sandbox commands with bubblewrap; Claude Code also
-    # needs socat. Desktop's bundled Claude CLI relies on these being on PATH.
+    # Claude Code sandboxes commands with bubblewrap and socat. Desktop's
+    # bundled Claude CLI relies on these being on PATH.
     nixos = {pkgs, ...}: {
       environment.systemPackages = with pkgs; [
         bubblewrap
         socat
       ];
     };
+
+    # The Mac takes Claude Code and Codex from upstream's Homebrew casks: they
+    # update sooner, and nixpkgs' Codex drags GStreamer and a second Darwin
+    # toolchain (~1.4 GiB) into the closure for its voice support.
+    darwin.homebrew.casks = [
+      "claude-code"
+      "codex"
+    ];
 
     wsl-host = {
       # Codex Desktop for Windows assumes these FHS entrypoints exist when
@@ -56,10 +64,6 @@
             user: whitestrake
         '';
       };
-
-      environment.etc."codex/config.toml".source =
-        config.home-manager.users.${user.userName}
-        .home.file.".codex/whitestrake.config.toml".source;
     };
 
     provides.whitestrake.homeManager = {
@@ -100,19 +104,9 @@
     in {
       xdg.dataFile."claude-code/whitestrake-marketplace".source = claudeMarketplace;
 
-      programs.codex = {
-        enable = true;
-        package = pkgs.unstable.codex;
-      };
-
-      programs.claude-code = {
+      programs.claude-code = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         enable = true;
         package = pkgs.unstable.claude-code;
-      };
-
-      programs.antigravity-cli = {
-        enable = true;
-        package = pkgs.unstable.antigravity-cli;
       };
 
       programs.gh = {
@@ -124,25 +118,6 @@
         ".config/gh/hosts.yml".source =
           config.lib.file.mkOutOfStoreSymlink
           osConfig.sops.templates."gh-hosts".path;
-
-        ".codex/whitestrake.config.toml".source =
-          (pkgs.formats.toml {}).generate
-          "codex-whitestrake-config" {
-            personality = "pragmatic";
-            approval_policy = "on-request";
-            approvals_reviewer = "auto_review";
-            tui = {
-              status_line = [
-                "model-with-reasoning"
-                "project-name"
-                "context-remaining"
-                "five-hour-limit"
-                "weekly-limit"
-                "task-progress"
-                "run-state"
-              ];
-            };
-          };
       };
     };
   };
