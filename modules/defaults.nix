@@ -189,6 +189,7 @@
           "soduto"
           "kando"
           "jordanbaird-ice@beta"
+          "swiftbar"
         ];
       };
 
