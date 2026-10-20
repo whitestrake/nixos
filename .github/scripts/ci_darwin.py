@@ -459,7 +459,7 @@ def mount(root, mode, repo):
             tarfile.TarError,
         ) as error:
             raise CacheRestoreError(f"payload-restore-failure: {error}") from error
-    attach(root, source, shadow=mode in ("hot", "eager"))
+    attach(root, source, shadow=mode == "hot")
     print(json.dumps({"mode": mode, "releaseId": selection["generation"]["releaseId"]}))
 
 
@@ -476,11 +476,7 @@ def activate_nix(root):
     settings = json.loads((root / "mode.json").read_text())
     if settings["mode"] == "cold":
         return False
-    # The installer pointer supports generations produced before the explicit root.
-    runtime = ROOTS / "nix"
-    if not runtime.exists():
-        runtime = Path("/nix/var/nix-quick-install-action/nix")
-    runtime = runtime.resolve()
+    runtime = (ROOTS / "nix").resolve()
     if runtime.parent != Path("/nix/store") or not (runtime / "bin/nix").is_file():
         return False
 
@@ -767,9 +763,7 @@ def main():
         ),
     )
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument(
-        "--mode", choices=("hot", "eager", "maintenance", "cold"), default="hot"
-    )
+    parser.add_argument("--mode", choices=("hot", "maintenance", "cold"), default="hot")
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--selection", type=Path)
     parser.add_argument("--output", type=Path)

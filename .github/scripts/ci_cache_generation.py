@@ -32,13 +32,13 @@ from ci_cache_image import (
 
 SCHEMA = "ci-cache-generation-v1"
 DARWIN_FORMAT = "hfs-case-sensitive-v1"
-# Retired formats stay parseable for retirement, but not selection.
-RETIRED_FORMATS = ("apfs-case-sensitive-v1",)
 PROMOTION_SCHEMA = "ci-cache-promotion-v1"
 MANIFEST = "generation.json"
 PREFIX = "ci-cache-v1-"
 PUBLISHER = ".github/workflows/github-cache-maintenance.yml"
 SOURCE_WORKFLOW = ".github/workflows/continuous-integration.yml"
+# The source workflow's build gate; see builds_accepted.
+BUILD_GATE_JOB = "All Builds"
 READERS = (
     {
         "name": "Check x86_64-linux minimal",
@@ -115,17 +115,13 @@ def validate_generation(generation):
     require(positive(generation.get("publisherRunId")), "invalid publisher run")
     validate_source(generation.get("source", {}))
     fingerprint(generation.get("coverage"))
-    if "darwinFormat" in generation:
-        require(
-            generation["darwinFormat"] in (DARWIN_FORMAT, *RETIRED_FORMATS),
-            "invalid Darwin cache format",
-        )
-    components = generation.get("components", {})
-    # Generations published before the full Linux images were dropped carry two
-    # extra components; they stay readable until retired.
     require(
-        set(components) >= set(COMPONENTS),
-        "generation is missing components",
+        generation.get("darwinFormat") == DARWIN_FORMAT, "invalid Darwin cache format"
+    )
+    components = generation.get("components", {})
+    require(
+        set(components) == set(COMPONENTS),
+        "generation components do not match",
     )
     for name, asset in components.items():
         validate_identity(asset)
@@ -152,10 +148,26 @@ def check_run(repo, run_id, revision, workflow, production=False, successful=Fal
         )
     if successful:
         require(
-            run.get("conclusion") == "success" and run.get("status") == "completed",
+            run.get("status") == "completed"
+            and (
+                run.get("conclusion") == "success"
+                or (
+                    run.get("conclusion") == "failure" and builds_accepted(repo, run_id)
+                )
+            ),
             "source CI did not succeed",
         )
     return run
+
+
+def builds_accepted(repo, run_id):
+    # All Builds publishes the build proof before any deploy leg starts, so a run
+    # that failed only in deployment still proves its outputs.
+    jobs = gh_api(repo, f"actions/runs/{run_id}/jobs?filter=latest&per_page=100")
+    return any(
+        job.get("name") == BUILD_GATE_JOB and job.get("conclusion") == "success"
+        for job in jobs.get("jobs", [])
+    )
 
 
 def trusted_generation(repo, generation, production):
@@ -664,14 +676,6 @@ def validate_promotion_receipt(release, record):
 
 
 def promotion_record_present(release):
-    matches = [
-        asset
-        for asset in release.get("assets", [])
-        if asset.get("name") == "promotion.json"
-    ]
-    require(len(matches) <= 1, "duplicate promotion record")
-    if matches:
-        return True
     journal = promotion_journal(release)
     if "promotionIntent" in journal:
         validate_promotion_intent(release, journal["promotionIntent"])
@@ -683,14 +687,6 @@ def promotion_record_present(release):
 
 
 def promotion_intent_present(release):
-    matches = [
-        asset
-        for asset in release.get("assets", [])
-        if asset.get("name") == "promotion-intent.json"
-    ]
-    require(len(matches) <= 1, "duplicate promotion intent")
-    if matches:
-        return True
     journal = promotion_journal(release)
     if "promotionIntent" not in journal:
         return False
@@ -699,24 +695,14 @@ def promotion_intent_present(release):
 
 
 def promotion_intent(repo, release):
-    matches = [
-        asset
-        for asset in release.get("assets", [])
-        if asset.get("name") == "promotion-intent.json"
-    ]
-    require(len(matches) <= 1, "duplicate promotion intent")
-    if matches:
-        pin = identity(matches[0])
-        intent = json.loads(asset_body(repo, release, pin, 65536))
-    else:
-        journal = promotion_journal(release)
-        require("promotionIntent" in journal, "missing promotion intent")
-        intent = journal["promotionIntent"]
-        pin = {
-            "sha256": sha256(
-                json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
-            )
-        }
+    journal = promotion_journal(release)
+    require("promotionIntent" in journal, "missing promotion intent")
+    intent = journal["promotionIntent"]
+    pin = {
+        "sha256": sha256(
+            json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+        )
+    }
     validate_promotion_intent(release, intent)
     return intent, pin
 
@@ -736,18 +722,9 @@ def finish_promotion(repo, release, recovery_run=None):
 
 
 def promotion_record(repo, release, generation):
-    matches = [
-        asset
-        for asset in release.get("assets", [])
-        if asset.get("name") == "promotion.json"
-    ]
-    require(len(matches) <= 1, "duplicate promotion record")
-    if matches:
-        record = json.loads(asset_body(repo, release, identity(matches[0]), 65536))
-    else:
-        record = promotion_journal(release).get("promotion")
-        require(isinstance(record, dict), "missing promotion record")
-        validate_promotion_receipt(release, record)
+    record = promotion_journal(release).get("promotion")
+    require(isinstance(record, dict), "missing promotion record")
+    validate_promotion_receipt(release, record)
     intent, pin = promotion_intent(repo, release)
     require(
         record.get("releaseId") == release["id"]

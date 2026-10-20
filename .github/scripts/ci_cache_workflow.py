@@ -77,6 +77,44 @@ def coverages(proof, inputs, nfb, definitions):
     return total, parts
 
 
+def coverage_change(previous, current):
+    roots_before, roots_after = set(previous["roots"]), set(current["roots"])
+    change = {
+        "rootsAdded": len(roots_after - roots_before),
+        "rootsRemoved": len(roots_before - roots_after),
+    }
+    for field in ("inputs", "tools"):
+        before, after = previous[field], current[field]
+        change[field] = sorted(
+            key
+            for key in before.keys() | after.keys()
+            if before.get(key) != after.get(key)
+        )
+    return change
+
+
+def report_coverage_change(previous, current):
+    # Explains why a refresh spends producer and reader minutes.
+    change = coverage_change(previous, current)
+    print("CI_CACHE_COVERAGE_CHANGE " + json.dumps(change, separators=(",", ":")))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as stream:
+            stream.write(
+                f"Coverage changed: {change['rootsAdded']} roots added, "
+                f"{change['rootsRemoved']} removed\n\n"
+            )
+            for field in ("inputs", "tools"):
+                if change[field]:
+                    shown = ", ".join(f"`{key}`" for key in change[field][:10])
+                    more = len(change[field]) - 10
+                    stream.write(
+                        f"- {field}: {shown}"
+                        + (f" and {more} more" if more > 0 else "")
+                        + "\n"
+                    )
+
+
 def plan(directory, proof_path, run_id, release_id=None):
     directory.mkdir()
     raw = subprocess.check_output(
@@ -137,7 +175,6 @@ def plan(directory, proof_path, run_id, release_id=None):
             ".github/actions/install-nix/action.yml",
         )
     }
-    definitions["cachix-action"] = "38b082610b782e7e93e209c35fd730d399dee866"
     coverage, parts = coverages(proof, inputs, nfb, definitions)
     write(directory / "source.json", source)
     write(directory / "proof.json", proof)
@@ -163,6 +200,8 @@ def plan(directory, proof_path, run_id, release_id=None):
         refresh = generation.fingerprint(
             previous["generation"]["coverage"]
         ) != generation.fingerprint(coverage)
+        if refresh:
+            report_coverage_change(previous["generation"]["coverage"], coverage)
     with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
         stream.write(
             f"refresh={'true' if refresh or os.environ.get('FORCE_REBUILD') == 'true' else 'false'}\n"
@@ -252,13 +291,6 @@ def retain(coverage, records, system):
     for path in roots.iterdir():
         if path.is_symlink() and path.name not in desired:
             path.unlink()
-    legacy = Path("/nix/var/nix/gcroots/ghci-cache-lanes") / system
-    if legacy.is_dir():
-        for path in legacy.iterdir():
-            if path.is_symlink():
-                path.unlink()
-        if not any(legacy.iterdir()):
-            legacy.rmdir()
     print(f"CI_ROOTS_RETAINED system={system} count={len(desired)}")
 
 

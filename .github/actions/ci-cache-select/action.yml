@@ -28,12 +28,17 @@ runs:
             --release-id "$CACHE_RELEASE_ID" --output "$RUNNER_TEMP/selection.json" >/dev/null
         elif [ "$CACHE_MODE" != cold ]; then
           if ! python3 .github/scripts/ci_cache_generation.py resolve --repo "$GITHUB_REPOSITORY" \
-            --output "$RUNNER_TEMP/selection.json" >/dev/null; then
-            echo '::notice ::No usable optional generation; reconstructing cold.'
+            --output "$RUNNER_TEMP/selection.json" >/dev/null 2> "$RUNNER_TEMP/selection.err"; then
+            cat "$RUNNER_TEMP/selection.err" >&2
+            reason="$(grep -E '^[A-Za-z.]*Error' "$RUNNER_TEMP/selection.err" | tail -1 || true)"
+            echo "::warning ::No usable cache generation; reconstructing cold. ${reason:-}"
           fi
         fi
+        # Shown per lane, so a slow run can be traced to a cold or stale cache.
         if [ -f "$RUNNER_TEMP/selection.json" ]; then
           jq -c '{releaseId:.generation.releaseId, revision:.generation.source.revision, components:(.generation.components | map_values(.sha256))}' "$RUNNER_TEMP/selection.json"
+          jq -r '"Cache: release \(.generation.releaseId) from \(.generation.source.revision[:12])"' "$RUNNER_TEMP/selection.json" >> "$GITHUB_STEP_SUMMARY"
         else
           echo 'CI_CACHE_SELECTION mode=cold'
+          echo "Cache: cold (${CACHE_MODE:-warm} requested)${reason:+ - $reason}" >> "$GITHUB_STEP_SUMMARY"
         fi

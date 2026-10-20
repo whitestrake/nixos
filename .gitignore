@@ -3,3 +3,5 @@
 result
 docs/superpowers
 proxmox-jobs.sqlite3*
+__pycache__/
+*.py[cod]

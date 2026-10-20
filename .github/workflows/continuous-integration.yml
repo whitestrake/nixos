@@ -81,9 +81,17 @@ jobs:
       - name: Detect flake.lock changes against master
         id: lock
         if: github.ref != 'refs/heads/master'
+        # Only gates the optional report, so an API failure must not fail Checks.
         run: |
-          changed="$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" \
-            --jq '[.files[]?.filename] | index("flake.lock") != null')"
+          changed=false
+          for attempt in 1 2 3; do
+            if result="$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_SHA" \
+              --jq '[.files[]?.filename] | index("flake.lock") != null')"; then
+              changed="$result"
+              break
+            fi
+            [ "$attempt" = 3 ] || sleep $((attempt * 2))
+          done
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -187,6 +195,7 @@ jobs:
           mode: ${{ inputs.cache_mode || 'warm' }}
           release-id: ${{ inputs.cache_release_id }}
       - name: Prepare Darwin build environment
+        id: darwin-prepare
         uses: ./.github/actions/ci-darwin-prepare
         with:
           mode: hot
@@ -209,10 +218,12 @@ jobs:
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/darwin-sources
+          # Must match the save in Update Packages exactly (see there).
+          path: ~/darwin-sources
           key: ${{ steps.darwin-sources.outputs.key }}
       - name: Build Darwin configurations
-        timeout-minutes: ${{ inputs.cache_mode == 'cold' && 330 || 60 }}
+        # Keyed on the mounted store: a warm request can still fall back to cold.
+        timeout-minutes: ${{ steps.darwin-prepare.outputs.mode == 'cold' && 330 || 60 }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
@@ -228,7 +239,8 @@ jobs:
       - linux-builds
       - darwin-builds
       - source-checks
-    if: ${{ always() }}
+    # Still runs after a lane fails, to report it, but not for superseded runs.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -296,7 +308,7 @@ jobs:
           cache=https://whitestrake.cachix.org
           records="$(jq -cn --argjson linux "$LINUX_RECORDS" --argjson darwin "$DARWIN_RECORDS" '$linux + $darwin')"
           mapfile -t paths < <(jq -r '.[].storePath' <<< "$records")
-          nix path-info --store "$cache" "${paths[@]}" >/dev/null
+          cachix_verify_store_paths whitestrake "${paths[@]}"
 
           # Only toplevels built with the cachix-agent aspect carry deploy-rollback.
           mkdir "$RUNNER_TEMP/meta"

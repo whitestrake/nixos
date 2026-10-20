@@ -65,7 +65,7 @@
     roots;
 in {
   perSystem = {pkgs, ...}: {
-    checks.ci-cache = pkgs.runCommand "ci-cache-check" {} ''
+    checks.ci-cache = pkgs.runCommand "ci-cache-check" {nativeBuildInputs = [pkgs.jq];} ''
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_ci_cache.py
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_package_report.py
       PYTHONPATH=${../.github/scripts} ${pkgs.python3}/bin/python3 ${../.github/scripts}/check_nix_fast_build.py

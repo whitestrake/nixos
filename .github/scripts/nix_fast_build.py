@@ -300,7 +300,7 @@ def watch_downloads(stop, threshold, interval):
                 )
 
 
-def run(command, publisher, build_hook, deferred=None):
+def run(command, publisher, deferred=None):
     process = subprocess.Popen(
         [*command, "--stream-json-lines"],
         stdout=subprocess.PIPE,
@@ -309,8 +309,6 @@ def run(command, publisher, build_hook, deferred=None):
     )
     events = []
     interrupted = False
-    hook_failed = False
-    active_hook = None
     terminating = False
     previous_handlers = {}
     process_groups = {process.pid}
@@ -342,10 +340,7 @@ def run(command, publisher, build_hook, deferred=None):
         if terminating:
             return
         terminating = True
-        groups = set(process_groups)
-        if active_hook is not None:
-            groups.add(active_hook.pid)
-        groups = [pgid for pgid in groups if signal_process_group(pgid, signum)]
+        groups = [pgid for pgid in process_groups if signal_process_group(pgid, signum)]
         deadline = time.monotonic() + 1
         while groups and time.monotonic() < deadline:
             groups = [pgid for pgid in groups if signal_process_group(pgid, 0)]
@@ -378,34 +373,10 @@ def run(command, publisher, build_hook, deferred=None):
                     events.append(event)
                 elif publisher is not None:
                     publisher.handle(event)
-                if (
-                    build_hook is not None
-                    and event.get("type") == "BUILD"
-                    and event.get("success") is True
-                ):
-                    try:
-                        active_hook = subprocess.Popen(
-                            [build_hook],
-                            stdin=subprocess.PIPE,
-                            text=True,
-                            start_new_session=True,
-                        )
-                        process_groups.add(active_hook.pid)
-                        active_hook.communicate(line)
-                        if active_hook.returncode != 0:
-                            hook_failed = True
-                    except OSError:
-                        hook_failed = True
-                    finally:
-                        if active_hook is not None and not signal_process_group(
-                            active_hook.pid, 0
-                        ):
-                            process_groups.discard(active_hook.pid)
-                        active_hook = None
         return_code = process.wait()
     finally:
         stop_watch.set()
-        # NFB and hooks may leave Cachix descendants after their leader exits.
+        # NFB may leave Cachix descendants after its leader exits.
         for pgid in process_groups:
             signal_process_group(pgid, signal.SIGTERM)
         deadline = time.monotonic() + 1
@@ -421,20 +392,14 @@ def run(command, publisher, build_hook, deferred=None):
             signal.signal(signum, handler)
 
     conclusion = (
-        "cancelled"
-        if interrupted
-        else "success"
-        if return_code == 0 and not hook_failed
-        else "failure"
+        "cancelled" if interrupted else "success" if return_code == 0 else "failure"
     )
     if deferred is not None:
         with open(deferred, "x") as stream:
             json.dump({"events": events, "conclusion": conclusion}, stream)
     elif publisher is not None:
         publisher.finalize(conclusion)
-    if hook_failed:
-        print("::error::One or more nix-fast-build hooks failed", file=sys.stderr)
-    return return_code, hook_failed
+    return return_code
 
 
 def replay_checks(publisher, path):
@@ -448,7 +413,6 @@ def replay_checks(publisher, path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--publish-checks", action="store_true")
-    parser.add_argument("--build-hook")
     parser.add_argument("--replay-checks")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -481,10 +445,10 @@ def main():
     if args.replay_checks:
         replay_checks(publisher, args.replay_checks)
         return 0
-    return_code, hook_failed = run(args.command, publisher, args.build_hook, deferred)
+    return_code = run(args.command, publisher, deferred)
     if return_code < 0:
         os.kill(os.getpid(), -return_code)
-    return return_code or hook_failed
+    return return_code
 
 
 if __name__ == "__main__":

@@ -97,6 +97,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.deployment_sha }}
+          persist-credentials: false
 
       - name: Install Nix
         uses: ./.github/actions/install-nix
@@ -106,6 +107,8 @@ jobs:
         with:
           name: whitestrake
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Deployment only reads paths CI already pushed.
+          skipPush: true
 
       - name: Deploy Cachix agent
         shell: bash

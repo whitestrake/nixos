@@ -57,14 +57,14 @@ CI is structured to separate evaluation, validation, building, deployment planni
 
 - **Evaluation and structural validation**: Broad flake and schema checks catch broken composition early without forcing unnecessary full-system realization on every path.
 - **Targeted builds**: Host, package, and check builds are kept as focused as practical. [Cachix](https://www.cachix.org/) is used to avoid repeated work and to make successful artifacts available to later jobs and hosts.
-- **Deployment planning**: Deployment jobs derive their target matrix dynamically from changed host outputs and deploy-agent availability.
+- **Deployment planning**: Deployment jobs derive their target matrix dynamically from changed host outputs. A failed deploy leg fails its CI run, but does not hold back cache maintenance: the build proof is published before deployment starts.
 - **Primary deployment path**: [Cachix Deploy](https://docs.cachix.org/deploy/) is the normal automated pull-based deployment mechanism.
 - **Fallback deployment path**: Direct `nixos-rebuild --target-host --build-host --sudo` remains available where the Cachix Deploy path is not appropriate.
 - **Dependency maintenance**: Automated workflows update flake inputs, custom packages, GitHub Actions, and other non-Nix dependencies.
 
 A successful CI build proves that the relevant configuration evaluates and builds. It does not, by itself, prove that an activated host remains reachable or healthy after deployment. That boundary is handled separately by deployment gating and host-side checks.
 
-Cache generations support GitHub's [immutable Releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases). All image and manifest assets are uploaded before publishing the candidate as a prerelease. Promotion records live in the mutable Release body; legacy records attached as assets remain readable. Retirement deletes the Release before its exact tag. Enable the repository's immutable Releases setting only after the compatible publisher is deployed and validated; local code changes do not enable it.
+Cache generations support GitHub's [immutable Releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases). All image and manifest assets are uploaded before publishing the candidate as a prerelease. Promotion records live in the mutable Release body. Retirement deletes the Release before its exact tag. Enable the repository's immutable Releases setting only after the compatible publisher is deployed and validated; local code changes do not enable it.
 
 ## Secrets Management
 
