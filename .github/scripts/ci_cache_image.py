@@ -358,20 +358,34 @@ def gh_api(repo, endpoint, method="GET", payload=None, *, token=None):
         args += ["--method", method]
     if payload is not None:
         args += ["--input", "-"]
-    try:
-        result = subprocess.run(
-            args,
-            input=json.dumps(payload).encode() if payload is not None else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-            timeout=60,
-            env={**os.environ, "GH_TOKEN": token} if token else None,
-        )
-    except subprocess.CalledProcessError as error:
-        # Shown only in uncaught tracebacks; callers still match error.stderr.
-        error.add_note((error.stderr or b"").decode("utf-8", errors="replace").strip())
-        raise
+    # Reads retry transient failures: one API blip during cache selection would
+    # otherwise send every lane cold. Writes are not idempotent, so they never retry.
+    attempts = 3 if method == "GET" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            result = subprocess.run(
+                args,
+                input=json.dumps(payload).encode() if payload is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=60,
+                env={**os.environ, "GH_TOKEN": token} if token else None,
+            )
+            break
+        except subprocess.CalledProcessError as error:
+            stderr = (error.stderr or b"").decode("utf-8", errors="replace").strip()
+            if attempt < attempts and not re.search(r"HTTP 4(?!29)\d\d", stderr):
+                time.sleep(2**attempt)
+                continue
+            # Shown only in uncaught tracebacks; callers still match error.stderr.
+            error.add_note(stderr)
+            raise
+        except subprocess.TimeoutExpired:
+            if attempt < attempts:
+                time.sleep(2**attempt)
+                continue
+            raise
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 

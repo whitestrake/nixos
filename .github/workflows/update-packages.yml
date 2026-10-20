@@ -238,14 +238,16 @@ jobs:
           set -euo pipefail
           mapfile -t paths < <(bash .github/scripts/darwin-sources.sh paths)
           nix-store --realise "${paths[@]}" > /dev/null
-          nix copy --to "file://$RUNNER_TEMP/darwin-sources?compression=zstd" "${paths[@]}"
+          nix copy --to "file://$HOME/darwin-sources?compression=zstd" "${paths[@]}"
           echo "key=darwin-sources-$(bash .github/scripts/darwin-sources.sh key)" >> "$GITHUB_OUTPUT"
       - name: Save Darwin nixpkgs trees
         if: steps.darwin-sources.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/darwin-sources
+          # Literal and identical in the macOS restore: the cache version hashes
+          # this string, and runner.temp expands differently on Linux and macOS.
+          path: ~/darwin-sources
           key: ${{ steps.darwin-sources.outputs.key }}
       - name: Create GitHub App token
         id: app-token

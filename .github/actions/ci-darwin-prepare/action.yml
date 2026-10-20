@@ -2,7 +2,7 @@ name: Prepare Darwin CI store
 description: Mount the selected native image or reconstruct a cold sparsebundle.
 inputs:
   mode:
-    description: hot, eager or maintenance
+    description: hot or maintenance
     default: hot
   extra-nix-conf:
     description: Additional ordinary installer configuration
@@ -13,6 +13,10 @@ inputs:
   cachix-auth-token:
     description: Optional Cachix authentication
     default: ""
+outputs:
+  mode:
+    description: Store mode actually mounted (hot, maintenance or cold)
+    value: ${{ steps.effective-mode.outputs.mode }}
 runs:
   using: composite
   steps:
@@ -127,3 +131,14 @@ runs:
       if: steps.recovery.outputs.recovered == 'true'
       shell: bash
       run: '"$HOST_PYTHON" .github/scripts/ci_darwin.py ready --state "$RUNNER_TEMP/darwin"'
+    # Read after any fallback or recovery remount, so callers can size timeouts
+    # for the store they actually got rather than the one they asked for.
+    - name: Report effective store mode
+      id: effective-mode
+      shell: bash
+      run: |
+        set -euo pipefail
+        mode="$("$HOST_PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["mode"])' "$RUNNER_TEMP/darwin/mode.json")"
+        echo "CI_DARWIN_EFFECTIVE_MODE mode=$mode"
+        echo "mode=$mode" >> "$GITHUB_OUTPUT"
+        echo "Darwin store: $mode" >> "$GITHUB_STEP_SUMMARY"

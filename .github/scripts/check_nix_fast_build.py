@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Focused checks for the nix-fast-build wrapper's download watchdog."""
+"""Focused checks for the nix-fast-build wrapper and its records filter."""
 
+import json
+from pathlib import Path
 import subprocess
 import threading
 import unittest
@@ -50,6 +52,112 @@ class DownloadWatchCheck(unittest.TestCase):
         written = "".join(call.args[0] for call in stderr.write.call_args_list)
         self.assertEqual(written.count("Download running for 06:00 (pid 101)"), 1)
         self.assertIn("CI_DOWNLOAD_SOCKET pid=101", written)
+
+
+RECORDS = Path(__file__).with_name("nix-fast-build-records.jq")
+
+
+def records(results):
+    return subprocess.run(
+        ["jq", "-ce", "-f", RECORDS],
+        input=json.dumps({"results": results}),
+        capture_output=True,
+        text=True,
+    )
+
+
+def evaluated(attr, **extra):
+    return {"type": "EVAL", "success": True, "attr": attr, **extra}
+
+
+def built(attr, path):
+    return {"type": "BUILD", "success": True, "attr": attr, "outputs": {"out": path}}
+
+
+class RecordsCheck(unittest.TestCase):
+    # This filter decides which hosts reach the build proof and deploy matrix.
+    def test_records_pair_each_evaluated_configuration_with_its_output(self):
+        result = records(
+            [
+                evaluated("nixosConfigurations.pascal"),
+                built("nixosConfigurations.pascal", "/nix/store/p"),
+                evaluated(
+                    "darwinConfigurations.andred",
+                    cacheStatus="cached",
+                    outputs={"out": "/nix/store/a"},
+                ),
+                evaluated("checks.treefmt"),
+                built("checks.treefmt", "/nix/store/t"),
+                {
+                    "type": "BUILD",
+                    "success": False,
+                    "attr": "nixosConfigurations.pascal",
+                },
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(result.stdout),
+            [
+                {
+                    "attr": "darwinConfigurations.andred",
+                    "kind": "darwinConfiguration",
+                    "name": "andred",
+                    "storePath": "/nix/store/a",
+                },
+                {
+                    "attr": "nixosConfigurations.pascal",
+                    "kind": "nixosConfiguration",
+                    "name": "pascal",
+                    "storePath": "/nix/store/p",
+                },
+            ],
+        )
+
+    def test_records_refuse_incomplete_or_ambiguous_results(self):
+        for name, results, message in (
+            (
+                "unbuilt host",
+                [
+                    evaluated("nixosConfigurations.a"),
+                    evaluated("nixosConfigurations.b"),
+                    built("nixosConfigurations.a", "/nix/store/a"),
+                ],
+                "do not match",
+            ),
+            (
+                "duplicate build",
+                [
+                    evaluated("nixosConfigurations.a"),
+                    built("nixosConfigurations.a", "/nix/store/a"),
+                    built("nixosConfigurations.a", "/nix/store/b"),
+                ],
+                "duplicate successful BUILD",
+            ),
+            (
+                "missing output",
+                [
+                    evaluated("nixosConfigurations.a"),
+                    {
+                        "type": "BUILD",
+                        "success": True,
+                        "attr": "nixosConfigurations.a",
+                        "outputs": {},
+                    },
+                ],
+                "missing outputs.out",
+            ),
+            ("nothing evaluated", [evaluated("checks.treefmt")], "no successful EVAL"),
+            (
+                "unexpected attribute",
+                [evaluated("packages.x86_64-linux.foo")],
+                "unexpected nix-fast-build attribute",
+            ),
+        ):
+            with self.subTest(name):
+                result = records(results)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
 
 
 if __name__ == "__main__":

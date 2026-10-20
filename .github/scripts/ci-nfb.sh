@@ -66,8 +66,8 @@ case "$projection" in
   darwin)
     # nixpkgs trees restored from the Actions cache (see darwin-sources.sh).
     # Content-addressed, so Nix takes them unsigned.
-    if [ -d "$RUNNER_TEMP/darwin-sources" ]; then
-      options+=(--option extra-substituters "file://$RUNNER_TEMP/darwin-sources?priority=10")
+    if [ -d "$HOME/darwin-sources" ]; then
+      options+=(--option extra-substituters "file://$HOME/darwin-sources?priority=10")
     fi
     if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then options+=(--cachix-cache whitestrake); fi
     ;;

@@ -14,6 +14,7 @@ import zipfile
 
 import ci_cache_generation as generation
 import ci_cache_image as image
+import ci_cache_workflow as workflow
 import ci_darwin as darwin
 
 
@@ -46,6 +47,7 @@ def complete_generation():
             },
         },
         "publisherRunId": 9,
+        "darwinFormat": generation.DARWIN_FORMAT,
         "coverage": {
             "roots": ["/nix/store/root"],
             "inputs": {"nixpkgs": "/nix/store/input"},
@@ -310,6 +312,14 @@ class CacheCheck(unittest.TestCase):
             lambda value: value["components"][generation.COMPONENTS[1]].update(
                 assetId=value["components"][generation.COMPONENTS[0]]["assetId"]
             ),
+            lambda value: value["components"].update(
+                extra={
+                    "assetId": 99,
+                    "name": "extra.json",
+                    "size": 1,
+                    "sha256": "c" * 64,
+                }
+            ),
         )
         for mutate in mutations:
             value = copy.deepcopy(valid)
@@ -318,11 +328,14 @@ class CacheCheck(unittest.TestCase):
                 generation.validate_generation(value)
 
     def test_hfs_generation_selection_rejects_other_images(self):
-        for marker in (None, *generation.RETIRED_FORMATS):
+        for marker in (None, "apfs-case-sensitive-v1"):
             legacy = complete_generation()
             if marker:
                 legacy["darwinFormat"] = marker
-            generation.validate_generation(legacy)
+            else:
+                del legacy["darwinFormat"]
+            with self.assertRaisesRegex(ValueError, "invalid Darwin cache format"):
+                generation.validate_generation(legacy)
             self.reject_selection(legacy)
 
     def reject_selection(self, legacy):
@@ -353,7 +366,7 @@ class CacheCheck(unittest.TestCase):
                     }
                 )
             )
-            with self.assertRaisesRegex(ValueError, "incompatible Darwin cache format"):
+            with self.assertRaisesRegex(ValueError, "Darwin cache format"):
                 generation.read_selection(selection_path, "owner/repo")
 
     def test_retirement_expires_each_generation_and_protects_current_previous(self):
@@ -363,12 +376,11 @@ class CacheCheck(unittest.TestCase):
                 "id": i,
                 "tag_name": f"ci-cache-v1-{i}",
                 "draft": False,
-                "assets": [{"name": "promotion.json"}],
+                "assets": [],
             }
             for i in range(1, 7)
         ]
         releases[4]["draft"] = True
-        releases[5]["assets"] = []
         journals = {}
         for i in range(1, 5):
             intent = {"releaseId": i, "previousId": i - 1 or None, "publisherRunId": 9}
@@ -390,7 +402,6 @@ class CacheCheck(unittest.TestCase):
             now  # New promotions must not reset older ages.
         )
         for release in releases[:4]:
-            release["assets"] = []
             release["body"] = json.dumps(journals[release["id"]])
         with (
             mock.patch.object(generation, "publisher_context", return_value=9),
@@ -518,8 +529,21 @@ class CacheCheck(unittest.TestCase):
                 ready(sealed, branch_run)
         self.assertFalse(ready(sealed, {**master_run, "status": "in_progress"}))
         self.assertFalse(ready({**sealed, "prerelease": False}, master_run))
+        intent = {"releaseId": 123001, "previousId": None, "publisherRunId": 123}
+        receipt = {
+            **intent,
+            "intentSha256": image.sha256(
+                json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+            ),
+            "promotedAt": int(boundary),
+        }
+        journal = {
+            "schema": generation.PROMOTION_SCHEMA,
+            "promotionIntent": intent,
+            "promotion": receipt,
+        }
         self.assertFalse(
-            ready({**sealed, "assets": [{"name": "promotion.json"}]}, master_run)
+            ready({**sealed, "id": 123001, "body": json.dumps(journal)}, master_run)
         )
         for field, value in (
             ("draft", False),
@@ -561,6 +585,127 @@ class CacheCheck(unittest.TestCase):
         ):
             generation.prune_candidates("owner/repo", execute=True)
         delete.assert_not_called()
+
+
+class PipelineCheck(unittest.TestCase):
+    def test_gh_api_retries_transient_reads_only(self):
+        ok = subprocess.CompletedProcess([], 0, stdout=b'{"id": 1}', stderr=b"")
+        transient = subprocess.CalledProcessError(
+            1, [], stderr=b"HTTP 502: Bad Gateway"
+        )
+        missing = subprocess.CalledProcessError(1, [], stderr=b"HTTP 404: Not Found")
+        limited = subprocess.CalledProcessError(1, [], stderr=b"HTTP 429: Too Many")
+        with mock.patch.object(image.time, "sleep"):
+            for errors, calls in (
+                ([transient], 2),
+                ([limited], 2),
+                ([subprocess.TimeoutExpired([], 60)], 2),
+            ):
+                with mock.patch.object(
+                    image.subprocess, "run", side_effect=[*errors, ok]
+                ) as run:
+                    self.assertEqual(
+                        image.gh_api("owner/repo", "releases/1"), {"id": 1}
+                    )
+                    self.assertEqual(run.call_count, calls)
+            with mock.patch.object(
+                image.subprocess, "run", side_effect=[missing]
+            ) as run:
+                with self.assertRaises(subprocess.CalledProcessError) as raised:
+                    image.gh_api("owner/repo", "releases/1")
+                self.assertEqual(run.call_count, 1)
+                self.assertIn(b"HTTP 404", raised.exception.stderr)
+            with mock.patch.object(
+                image.subprocess, "run", side_effect=[transient, transient, transient]
+            ) as run:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    image.gh_api("owner/repo", "releases/1")
+                self.assertEqual(run.call_count, 3)
+            with mock.patch.object(
+                image.subprocess, "run", side_effect=[transient]
+            ) as run:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    image.gh_api("owner/repo", "releases", method="POST", payload={})
+                self.assertEqual(run.call_count, 1)
+
+    def test_source_run_accepts_failures_after_the_build_gate(self):
+        run = {
+            "id": 8,
+            "head_sha": "a" * 40,
+            "head_repository": {"full_name": "owner/repo"},
+            "path": generation.SOURCE_WORKFLOW,
+            "status": "completed",
+        }
+
+        def check(conclusion, jobs):
+            def api(repo, endpoint):
+                if endpoint.startswith("actions/runs/8/jobs"):
+                    return {"jobs": jobs}
+                return {**run, "conclusion": conclusion}
+
+            with mock.patch.object(generation, "gh_api", side_effect=api):
+                return generation.check_run(
+                    "owner/repo",
+                    8,
+                    "a" * 40,
+                    generation.SOURCE_WORKFLOW,
+                    successful=True,
+                )
+
+        gate = {"name": generation.BUILD_GATE_JOB, "conclusion": "success"}
+        deploy = {"name": "Deploy / orthus", "conclusion": "failure"}
+        check("success", [])
+        check("failure", [gate, deploy])
+        for conclusion, jobs in (
+            ("failure", [{**gate, "conclusion": "failure"}]),
+            ("failure", [deploy]),
+            ("cancelled", [gate]),
+        ):
+            with self.subTest(conclusion=conclusion, jobs=jobs):
+                with self.assertRaisesRegex(ValueError, "source CI did not succeed"):
+                    check(conclusion, jobs)
+
+    def test_coverage_change_names_what_forces_a_refresh(self):
+        previous = {
+            "roots": ["/nix/store/a", "/nix/store/b"],
+            "inputs": {"nixpkgs": "/nix/store/old", "same": "/nix/store/s"},
+            "tools": {"ci-nfb.sh": "1", "gone": "2"},
+        }
+        current = {
+            "roots": ["/nix/store/b", "/nix/store/c", "/nix/store/d"],
+            "inputs": {"nixpkgs": "/nix/store/new", "same": "/nix/store/s"},
+            "tools": {"ci-nfb.sh": "1", "added": "3"},
+        }
+        self.assertEqual(
+            workflow.coverage_change(previous, current),
+            {
+                "rootsAdded": 2,
+                "rootsRemoved": 1,
+                "inputs": ["nixpkgs"],
+                "tools": ["added", "gone"],
+            },
+        )
+
+    def test_coverages_keep_host_closures_out_of_the_linux_seed(self):
+        proof = {
+            "records": [
+                {"system": "x86_64-linux", "storePath": "/nix/store/host-linux"},
+                {"system": "aarch64-darwin", "storePath": "/nix/store/host-darwin"},
+            ]
+        }
+        nfb = {system: f"/nix/store/nfb-{system}" for system in workflow.SYSTEMS}
+        total, parts = workflow.coverages(
+            proof, {"nixpkgs": "/nix/store/input"}, nfb, {"modules/ci.nix": "blob"}
+        )
+        self.assertEqual(set(parts), set(generation.COMPONENTS))
+        for component, part in parts.items():
+            self.assertIn("/nix/store/input", part["roots"])
+            if component.startswith("linux-seed-"):
+                self.assertNotIn("/nix/store/host-linux", part["roots"])
+            elif component.endswith("aarch64-darwin"):
+                self.assertIn("/nix/store/host-darwin", part["roots"])
+                self.assertNotIn("/nix/store/host-linux", part["roots"])
+        self.assertEqual(total["roots"], sorted(set(total["roots"])))
 
 
 if __name__ == "__main__":
