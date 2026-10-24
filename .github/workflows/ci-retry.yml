@@ -1,0 +1,84 @@
+name: CI Retry
+"on":
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+permissions:
+  contents: read
+# A newer attempt of the same run supersedes a pending retry.
+concurrency:
+  group: ci-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: true
+jobs:
+  retry:
+    name: Retry transient failures
+    # nixbuild.net sometimes fails builds with only an opaque error id, and the
+    # same builds pass minutes later. The Linux lane uploads a marker when that
+    # is all that went wrong; anything else stays failed.
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Check the failure is transient
+        id: check
+        run: |
+          set -euo pipefail
+          marker="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?name=nixbuild-transient-$ATTEMPT" --jq .total_count)"
+          if [ "$marker" = 0 ]; then
+            echo "No transient-failure marker for attempt $ATTEMPT"
+            exit 0
+          fi
+          # Re-running failed jobs would also repeat another lane's real failure.
+          others="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure" and .name != "Linux" and .name != "All Builds") | .name')"
+          if [ -n "$others" ]; then
+            echo "Not retrying; other jobs failed: $(paste -sd ',' <<< "$others")"
+            exit 0
+          fi
+          echo "retry=true" >> "$GITHUB_OUTPUT"
+      - name: Wait before retrying
+        if: steps.check.outputs.retry == 'true'
+        run: sleep $((ATTEMPT * 300))
+      - name: Confirm the run is still current
+        id: current
+        if: steps.check.outputs.retry == 'true'
+        run: |
+          set -euo pipefail
+          attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .run_attempt)"
+          if [ "$attempt" != "$ATTEMPT" ]; then
+            echo "Not retrying; the run is already on attempt $attempt"
+            exit 0
+          fi
+          head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$HEAD_BRANCH" --jq .object.sha 2>/dev/null || true)"
+          if [ "$head" != "$HEAD_SHA" ]; then
+            echo "Not retrying; $HEAD_BRANCH has moved on from $HEAD_SHA or is gone"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+      # Events caused by GITHUB_TOKEN start no workflow_run workflows, so a re-run
+      # under it would never reach Cache Maintenance or the next retry.
+      - name: Create GitHub App token
+        id: app-token
+        if: steps.current.outputs.current == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ vars.WHITESTRAKE_BOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WHITESTRAKE_BOT_APP_PRIVATE_KEY }}
+          permission-actions: write
+      - name: Re-run failed jobs
+        if: steps.current.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs" --silent
+          echo "::notice ::Re-ran the failed jobs of CI run $RUN_ID (attempt $ATTEMPT)"

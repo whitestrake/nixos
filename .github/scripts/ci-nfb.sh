@@ -72,8 +72,14 @@ case "$projection" in
     if [ "${CI_PUBLISH_CHECKS:-false}" = true ]; then options+=(--cachix-cache whitestrake); fi
     ;;
 esac
-"${wrapper[@]}" -- "${nfb[@]}" --flake "$flake" "${options[@]}" \
-  --retries 2 --result-file "$result_dir/results.json" -j 50
+command=("${wrapper[@]}" -- "${nfb[@]}" --flake "$flake" "${options[@]}"
+  --retries 2 --result-file "$result_dir/results.json" -j 50)
+if [ "$projection" = linux-hosts ]; then
+  # Kept for nixbuild_transient.py, which tells nixbuild.net's opaque errors from real failures.
+  "${command[@]}" 2>&1 | tee "$result_dir/nix-fast-build.log"
+else
+  "${command[@]}"
+fi
 [ "$projection" != linux-checks ] || exit 0
 jq -ce -f .github/scripts/nix-fast-build-records.jq "$result_dir/results.json" > "$result_dir/records.json"
 if [ -n "${CI_EXPECTED_RECORDS:-}" ]; then
