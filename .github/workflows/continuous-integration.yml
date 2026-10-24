@@ -57,7 +57,29 @@ jobs:
             caches = cachix://whitestrake
             access-tokens = cachix://whitestrake=WRITE:${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build Linux configurations
+        id: build
         run: bash .github/scripts/ci-nfb.sh linux-hosts x86_64-linux
+      # CI Retry re-runs this attempt's failed jobs when the marker is present.
+      - name: Flag transient nixbuild.net failures
+        id: transient
+        if: failure() && steps.build.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/ci-results"
+          [ -f "$dir/results.json" ] && [ -f "$dir/nix-fast-build.log" ] || exit 0
+          hosts="$(python3 .github/scripts/nixbuild_transient.py "$dir/results.json" "$dir/nix-fast-build.log")"
+          [ -n "$hosts" ] || exit 0
+          mkdir "$RUNNER_TEMP/nixbuild-transient"
+          printf '%s\n' "$hosts" > "$RUNNER_TEMP/nixbuild-transient/hosts"
+          echo "::notice ::Only opaque nixbuild.net errors: $(paste -sd ' ' <<< "$hosts")"
+          echo "flagged=true" >> "$GITHUB_OUTPUT"
+      - name: Upload transient failure marker
+        if: failure() && steps.transient.outputs.flagged == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nixbuild-transient-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nixbuild-transient
+          retention-days: 1
       - name: Publish Linux build records
         id: records
         run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"

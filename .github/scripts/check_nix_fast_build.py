@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import nix_fast_build
+import nixbuild_transient
 
 
 class DownloadWatchCheck(unittest.TestCase):
@@ -158,6 +159,85 @@ class RecordsCheck(unittest.TestCase):
                 result = records(results)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
+
+
+def failed(attr):
+    return {"type": "BUILD", "success": False, "attr": attr}
+
+
+# Copied from a nixbuild.net failure on nixos#237, colour codes and all.
+OPAQUE_LINE = (
+    "\x1b[2mnixosConfigurations.omnius>\x1b[0m \x1b[31;1merror:\x1b[0m"
+    " error bb260a42-9e0e-4cdb-8260-561af8a38732\x1b[0m"
+)
+
+
+class TransientCheck(unittest.TestCase):
+    # A transient verdict re-runs CI unattended, so real failures must never match.
+    def test_hosts_with_only_opaque_errors_are_transient(self):
+        log = "\n".join(
+            [
+                OPAQUE_LINE,
+                "nixosConfigurations.omnius> error: error"
+                " a653f4f5-9845-4209-bd63-48ddc934406f",
+                "nixosConfigurations.orthus> error: error"
+                " beb99102-2a7a-4ff5-ab66-7c2314252a38",
+                "nixosConfigurations.orthus> Running phase: buildPhase",
+            ]
+        )
+        results = [
+            failed("nixosConfigurations.omnius"),
+            built("nixosConfigurations.orthus", "/nix/store/a-orthus"),
+        ]
+        self.assertEqual(
+            nixbuild_transient.transient_hosts(results, log),
+            ["nixosConfigurations.omnius"],
+        )
+
+    def test_real_or_unexplained_failures_are_not_transient(self):
+        builder = (
+            "nixosConfigurations.omnius> error: builder for"
+            " '/nix/store/x-foo.drv' failed with exit code 2"
+        )
+        for name, results, log in (
+            (
+                "builder failure",
+                [failed("nixosConfigurations.omnius")],
+                f"{OPAQUE_LINE}\n{builder}",
+            ),
+            (
+                "no error logged",
+                [failed("nixosConfigurations.omnius")],
+                "nixosConfigurations.omnius> building",
+            ),
+            (
+                "another host failed for real",
+                [
+                    failed("nixosConfigurations.omnius"),
+                    failed("nixosConfigurations.pascal"),
+                ],
+                f"{OPAQUE_LINE}\nnixosConfigurations.pascal> error: Cannot build '/nix/store/y.drv'.",
+            ),
+            (
+                "evaluation failed",
+                [
+                    failed("nixosConfigurations.omnius"),
+                    {
+                        "type": "EVAL",
+                        "success": False,
+                        "attr": "nixosConfigurations.pascal",
+                    },
+                ],
+                OPAQUE_LINE,
+            ),
+            (
+                "nothing failed",
+                [built("nixosConfigurations.omnius", "/nix/store/a")],
+                OPAQUE_LINE,
+            ),
+        ):
+            with self.subTest(name):
+                self.assertEqual(nixbuild_transient.transient_hosts(results, log), [])
 
 
 if __name__ == "__main__":
