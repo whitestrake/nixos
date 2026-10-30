@@ -29,6 +29,10 @@
         cifs-utils
       ];
 
+      # The tempus CIFS mounts are IPv4-only; don't let an IPv6 address alone
+      # reach network-online before the IPv4 lease lands.
+      networking.dhcpcd.wait = "ipv4";
+
       # Filesystem mounts from Tempus
       sops.secrets."smbCredentials/pascal@tempus" = {};
       storage.cifsMounts = let

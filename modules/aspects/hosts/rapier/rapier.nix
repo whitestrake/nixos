@@ -42,6 +42,10 @@
 
       services.zfs.autoScrub.enable = true;
 
+      # The tempus CIFS mounts are IPv4-only; don't let an IPv6 address alone
+      # reach network-online before the IPv4 lease lands.
+      networking.dhcpcd.wait = "ipv4";
+
       sops.secrets."smbCredentials/rapier@tempus" = {};
       storage.cifsMounts = let
         credentials = config.sops.secrets."smbCredentials/rapier@tempus".path;
