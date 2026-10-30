@@ -139,6 +139,12 @@
           if [[ -z ''${TERM:-} ]]; then
             export TERM=xterm-256color
           fi
+
+          # Ctrl/Alt+Left/Right word movement (xterm-style modifier sequences)
+          bindkey '^[[1;5D' backward-word
+          bindkey '^[[1;5C' forward-word
+          bindkey '^[[1;3D' backward-word
+          bindkey '^[[1;3C' forward-word
         '';
         autosuggestion = {
           enable = true;
