@@ -37,15 +37,13 @@
       # Fix for running Windows binaries (Exec format error)
       environment.etc."binfmt.d/WSLInterop.conf".text = ":WSLInterop:M::MZ::/init:PF";
 
-      # Use systemd-resolved for native, robust mDNS resolution
-      services.resolved = {
+      # mDNS via Avahi rather than systemd-resolved. WSL keeps ownership of
+      # /etc/resolv.conf, so glibc queries its DNS tunnel directly (search
+      # domains included), and nss-mdns only claims .local names. Publishing
+      # stays off, as Windows already answers for this host's .local name.
+      services.avahi = {
         enable = true;
-        settings.Resolve = {
-          DNS = null;
-          Domains = null;
-          LLMNR = "false";
-          MulticastDNS = "resolve";
-        };
+        nssmdns4 = true;
       };
     };
 
