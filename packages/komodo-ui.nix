@@ -14,8 +14,8 @@
   # Maintained by passthru.updateScript, which the combined update workflow
   # runs in the same run that bumps flake.lock. The pin is the image layer's
   # digest: upstream's own content address for the files.
-  pinnedVersion = "2.3.3";
-  layerDigest = "sha256:4058d0d3ccd489d941500ef40caf8560e4f55821abf9df962745e63a49d1e804";
+  pinnedVersion = "2.3.4";
+  layerDigest = "sha256:28ba460b66fc7bf0291f0ecf7c6c6cb093a2fd0c212626e34d4fb4ee38d4fb85";
 
   # Only the fetch's outputHash consults the pin, so evaluating .version or
   # .updateScript never fails and the update script can add a missing pin.
