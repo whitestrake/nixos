@@ -27,7 +27,6 @@
         serviceConfig = {
           ExecStartPre = "${pkgs.coreutils}/bin/timeout 60 ${pkgs.bash}/bin/bash -c 'until ${pkgs.getent}/bin/getent hosts ${host.name}.${host.tailnetSuffix} >/dev/null; do sleep 1; done'";
           Restart = "on-failure";
-          RestartSec = 5;
         };
       };
       den.deploy.health = {
