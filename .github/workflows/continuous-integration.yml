@@ -169,9 +169,11 @@ jobs:
           # The dry run derives every source path from the lock file's narHash
           # without fetching, so an unchanged lock costs a few narinfo lookups.
           archive="$(nix flake archive --dry-run --json)"
-          # den also fetches nix-effects and gen with builtins.fetchTarball pinned
-          # by sha256, which Nix substitutes the same way. Evaluating the list
-          # fetches them (small), so they are checked even when every input is cached.
+          # den also fetches nix-effects, the gen hub and every gen-* library the
+          # hub and libraries pin in their own locks. Each is pinned by narHash,
+          # which Nix (fetchTarball) or Determinate Nix (fetchTree) substitutes
+          # the same way. Evaluating the list fetches them (small), so they are
+          # checked even when every input is cached.
           fetched="$(nix eval --impure --json --expr \
             'import ./.github/scripts/den-fetched-sources.nix { den = builtins.fetchTree (builtins.fromJSON (builtins.readFile ./flake.lock)).nodes.den.locked; }')"
           mapfile -t sources < <({
