@@ -59,7 +59,8 @@ jobs:
       - name: Build Linux configurations
         id: build
         run: bash .github/scripts/ci-nfb.sh linux-hosts x86_64-linux
-      # CI Retry re-runs this attempt's failed jobs when the marker is present.
+      # A ci-transient-*-<attempt> artifact vouches for the jobs named in its
+      # jobs file; CI Retry re-runs an attempt only when every failed job has one.
       - name: Flag transient nixbuild.net failures
         id: transient
         if: failure() && steps.build.outcome == 'failure'
@@ -69,16 +70,17 @@ jobs:
           [ -f "$dir/results.json" ] && [ -f "$dir/nix-fast-build.log" ] || exit 0
           hosts="$(python3 .github/scripts/nixbuild_transient.py "$dir/results.json" "$dir/nix-fast-build.log")"
           [ -n "$hosts" ] || exit 0
-          mkdir "$RUNNER_TEMP/nixbuild-transient"
-          printf '%s\n' "$hosts" > "$RUNNER_TEMP/nixbuild-transient/hosts"
+          mkdir "$RUNNER_TEMP/ci-transient"
+          echo Linux > "$RUNNER_TEMP/ci-transient/jobs"
+          printf '%s\n' "$hosts" > "$RUNNER_TEMP/ci-transient/hosts"
           echo "::notice ::Only opaque nixbuild.net errors: $(paste -sd ' ' <<< "$hosts")"
           echo "flagged=true" >> "$GITHUB_OUTPUT"
-      - name: Upload transient failure marker
+      - name: Upload transient failure flag
         if: failure() && steps.transient.outputs.flagged == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: nixbuild-transient-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/nixbuild-transient
+          name: ci-transient-nixbuild-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-transient
           retention-days: 1
       - name: Publish Linux build records
         id: records
@@ -282,6 +284,34 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
+      # GitHub sometimes never hands a lane to a hosted runner and cancels it
+      # about 15 minutes later, with no runner and no steps. A timed-out lane
+      # has both, so it is not flagged.
+      - name: Flag lanes that never got a runner
+        id: unassigned
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Only advisory for CI Retry, so an API failure must not fail All Builds.
+          if ! jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "cancelled" and (.runner_name // "") == "" and ((.steps // []) | length) == 0) | .name')"; then
+            echo "::warning ::Could not list this attempt's jobs; lanes without a runner are not flagged"
+            exit 0
+          fi
+          [ -n "$jobs" ] || exit 0
+          mkdir "$RUNNER_TEMP/ci-transient"
+          printf '%s\n' "$jobs" > "$RUNNER_TEMP/ci-transient/jobs"
+          echo "::notice ::Never got a runner: $(paste -sd ',' <<< "$jobs")"
+          echo "flagged=true" >> "$GITHUB_OUTPUT"
+      - name: Upload transient failure flag
+        if: steps.unassigned.outputs.flagged == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ci-transient-unassigned-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-transient
+          retention-days: 1
+
       - name: Report platform lane durations
         env:
           GH_TOKEN: ${{ github.token }}
