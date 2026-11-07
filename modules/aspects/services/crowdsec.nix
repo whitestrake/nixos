@@ -1,4 +1,10 @@
-{den, ...}: {
+{
+  den,
+  inputs,
+  ...
+}: let
+  bouncerModule = "services/security/crowdsec-firewall-bouncer.nix";
+in {
   # CrowdSec on every server: the engine with a local API, the firewall
   # bouncer, sshd detection and the community blocklist. Hosts that face the
   # internet add den.aspects.crowdsec.edge for the HTTP scenarios.
@@ -10,12 +16,38 @@
       ...
     }: let
       cfg = config.services.crowdsec;
+      # Where the 26.05 module kept its state; pinned so hosts keep their
+      # machine and Console identity.
       stateDir = "/var/lib/crowdsec/state";
       cscli = lib.getExe' cfg.package "cscli";
       docker = config.virtualisation.docker.enable;
     in {
+      # FIXME: nixos-26.05 carries the old crowdsec module (written for 1.7);
+      # nixos-unstable has a rewrite that fixes most of what this aspect used
+      # to work around. Both modules come from unstable until the stable
+      # channel includes the rewrite. The bouncer module moves with it because
+      # it reads the rewrite's options. (26.05 has crowdsec.nix; the rewrite
+      # is a directory.)
+      disabledModules = ["services/security/crowdsec.nix" bouncerModule];
+      imports = map (m: "${inputs.nixpkgs-unstable}/nixos/modules/${m}") ["services/security/crowdsec" bouncerModule];
+      assertions = [
+        {
+          assertion = lib.versionOlder config.system.nixos.release "26.11";
+          message = ''
+            den.aspects.crowdsec imports the crowdsec modules from nixpkgs-unstable.
+            If the stock module in this release is the rewrite (services/security/crowdsec/default.nix),
+            remove the disabledModules/imports/assertion block.
+          '';
+        }
+      ];
+
       services.crowdsec = {
         enable = true;
+        # CrowdSec releases often and new hub content can need a newer engine,
+        # so the packages track unstable for good, not just until the module
+        # lands. When a nixpkgs-unstable bump moves CrowdSec a minor version,
+        # check the unstable module's diff for matching changes.
+        package = pkgs.unstable.crowdsec;
 
         hub = {
           collections = [
@@ -26,7 +58,7 @@
           parsers = ["crowdsecurity/whitelists"];
         };
 
-        localConfig = {
+        settings = {
           acquisitions = [
             {
               source = "journalctl";
@@ -35,8 +67,6 @@
             }
           ];
 
-          # Every s02-enrich entry renders to the same file name, so keep a
-          # single entry here.
           parsers.s02Enrich = [
             {
               name = "homelab/tailnet-whitelist";
@@ -47,60 +77,50 @@
               };
             }
           ];
-        };
 
-        settings = {
-          general.api.server = {
-            enable = true;
-            # AMP's ADS holds 8080 on legion.
-            listen_uri = "127.0.0.1:8095";
-            # Writable, so `cscli console enroll` can save its options.
-            console_path = "${stateDir}/console.yaml";
+          config = {
+            config_paths.data_dir = stateDir;
+            # The 26.05 module turned WAL on; keep the existing database as it is.
+            db_config.use_wal = true;
+            api.server = {
+              # AMP's ADS holds 8080 on legion.
+              listen_uri = "127.0.0.1:8095";
+              console_path = "${stateDir}/console.yaml";
+              # Without it the engine never registers with the Central API
+              # and gets no community blocklist.
+              online_client.credentials_path = "${stateDir}/online_api_credentials.yaml";
+            };
           };
-          # Both default to null; without the CAPI path the engine never
-          # registers, and gets no community blocklist.
-          lapi.credentialsFile = "${stateDir}/local_api_credentials.yaml";
-          capi.credentialsFile = "${stateDir}/online_api_credentials.yaml";
+
+          # tmpfiles rewrites console.yaml on every activation, so the share
+          # options live here. These are what `cscli console enroll` set.
+          console.configuration = {
+            share_manual_decisions = true;
+            share_tainted = true;
+            share_custom = true;
+            share_context = true;
+            console_management = false;
+          };
+
           # Local scenarios record alerts without banning. Community blocklist
           # decisions are not simulated and are enforced.
           simulation.simulation = true;
         };
       };
 
-      # The bouncer's registration unit runs the bare cscli, which reads
-      # /etc/crowdsec/config.yaml; the module only passes its config with -c.
-      # Remove once nixpkgs points that unit at the wrapped cscli.
-      environment.etc."crowdsec/config.yaml".source =
-        (pkgs.formats.yaml {}).generate "crowdsec.yaml" cfg.settings.general;
-
       services.crowdsec-firewall-bouncer = {
         enable = true;
+        package = pkgs.unstable.crowdsec-firewall-bouncer;
         # Docker-published ports are DNATed through FORWARD and never reach
         # INPUT, so they need DOCKER-USER too.
         settings.iptables_chains = ["INPUT"] ++ lib.optional docker "DOCKER-USER";
       };
 
-      # The setup script runs `cscli machines add` before `cscli capi
-      # register`, and the former fails if the CAPI credentials file is
-      # missing. An empty file loads as "no credentials" and register fills it.
-      systemd.tmpfiles.settings."11-crowdsec-capi"."${stateDir}/online_api_credentials.yaml".f = {
-        user = cfg.user;
-        group = cfg.group;
-        mode = "0600";
-      };
-
-      # The bouncer's registration unit is DynamicUser with StateDirectory
-      # "crowdsec", so systemd moves /var/lib/crowdsec under /var/lib/private,
-      # where crowdsec.service (no StateDirectory) can no longer reach it.
-      systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.DynamicUser = lib.mkForce false;
-
-      # The bouncer Requires its registration unit but isn't ordered after it,
-      # so on a fresh host it starts before its API key exists. Docker creates
-      # DOCKER-USER; the bouncer skips a chain that's missing.
-      # It also exits for good if the local API goes away, as it does whenever
-      # crowdsec restarts, which would leave nothing enforcing.
+      # Docker creates DOCKER-USER; the bouncer skips a chain that's missing.
+      # The bouncer also exits for good if the local API goes away, as it does
+      # whenever crowdsec restarts, which would leave nothing enforcing.
       systemd.services.crowdsec-firewall-bouncer = {
-        after = ["crowdsec-firewall-bouncer-register.service"] ++ lib.optional docker "docker.service";
+        after = lib.optional docker "docker.service";
         wants = lib.optional docker "docker.service";
         serviceConfig = {
           Restart = "on-failure";
@@ -108,8 +128,9 @@
         };
       };
 
-      # Console enrolment. The module's console.tokenFile only enrols when the
-      # token file is missing, so it never runs with the secret in place.
+      # Console enrolment. The module's console.enrollKeyFile enrols from
+      # crowdsec-setup on every start and fails setup (and the switch) if the
+      # Console is unreachable, so enrol from our own timer instead.
       # `cscli capi status` only reports enrolment once the engine has been
       # accepted in the Console, so a marker in the state dir records that we
       # enrolled. A timer drives it so a Console outage never fails a switch.
@@ -129,7 +150,6 @@
           if cscli console enroll --name ${lib.escapeShellArg config.networking.hostName} \
             "$(cat ${config.sops.secrets.crowdsecConsoleEnrollKey.path})"; then
             touch ${stateDir}/console-enrolled
-            # Pick up the console options enrol just wrote.
             systemctl --no-block try-restart crowdsec.service
           else
             echo "Console enrolment failed; the timer tries again in an hour." >&2
@@ -161,7 +181,7 @@
           "crowdsecurity/base-http-scenarios"
         ];
         # Never ban CDN edges (Cloudflare-proxied names reach orthus Caddy).
-        postOverflows = ["crowdsecurity/cdn-whitelist"];
+        postoverflows = ["crowdsecurity/cdn-whitelist"];
       };
     };
   };

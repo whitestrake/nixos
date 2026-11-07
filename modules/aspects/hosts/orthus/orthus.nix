@@ -34,7 +34,7 @@
       # Caddy's own log stays on stderr. -o cat hands the parser the bare JSON.
       services.crowdsec = {
         hub.collections = ["crowdsecurity/caddy"];
-        localConfig.acquisitions = [
+        settings.acquisitions = [
           {
             source = "journalctl";
             journalctl_filter = ["-o" "cat" "CONTAINER_NAME=orthus-caddy-1" "PRIORITY=6"];

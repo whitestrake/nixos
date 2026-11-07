@@ -23,7 +23,7 @@
       # and its own log on stderr; -o cat hands the parser the bare JSON.
       services.crowdsec = {
         hub.collections = ["crowdsecurity/traefik"];
-        localConfig.acquisitions = [
+        settings.acquisitions = [
           {
             source = "journalctl";
             journalctl_filter = ["-o" "cat" "CONTAINER_NAME=pangolin-traefik-1" "PRIORITY=6"];
