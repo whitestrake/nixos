@@ -136,10 +136,14 @@
           fi
         '';
       };
+      # A successful enrol restarts crowdsec. OnActiveSec (not OnBootSec, which
+      # has long passed on a running host) keeps that restart out of the
+      # switch that adds the timer, where it would knock over the bouncer
+      # while it starts and fail the deploy.
       systemd.timers.crowdsec-console-enroll = {
         wantedBy = ["timers.target"];
         timerConfig = {
-          OnBootSec = "2min";
+          OnActiveSec = "2min";
           OnUnitInactiveSec = "1h";
         };
       };
