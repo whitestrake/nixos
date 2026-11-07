@@ -102,28 +102,29 @@
 
       # Console enrolment. The module's console.tokenFile only enrols when the
       # token file is missing, so it never runs with the secret in place.
+      # `cscli capi status` only reports enrolment once the engine is accepted
+      # in the Console, so a marker in the state dir records that we enrolled.
       sops.secrets.crowdsecConsoleEnrollKey = {};
       systemd.services.crowdsec-console-enroll = {
         description = "Enrol the CrowdSec engine in the CrowdSec Console";
         wantedBy = ["multi-user.target"];
+        # Not Requires: restarting crowdsec below would restart this unit too.
         after = ["crowdsec.service" "network-online.target"];
-        requires = ["crowdsec.service"];
-        wants = ["network-online.target"];
+        wants = ["crowdsec.service" "network-online.target"];
+        unitConfig.ConditionPathExists = "!${stateDir}/console-enrolled";
         serviceConfig = {
           Type = "oneshot";
-          RemainAfterExit = true;
           # The Console can be briefly unreachable; try again later.
           Restart = "on-failure";
           RestartSec = "5min";
         };
         script = ''
-          cscli() { ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- ${cscli} "$@"; }
-          if cscli capi status 2>&1 | grep -q 'Your instance is enrolled in the console'; then
-            exit 0
-          fi
-          cscli console enroll --name ${lib.escapeShellArg config.networking.hostName} \
+          ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- ${cscli} console enroll \
+            --name ${lib.escapeShellArg config.networking.hostName} \
             "$(cat ${config.sops.secrets.crowdsecConsoleEnrollKey.path})"
-          systemctl try-restart crowdsec.service
+          touch ${stateDir}/console-enrolled
+          # Pick up the console options enrol just wrote.
+          systemctl --no-block try-restart crowdsec.service
         '';
       };
     };
