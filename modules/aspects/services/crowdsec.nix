@@ -97,9 +97,15 @@
       # The bouncer Requires its registration unit but isn't ordered after it,
       # so on a fresh host it starts before its API key exists. Docker creates
       # DOCKER-USER; the bouncer skips a chain that's missing.
+      # It also exits for good if the local API goes away, as it does whenever
+      # crowdsec restarts, which would leave nothing enforcing.
       systemd.services.crowdsec-firewall-bouncer = {
         after = ["crowdsec-firewall-bouncer-register.service"] ++ lib.optional docker "docker.service";
         wants = lib.optional docker "docker.service";
+        serviceConfig = {
+          Restart = "on-failure";
+          RestartSec = "10s";
+        };
       };
 
       # Console enrolment. The module's console.tokenFile only enrols when the
