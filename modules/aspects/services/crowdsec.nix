@@ -94,10 +94,12 @@
       # where crowdsec.service (no StateDirectory) can no longer reach it.
       systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.DynamicUser = lib.mkForce false;
 
-      # Docker creates DOCKER-USER; the bouncer skips a chain that's missing.
-      systemd.services.crowdsec-firewall-bouncer = lib.mkIf docker {
-        after = ["docker.service"];
-        wants = ["docker.service"];
+      # The bouncer Requires its registration unit but isn't ordered after it,
+      # so on a fresh host it starts before its API key exists. Docker creates
+      # DOCKER-USER; the bouncer skips a chain that's missing.
+      systemd.services.crowdsec-firewall-bouncer = {
+        after = ["crowdsec-firewall-bouncer-register.service"] ++ lib.optional docker "docker.service";
+        wants = lib.optional docker "docker.service";
       };
 
       # Console enrolment. The module's console.tokenFile only enrols when the
