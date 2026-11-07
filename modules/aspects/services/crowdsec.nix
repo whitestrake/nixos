@@ -1,4 +1,4 @@
-{...}: {
+{den, ...}: {
   # CrowdSec on every server: the engine with a local API, the firewall
   # bouncer, sshd detection and the community blocklist. Hosts that face the
   # internet add den.aspects.crowdsec.edge for the HTTP scenarios.
@@ -149,14 +149,8 @@
   # Extra scenarios for hosts that serve HTTP to the internet. Each host adds
   # its own proxy's collection and access-log acquisition.
   den.aspects.crowdsec.edge = {
-    nixos = {config, ...}: {
-      assertions = [
-        {
-          assertion = config.services.crowdsec.enable;
-          message = "den.aspects.crowdsec.edge needs den.aspects.crowdsec (included by server).";
-        }
-      ];
-
+    includes = [den.aspects.crowdsec];
+    nixos = {
       services.crowdsec.hub = {
         collections = [
           "crowdsecurity/http-cve"
