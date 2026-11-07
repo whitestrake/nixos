@@ -102,30 +102,38 @@
 
       # Console enrolment. The module's console.tokenFile only enrols when the
       # token file is missing, so it never runs with the secret in place.
-      # `cscli capi status` only reports enrolment once the engine is accepted
-      # in the Console, so a marker in the state dir records that we enrolled.
+      # `cscli capi status` only reports enrolment once the engine has been
+      # accepted in the Console, so a marker in the state dir records that we
+      # enrolled. A timer drives it so a Console outage never fails a switch.
       sops.secrets.crowdsecConsoleEnrollKey = {};
       systemd.services.crowdsec-console-enroll = {
         description = "Enrol the CrowdSec engine in the CrowdSec Console";
-        wantedBy = ["multi-user.target"];
-        # Not Requires: restarting crowdsec below would restart this unit too.
         after = ["crowdsec.service" "network-online.target"];
-        wants = ["crowdsec.service" "network-online.target"];
+        wants = ["network-online.target"];
         unitConfig.ConditionPathExists = "!${stateDir}/console-enrolled";
-        serviceConfig = {
-          Type = "oneshot";
-          # The Console can be briefly unreachable; try again later.
-          Restart = "on-failure";
-          RestartSec = "5min";
-        };
+        serviceConfig.Type = "oneshot";
         script = ''
-          ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- ${cscli} console enroll \
-            --name ${lib.escapeShellArg config.networking.hostName} \
-            "$(cat ${config.sops.secrets.crowdsecConsoleEnrollKey.path})"
-          touch ${stateDir}/console-enrolled
-          # Pick up the console options enrol just wrote.
-          systemctl --no-block try-restart crowdsec.service
+          cscli() { ${pkgs.util-linux}/bin/runuser -u ${cfg.user} -- ${cscli} "$@"; }
+          if cscli capi status 2>&1 | grep -q 'enrolled in the console'; then
+            touch ${stateDir}/console-enrolled
+            exit 0
+          fi
+          if cscli console enroll --name ${lib.escapeShellArg config.networking.hostName} \
+            "$(cat ${config.sops.secrets.crowdsecConsoleEnrollKey.path})"; then
+            touch ${stateDir}/console-enrolled
+            # Pick up the console options enrol just wrote.
+            systemctl --no-block try-restart crowdsec.service
+          else
+            echo "Console enrolment failed; the timer tries again in an hour." >&2
+          fi
         '';
+      };
+      systemd.timers.crowdsec-console-enroll = {
+        wantedBy = ["timers.target"];
+        timerConfig = {
+          OnBootSec = "2min";
+          OnUnitInactiveSec = "1h";
+        };
       };
     };
   };
