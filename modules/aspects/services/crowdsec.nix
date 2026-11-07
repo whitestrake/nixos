@@ -80,6 +80,20 @@
         settings.iptables_chains = ["INPUT"] ++ lib.optional docker "DOCKER-USER";
       };
 
+      # The setup script runs `cscli machines add` before `cscli capi
+      # register`, and the former fails if the CAPI credentials file is
+      # missing. An empty file loads as "no credentials" and register fills it.
+      systemd.tmpfiles.settings."11-crowdsec-capi"."${stateDir}/online_api_credentials.yaml".f = {
+        user = cfg.user;
+        group = cfg.group;
+        mode = "0600";
+      };
+
+      # The bouncer's registration unit is DynamicUser with StateDirectory
+      # "crowdsec", so systemd moves /var/lib/crowdsec under /var/lib/private,
+      # where crowdsec.service (no StateDirectory) can no longer reach it.
+      systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.DynamicUser = lib.mkForce false;
+
       # Docker creates DOCKER-USER; the bouncer skips a chain that's missing.
       systemd.services.crowdsec-firewall-bouncer = lib.mkIf docker {
         after = ["docker.service"];
