@@ -108,6 +108,12 @@ in {
         };
       };
 
+      # The 26.05 module linked its s02-enrich parsers under store-hash names,
+      # and the copy left behind shadows the rewrite's 0-nixos-generated.yaml
+      # (same parser name) until its store path is collected. Goes with the
+      # FIXME block above.
+      systemd.tmpfiles.settings."10-crowdsec-legacy"."/etc/crowdsec/parsers/s02-enrich/*-parsers-s02-enrich.yaml".r = {};
+
       services.crowdsec-firewall-bouncer = {
         enable = true;
         package = pkgs.unstable.crowdsec-firewall-bouncer;
