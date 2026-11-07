@@ -4,6 +4,7 @@
       den.aspects.server
       den.aspects.docker
       den.aspects.komodo-core
+      den.aspects.crowdsec.edge
     ];
 
     nixos = {lib, ...}: {
@@ -28,6 +29,19 @@
         "beszel0"
         "dockhand0"
       ];
+
+      # caddy-docker-proxy sites log access as JSON on stdout (PRIORITY=6);
+      # Caddy's own log stays on stderr. -o cat hands the parser the bare JSON.
+      services.crowdsec = {
+        hub.collections = ["crowdsecurity/caddy"];
+        localConfig.acquisitions = [
+          {
+            source = "journalctl";
+            journalctl_filter = ["-o" "cat" "CONTAINER_NAME=orthus-caddy-1" "PRIORITY=6"];
+            labels.type = "caddy";
+          }
+        ];
+      };
     };
   };
 }

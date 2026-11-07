@@ -4,6 +4,7 @@
     includes = [
       den.aspects.monitoring
       den.aspects.cachix-agent
+      den.aspects.crowdsec
     ];
 
     # Don't need man pages on headless servers
