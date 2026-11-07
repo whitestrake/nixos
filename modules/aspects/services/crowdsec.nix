@@ -82,6 +82,14 @@ in {
             config_paths.data_dir = stateDir;
             # The 26.05 module turned WAL on; keep the existing database as it is.
             db_config.use_wal = true;
+            # Left unset, cscli takes hub content from the frozen branch for
+            # its own version whenever it isn't the latest release, which on
+            # unstable is most of the time. Track master instead (as the 26.05
+            # module did). If master ever ships a scenario our engine can't
+            # load, `crowdsec -t` fails the start on hosts that install it:
+            # bump nixpkgs-unstable, or point this back at the engine's version
+            # branch and force-reinstall the item on that host.
+            cscli.hub_branch = "master";
             api.server = {
               # AMP's ADS holds 8080 on legion.
               listen_uri = "127.0.0.1:8095";
