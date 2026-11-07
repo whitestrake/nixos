@@ -64,6 +64,14 @@ in {
         komodoMongoMonitorPassword = {};
         komodoMonitorKey = {};
         komodoMonitorSecret = {};
+        # Core's own age identity, a recipient of the stacks repository's
+        # secrets/komodo.sops.yaml, which the "Apply Secrets" action decrypts
+        # into Komodo variables.
+        komodoCoreAgeKey = {
+          owner = "komodo-core";
+          group = "komodo-core";
+          restartUnits = ["komodo-core.service"];
+        };
       };
       # Read by systemd as root before dropping privileges, and inherited by the
       # `km` processes Core spawns for database backups.
@@ -84,12 +92,14 @@ in {
         wants = ["network-online.target"];
         requires = ["mongodb.service"];
         # git for repos and syncs; km for scheduled database backups; deno
-        # for Actions, which Core runs as `deno run` subprocesses. Komodo
-        # checks for git with `which git` before every clone or pull.
-        path = [komodo pkgs.deno pkgs.git pkgs.which];
+        # for Actions, which Core runs as `deno run` subprocesses; sops for
+        # the "Apply Secrets" action. Komodo checks for git with `which git`
+        # before every clone or pull.
+        path = [komodo pkgs.deno pkgs.git pkgs.sops pkgs.which];
 
         environment = {
           HOME = stateDir;
+          SOPS_AGE_KEY_FILE = config.sops.secrets.komodoCoreAgeKey.path;
           KOMODO_HOST = "https://komodo.whitestrake.net";
           KOMODO_TITLE = "Komodo";
           # Pangolin reaches Core on the Docker bridge address (172.17.0.1)

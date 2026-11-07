@@ -46,7 +46,8 @@
 
         excludes = [
           "flake.nix"
-          "modules/secrets/secrets.yaml"
+          # sops rewrites these files in its own layout on every edit.
+          "modules/secrets/*.yaml"
         ];
       };
     };
