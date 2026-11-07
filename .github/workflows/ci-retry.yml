@@ -35,6 +35,9 @@ jobs:
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/ci-transient"
+          # gh only creates it when there are artifacts; find on a missing
+          # directory fails the step under pipefail.
+          mkdir -p "$dir"
           # Fails when the attempt uploaded no flags; show any other error.
           if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -p "ci-transient-*-$ATTEMPT" -D "$dir" 2> "$RUNNER_TEMP/download.err"; then
             grep -qi 'no valid artifacts' "$RUNNER_TEMP/download.err" || cat "$RUNNER_TEMP/download.err" >&2
