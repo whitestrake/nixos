@@ -235,6 +235,14 @@ in {
             # `template` boolean carries the sample: converted to an integer
             # (prometheus_client drops booleans), then renamed to `info`.
             (resourceNames "ListStacks")
+            # Each stack's container state (running, stopped, unhealthy, down,
+            # ...), for an alert when a stack stays out of running. Carried
+            # by the `template` boolean like the name series above.
+            (komodoRead "komodo_stack" "ListStacks" {} {
+              path = "@this";
+              tags = ["id" "name" "info_state"];
+              included_keys = ["id" "name" "info_state" "template"];
+            })
             (resourceNames "ListProcedures")
             (resourceNames "ListResourceSyncs")
           ];
@@ -284,14 +292,14 @@ in {
           processors.converter = [
             {
               order = 1;
-              namepass = ["komodo_resource"];
+              namepass = ["komodo_resource" "komodo_stack"];
               fields.integer = ["template"];
             }
           ];
           processors.rename = [
             {
               order = 2;
-              namepass = ["komodo_resource"];
+              namepass = ["komodo_resource" "komodo_stack"];
               replace = [
                 {
                   field = "template";
