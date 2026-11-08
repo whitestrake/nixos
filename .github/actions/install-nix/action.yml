@@ -49,6 +49,73 @@ runs:
           "$HOST_PYTHON" .github/scripts/ci_darwin.py activate-nix --state "$DARWIN_STATE"
         fi
 
+    # nix-quick-install-action pipes its download straight into tar with no
+    # --fail, so when GitHub release downloads returned 504 on 8 November 2026
+    # every lane failed with "zstd: unsupported format" across several
+    # re-runs. The archive is kept in the Actions cache instead, pinned by
+    # checksum per Nix version and system, and handed to the action as a
+    # file:// URL. A bump of NIX_VERSION needs new pins (the archives come
+    # from the action's v35 release; its RELEASE file names the tag).
+    - name: Locate Nix installer archive
+      id: archive
+      if: steps.prepare.outputs.activated != 'true'
+      shell: bash
+      env:
+        NIX_VERSION: ${{ steps.prepare.outputs.nix-version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) system=x86_64-linux ;;
+          macOS-ARM64) system=aarch64-darwin ;;
+          *) echo "::error ::No Nix installer archive for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        case "$NIX_VERSION-$system" in
+          2.34.7-x86_64-linux) sha256=f1e5d42c9cf1494a2bd020e42bf5345cc25168f9ec3ced3ed77e6b688c66054a ;;
+          2.34.7-aarch64-darwin) sha256=6fb35fca1628a455f835bf65a3b5ef7999c9e4094494307ca15da649fb6aa264 ;;
+          *) echo "::error ::No pinned checksum for the Nix $NIX_VERSION $system installer archive"; exit 1 ;;
+        esac
+        {
+          echo "file=nix-$NIX_VERSION-$system.tar.zstd"
+          echo "sha256=$sha256"
+          echo "directory=$RUNNER_TEMP/nix-installer"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore Nix installer archive
+      id: archive-cache
+      if: steps.prepare.outputs.activated != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.archive.outputs.directory }}
+        key: nix-installer-${{ steps.archive.outputs.sha256 }}
+
+    # Checked on every run, so a corrupt cache entry fails loudly instead of
+    # reaching the installer.
+    - name: Fetch and check Nix installer archive
+      if: steps.prepare.outputs.activated != 'true'
+      shell: bash
+      env:
+        ARCHIVE_DIRECTORY: ${{ steps.archive.outputs.directory }}
+        ARCHIVE_FILE: ${{ steps.archive.outputs.file }}
+        ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$ARCHIVE_DIRECTORY"
+        path="$ARCHIVE_DIRECTORY/$ARCHIVE_FILE"
+        if [ ! -f "$path" ]; then
+          curl --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --retry-max-time 120 \
+            --output "$path" \
+            "https://github.com/nixbuild/nix-quick-install-action/releases/download/v35/$ARCHIVE_FILE"
+        fi
+        echo "$ARCHIVE_SHA256  $path" | shasum -a 256 --check -
+
+    - name: Save Nix installer archive
+      if: steps.prepare.outputs.activated != 'true' && steps.archive-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.archive.outputs.directory }}
+        key: ${{ steps.archive-cache.outputs.cache-primary-key }}
+
     # The installer's bounded retry needs Bash >= 4.1; macOS ships 3.2.
     - name: Provide Bash 5 for the Nix installer
       if: runner.os == 'macOS' && steps.prepare.outputs.activated != 'true'
@@ -66,3 +133,4 @@ runs:
       with:
         nix_version: ${{ steps.prepare.outputs.nix-version }}
         nix_conf: ${{ steps.prepare.outputs.nix-conf }}
+        nix_archives_url: file://${{ steps.archive.outputs.directory }}
