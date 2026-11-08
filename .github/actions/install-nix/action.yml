@@ -52,10 +52,12 @@ runs:
     # nix-quick-install-action pipes its download straight into tar with no
     # --fail, so when GitHub release downloads returned 504 on 8 November 2026
     # every lane failed with "zstd: unsupported format" across several
-    # re-runs. The archive is kept in the Actions cache instead, pinned by
-    # checksum per Nix version and system, and handed to the action as a
-    # file:// URL. A bump of NIX_VERSION needs new pins (the archives come
-    # from the action's v35 release; its RELEASE file names the tag).
+    # re-runs. The archive is fetched here instead and handed to the action as
+    # a file:// URL: from the release first, which is fastest, and from a copy
+    # in the Actions cache when that fails. Both are checked against a pin per
+    # Nix version and system, so a NIX_VERSION bump needs new pins (the
+    # archives come from the action's v35 release; its RELEASE file names the
+    # tag).
     - name: Locate Nix installer archive
       id: archive
       if: steps.prepare.outputs.activated != 'true'
@@ -80,17 +82,10 @@ runs:
           echo "directory=$RUNNER_TEMP/nix-installer"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Restore Nix installer archive
-      id: archive-cache
-      if: steps.prepare.outputs.activated != 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ${{ steps.archive.outputs.directory }}
-        key: nix-installer-${{ steps.archive.outputs.sha256 }}
-
-    # Checked on every run, so a corrupt cache entry fails loudly instead of
-    # reaching the installer.
-    - name: Fetch and check Nix installer archive
+    # A short retry window, since the cache is the fallback rather than a
+    # longer wait on a release outage.
+    - name: Download Nix installer archive
+      id: download
       if: steps.prepare.outputs.activated != 'true'
       shell: bash
       env:
@@ -101,20 +96,54 @@ runs:
         set -euo pipefail
         mkdir -p "$ARCHIVE_DIRECTORY"
         path="$ARCHIVE_DIRECTORY/$ARCHIVE_FILE"
-        if [ ! -f "$path" ]; then
-          curl --fail --silent --show-error --location \
-            --retry 5 --retry-all-errors --retry-max-time 120 \
-            --output "$path" \
-            "https://github.com/nixbuild/nix-quick-install-action/releases/download/v35/$ARCHIVE_FILE"
+        if curl --fail --silent --show-error --location \
+          --retry 2 --retry-all-errors --retry-max-time 15 --max-time 60 \
+          --output "$path" \
+          "https://github.com/nixbuild/nix-quick-install-action/releases/download/v35/$ARCHIVE_FILE" &&
+          echo "$ARCHIVE_SHA256  $path" | shasum -a 256 --check --status -; then
+          echo "downloaded=true" >> "$GITHUB_OUTPUT"
+        else
+          rm -f "$path"
+          echo "::warning ::Could not download $ARCHIVE_FILE from the release; using the cached copy"
+          echo "downloaded=false" >> "$GITHUB_OUTPUT"
         fi
-        echo "$ARCHIVE_SHA256  $path" | shasum -a 256 --check -
+
+    - name: Restore cached Nix installer archive
+      if: steps.download.outputs.downloaded == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.archive.outputs.directory }}
+        key: nix-installer-${{ steps.archive.outputs.sha256 }}
+
+    # Fails when neither source produced the pinned archive.
+    - name: Check Nix installer archive
+      if: steps.download.outputs.downloaded == 'false'
+      shell: bash
+      env:
+        ARCHIVE_PATH: ${{ steps.archive.outputs.directory }}/${{ steps.archive.outputs.file }}
+        ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+        [ -f "$ARCHIVE_PATH" ] || { echo "::error ::The release download failed and no cached copy exists"; exit 1; }
+        echo "$ARCHIVE_SHA256  $ARCHIVE_PATH" | shasum -a 256 --check -
+
+    # Keeps the fallback populated: a lookup is cheap, and the save only runs
+    # when the cache has no copy yet.
+    - name: Look up cached Nix installer archive
+      id: archive-cache
+      if: steps.download.outputs.downloaded == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.archive.outputs.directory }}
+        key: nix-installer-${{ steps.archive.outputs.sha256 }}
+        lookup-only: true
 
     - name: Save Nix installer archive
-      if: steps.prepare.outputs.activated != 'true' && steps.archive-cache.outputs.cache-hit != 'true'
+      if: steps.download.outputs.downloaded == 'true' && steps.archive-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.archive.outputs.directory }}
-        key: ${{ steps.archive-cache.outputs.cache-primary-key }}
+        key: nix-installer-${{ steps.archive.outputs.sha256 }}
 
     # The installer's bounded retry needs Bash >= 4.1; macOS ships 3.2.
     - name: Provide Bash 5 for the Nix installer
