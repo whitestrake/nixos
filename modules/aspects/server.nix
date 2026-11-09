@@ -54,6 +54,9 @@
           useRoutingFeatures = "both";
           authKeyParameters.ephemeral = false;
           extraUpFlags = ["--advertise-tags=tag:server"];
+          # Tailscale SSH answers port 22 on the tailnet address; the tailnet
+          # policy decides who may log in as which user. LAN sshd is unchanged.
+          extraSetFlags = ["--ssh"];
         };
 
         users.users.www-data = {
