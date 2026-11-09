@@ -25,6 +25,11 @@ in {
           connectAs = config.networking.hostName;
           onboardingKeyFile = config.sops.secrets.komodoOnboardingKey.path;
         };
+        # The same file Periphery pins Core's key to by default (trust on
+        # first connection), named explicitly: Core's "Rotate Core Keys" only
+        # updates a pin that is configured as a `file:` entry, so with the
+        # implicit default a rotation would lock out every Periphery.
+        auth.corePublicKeys = ["file:${config.services.komodo-periphery.rootDirectory}/keys/core.pub"];
       };
       systemd.services.komodo-periphery.path = [config.system.path];
       # The module sets ProtectHome=read-only, but Docker's build tooling writes
