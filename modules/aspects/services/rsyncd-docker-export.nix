@@ -15,7 +15,7 @@
             uid = "root";
             gid = "root";
             "read only" = true;
-            "hosts allow" = "triton.${host.tailnetSuffix},tempus.${host.tailnetSuffix}";
+            "hosts allow" = "tempus.${host.tailnetSuffix}";
           };
         };
       };
