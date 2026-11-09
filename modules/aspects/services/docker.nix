@@ -15,6 +15,13 @@
       virtualisation.docker.autoPrune.enable = true;
       virtualisation.docker.liveRestore = false;
       systemd.tmpfiles.rules = ["d /opt/docker 0770 nobody docker"];
+
+      # Keep dhcpcd off Docker's interfaces. Otherwise it runs IPv4LL and IPv6
+      # router solicitation on every container veth, and a burst of container
+      # restarts overflows its route socket and crashes it (dhcpcd 10.3.1
+      # SEGV in ipv6nd_expire). tailscale0 is already denied by the Tailscale
+      # module.
+      networking.dhcpcd.denyInterfaces = ["veth*" "docker*" "br-*"];
       den.deploy.health = {
         requiredSystemdUnits = ["docker.service"];
         requiredCommands.docker = "${lib.getExe config.virtualisation.docker.package} info";
