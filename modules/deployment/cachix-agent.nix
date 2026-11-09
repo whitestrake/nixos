@@ -311,6 +311,35 @@
     };
     den.deploy.health.requiredSystemdUnits = ["cachix-agent.service"];
 
+    # switch-to-configuration reloads user units for every user logind lists
+    # and exits 4 if one of those user managers stops mid-reload. After a
+    # user's last login session ends, logind stops user@UID after
+    # UserStopDelaySec (10s), so a deploy that lands in that window fails
+    # (e.g. tempus's hourly replication logging out of omnius). Wait for any
+    # such pending stop to finish first (max 30s). This runs just before the
+    # user reload, so a logout after it still has the full stop delay to spare.
+    #
+    # A pending stop shows as a "closing" user whose only sessions are the
+    # user manager's own (class manager or manager-early). Closing users that
+    # still hold a login session (leftover processes) aren't about to stop.
+    # At boot logind isn't up yet, so this exits straight away.
+    system.activationScripts.waitForUserLogouts.text = let
+      loginctl = "${config.systemd.package}/bin/loginctl";
+      awk = "${pkgs.gawk}/bin/awk";
+    in ''
+      for _ in $(${pkgs.coreutils}/bin/seq 30); do
+        {
+          ${loginctl} list-sessions --no-legend 2>/dev/null | ${awk} '$6 !~ /^manager/ { print "held", $2 }'
+          ${loginctl} list-users --no-legend 2>/dev/null | ${awk} '$4 == "closing" { print "closing", $1 }'
+        } | ${awk} '
+          $1 == "held" { held[$2] = 1 }
+          $1 == "closing" { closing[$2] = 1 }
+          END { for (uid in closing) if (!(uid in held)) exit 0; exit 1 }
+        ' || break
+        ${pkgs.coreutils}/bin/sleep 1
+      done
+    '';
+
     systemd.services.nh-clean.unitConfig = lib.mkIf (config.programs.nh.clean.enable or false) {
       ConditionPathExists = "!/run/cachix-deploy-in-progress";
     };
