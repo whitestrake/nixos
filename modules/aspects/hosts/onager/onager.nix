@@ -14,7 +14,7 @@
       imports = [
         inputs.disko.nixosModules.disko
         (import ../_disko.uefi.default.nix {
-          disks = ["/dev/vda"];
+          disks = ["/dev/sda"];
           zpoolName = config.networking.hostName;
         })
         ./_hardware.nix
