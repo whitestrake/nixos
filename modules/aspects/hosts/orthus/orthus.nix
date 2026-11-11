@@ -24,11 +24,6 @@
       systemd.services.NetworkManager-wait-online.enable = lib.mkForce false;
       systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
-      networking.firewall.trustedInterfaces = [
-        # Docker container to agent communication
-        "dockhand0"
-      ];
-
       # caddy-docker-proxy sites log access as JSON on stdout (PRIORITY=6);
       # Caddy's own log stays on stderr. -o cat hands the parser the bare JSON.
       services.crowdsec = {
