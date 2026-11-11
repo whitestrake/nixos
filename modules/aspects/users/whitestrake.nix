@@ -21,7 +21,7 @@
       homebrew.enableZshIntegration = true;
     };
 
-    nixos = {config, ...}: {
+    provides.to-hosts.nixos = {config, ...}: {
       sops.secrets.whitestrakePassword.neededForUsers = true;
       users.users.whitestrake = {
         hashedPasswordFile = config.sops.secrets.whitestrakePassword.path;

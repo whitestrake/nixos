@@ -42,6 +42,10 @@
       }
     );
 
-  den.schema.host.includes = [den.policies.wsl-host-to-host];
+  # Hosts receive what their users provide to them (`provides.to-hosts`).
+  den.schema.host.includes = [
+    den.policies.wsl-host-to-host
+    den.batteries.mutual-provider
+  ];
   den.schema.user.includes = [den.batteries.hmPlatforms];
 }
