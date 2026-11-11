@@ -20,6 +20,10 @@ pkgs.writeShellApplication {
       exit 1
     fi
 
+    # Self-contained: don't depend on the host's /run/opengl-driver.
+    export LIBVA_DRIVER_NAME=iHD
+    export LIBVA_DRIVERS_PATH=${pkgs.intel-media-driver}/lib/dri
+
     workdir="$(mktemp -d)"
     trap 'rm -rf "$workdir"' EXIT
 
