@@ -32,10 +32,6 @@
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    i915-sriov = {
-      url = "github:strongtz/i915-sriov-dkms";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
     import-tree.url = "github:denful/import-tree";
     nix-amp = {
       url = "github:whitestrake/nix-amp";

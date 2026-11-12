@@ -129,26 +129,6 @@
         "type": "github"
       }
     },
-    "i915-sriov": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs-unstable"
-        ]
-      },
-      "locked": {
-        "lastModified": 1794005578,
-        "narHash": "sha256-2E2guXDrUrPu4TXTEy/iIG4Cbj8IziaPyMz2YrMDKsE=",
-        "owner": "strongtz",
-        "repo": "i915-sriov-dkms",
-        "rev": "bea7187037269859515dd0b9bece5c50a0bcadb9",
-        "type": "github"
-      },
-      "original": {
-        "owner": "strongtz",
-        "repo": "i915-sriov-dkms",
-        "type": "github"
-      }
-    },
     "import-tree": {
       "locked": {
         "lastModified": 1788467110,
@@ -293,7 +273,6 @@
         "flake-file": "flake-file",
         "flake-parts": "flake-parts",
         "home-manager": "home-manager",
-        "i915-sriov": "i915-sriov",
         "import-tree": "import-tree",
         "nix-amp": "nix-amp",
         "nixos-wsl": "nixos-wsl",
