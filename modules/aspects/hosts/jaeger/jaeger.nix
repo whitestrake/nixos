@@ -1,4 +1,8 @@
-{den, ...}: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.jaeger = {
     includes = [
       den.aspects.server
@@ -6,8 +10,13 @@
       den.aspects.crowdsec.edge
     ];
 
-    nixos = {...}: {
+    nixos = {config, ...}: {
       imports = [
+        inputs.disko.nixosModules.disko
+        (import ../_disko.uefi.default.nix {
+          disks = ["/dev/sda"];
+          zpoolName = config.networking.hostName;
+        })
         ./_hardware.nix
       ];
       system.stateVersion = "24.05";
@@ -16,9 +25,11 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
 
-      # ZFS support ahead of moving the root onto a ZFS pool. The pool records
-      # the hostId that last imported it, so this must stay fixed from here on.
-      boot.supportedFilesystems.zfs = true;
+      boot.zfs.devNodes = "/dev/disk/by-partuuid";
+      services.zfs.autoScrub.enable = true;
+      zramSwap.enable = true;
+
+      # The pool records the hostId that last imported it; keep this fixed.
       networking.hostId = "4b90ed59";
 
       # Fixes sshAgentAuth for aarch64 systems
