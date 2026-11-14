@@ -22,6 +22,11 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
 
+      # ZFS support ahead of moving the root onto a ZFS pool. The pool records
+      # the hostId that last imported it, so this must stay fixed from here on.
+      boot.supportedFilesystems.zfs = true;
+      networking.hostId = "7db9d3f8";
+
       # QEMU guest agent
       services.qemuGuest.enable = true;
 
