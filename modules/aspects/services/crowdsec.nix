@@ -121,6 +121,11 @@ in {
       # until its next restart.
       systemd.services.crowdsec.restartTriggers = [(builtins.toJSON cfg.settings.simulation)];
 
+      # Opts the host into the observability repo's crowdsec_metrics Fleet
+      # pipeline, which scrapes the engine's Prometheus endpoint
+      # (127.0.0.1:6060, the package default).
+      den.alloy.fleetAttributes."telemetry.crowdsec" = true;
+
       # The 26.05 module linked its s02-enrich parsers under store-hash names,
       # and the copy left behind shadows the rewrite's 0-nixos-generated.yaml
       # (same parser name) until its store path is collected. Goes with the
