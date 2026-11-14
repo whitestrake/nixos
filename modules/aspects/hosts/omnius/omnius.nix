@@ -7,12 +7,13 @@
     includes = [
       den.aspects.server
       den.aspects.docker
-      den.aspects.docker-zfs-snapshots
+      den.aspects.backup.hub
     ];
 
     nixos = {
       config,
       pkgs,
+      lib,
       ...
     }: {
       imports = [
@@ -35,10 +36,20 @@
       boot.zfs.devNodes = "/dev/disk/by-partuuid";
       boot.zfs.extraPools = ["storage"];
       services.zfs.autoScrub.enable = true;
+      services.sanoid.templates.stacks = {
+        hourly = 24;
+        daily = 7;
+        monthly = 2;
+        autosnap = true;
+        autoprune = true;
+      };
       services.sanoid.datasets."storage/stacks" = {
-        use_template = ["docker-state"];
+        use_template = ["stacks"];
         recursive = "zfs";
       };
+
+      # The backup hub pulls from servers over the tailnet as tag:backup.
+      services.tailscale.extraUpFlags = lib.mkForce ["--advertise-tags=tag:server,tag:backup"];
       zramSwap.enable = true;
 
       # Hostname and TZ

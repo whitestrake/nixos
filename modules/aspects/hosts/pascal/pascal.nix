@@ -9,7 +9,6 @@
       den.aspects.docker
       den.aspects.xe-vf
       den.aspects.dev-tools
-      den.aspects.docker-zfs-snapshots
     ];
 
     nixos = {
