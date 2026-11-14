@@ -83,6 +83,7 @@ in {
     backup-datasets,
     config,
     lib,
+    pkgs,
     ...
   }: let
     records = resolve backup-datasets;
@@ -108,6 +109,10 @@ in {
       services.openssh.ports = [22 sshPort];
       services.openssh.openFirewall = false;
       networking.firewall.allowedTCPPorts = [22];
+
+      # syncoid compresses and buffers the stream on both ends when these
+      # are on the source's PATH; without them it sends uncompressed.
+      environment.systemPackages = [pkgs.lzop pkgs.mbuffer];
 
       users.groups.backup = {};
       users.users.backup = {
