@@ -154,6 +154,7 @@ in {
     backup-roster,
     config,
     lib,
+    pkgs,
     ...
   }: let
     hosts = lib.filter (h: h.name == hub || lib.elem h.name pulled) (lib.unique (map (r: r.source.host) backup-roster));
@@ -271,6 +272,29 @@ in {
         jobs)
         // lib.genAttrs parents (_: {use_template = ["backup-parent"];});
     };
+
+    # The newest snapshot of every dataset in both trees, parents included. A
+    # pull with nothing to send still succeeds, so a stale copy only shows
+    # here. A dataset with no snapshots reports 0.
+    services.telegraf.extraConfig.inputs.exec = [
+      {
+        alias = "zfs_backup";
+        commands = [
+          (toString (pkgs.writeShellScript "zfs-backup-newest" ''
+            ${lib.getExe config.boot.zfs.package} list -Hp -r -t filesystem,snapshot -o name,creation \
+              ${lib.concatMapStringsSep " " (t: "${hubPool}/${t}") ["hosts" "latest"]} 2>/dev/null |
+              ${lib.getExe pkgs.gawk} -F '\t' '{
+                split($1, p, "@")
+                if (!(p[1] in t)) t[p[1]] = 0
+                if (p[2] != "" && $2 > t[p[1]]) t[p[1]] = $2
+              }
+              END { for (d in t) printf "zfs_backup,name=%s newest_snapshot_ts=%di\n", d, t[d] }'
+          ''))
+        ];
+        timeout = "20s";
+        data_format = "influx";
+      }
+    ];
 
     den.deploy.health.requiredSystemdUnits = ["backup-hub-datasets.service"];
   };
