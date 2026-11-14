@@ -29,7 +29,7 @@
 
   # Hosts the hub pulls from. Every host snapshots its own datasets either
   # way; only these are copied to the hub.
-  pulled = ["pascal"];
+  pulled = ["legion" "pascal"];
 
   # Retention where the data lives and on the hub's copy. Long history is
   # the NAS's job.
