@@ -36,8 +36,6 @@
           usbutils
         ];
 
-        services.sshguard.enable = true;
-        systemd.services.sshguard.serviceConfig.TimeoutStopSec = "10s";
         services.openssh = {
           enable = true;
           settings = {
