@@ -110,11 +110,16 @@ in {
             console_management = false;
           };
 
-          # Local scenarios record alerts without banning. Community blocklist
-          # decisions are not simulated and are enforced.
-          simulation.simulation = true;
+          # Local scenarios ban. Set true to have them record alerts only
+          # (the community blocklist is enforced either way).
+          simulation.simulation = false;
         };
       };
+
+      # tmpfiles rewrites simulation.yaml on activation, but nothing in the
+      # unit changes with it, so crowdsec would carry on with the old mode
+      # until its next restart.
+      systemd.services.crowdsec.restartTriggers = [(builtins.toJSON cfg.settings.simulation)];
 
       # The 26.05 module linked its s02-enrich parsers under store-hash names,
       # and the copy left behind shadows the rewrite's 0-nixos-generated.yaml
