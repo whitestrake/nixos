@@ -16,6 +16,11 @@
       boot.loader.systemd-boot.enable = true;
       boot.loader.efi.canTouchEfiVariables = true;
 
+      # ZFS support ahead of moving the root onto a ZFS pool. The pool records
+      # the hostId that last imported it, so this must stay fixed from here on.
+      boot.supportedFilesystems.zfs = true;
+      networking.hostId = "4b90ed59";
+
       # Fixes sshAgentAuth for aarch64 systems
       security.sudo-rs.enable = true;
 
