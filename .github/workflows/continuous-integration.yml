@@ -31,6 +31,8 @@ jobs:
       actions: read
     outputs:
       records: ${{ steps.records.outputs.records }}
+      # Set only when this lane failed on nothing but opaque nixbuild.net errors.
+      transient: ${{ steps.transient.outputs.flagged }}
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -59,8 +61,8 @@ jobs:
       - name: Build Linux configurations
         id: build
         run: bash .github/scripts/ci-nfb.sh linux-hosts x86_64-linux
-      # A ci-transient-*-<attempt> artifact vouches for the jobs named in its
-      # jobs file; CI Retry re-runs an attempt only when every failed job has one.
+      # The Retry job asks for a re-run only when every lane that failed is
+      # vouched for; this vouches for Linux through the transient job output.
       - name: Flag transient nixbuild.net failures
         id: transient
         if: failure() && steps.build.outcome == 'failure'
@@ -70,18 +72,8 @@ jobs:
           [ -f "$dir/results.json" ] && [ -f "$dir/nix-fast-build.log" ] || exit 0
           hosts="$(python3 .github/scripts/nixbuild_transient.py "$dir/results.json" "$dir/nix-fast-build.log")"
           [ -n "$hosts" ] || exit 0
-          mkdir "$RUNNER_TEMP/ci-transient"
-          echo Linux > "$RUNNER_TEMP/ci-transient/jobs"
-          printf '%s\n' "$hosts" > "$RUNNER_TEMP/ci-transient/hosts"
           echo "::notice ::Only opaque nixbuild.net errors: $(paste -sd ' ' <<< "$hosts")"
           echo "flagged=true" >> "$GITHUB_OUTPUT"
-      - name: Upload transient failure flag
-        if: failure() && steps.transient.outputs.flagged == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: ci-transient-nixbuild-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-transient
-          retention-days: 1
       - name: Publish Linux build records
         id: records
         run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"
@@ -284,34 +276,6 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
-      # GitHub sometimes never hands a lane to a hosted runner and cancels it
-      # about 15 minutes later, with no runner and no steps. A timed-out lane
-      # has both, so it is not flagged.
-      - name: Flag lanes that never got a runner
-        id: unassigned
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Only advisory for CI Retry, so an API failure must not fail All Builds.
-          if ! jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate \
-            --jq '.jobs[] | select(.conclusion == "cancelled" and (.runner_name // "") == "" and ((.steps // []) | length) == 0) | .name')"; then
-            echo "::warning ::Could not list this attempt's jobs; lanes without a runner are not flagged"
-            exit 0
-          fi
-          [ -n "$jobs" ] || exit 0
-          mkdir "$RUNNER_TEMP/ci-transient"
-          printf '%s\n' "$jobs" > "$RUNNER_TEMP/ci-transient/jobs"
-          echo "::notice ::Never got a runner: $(paste -sd ',' <<< "$jobs")"
-          echo "flagged=true" >> "$GITHUB_OUTPUT"
-      - name: Upload transient failure flag
-        if: steps.unassigned.outputs.flagged == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: ci-transient-unassigned-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ci-transient
-          retention-days: 1
-
       - name: Report platform lane durations
         env:
           GH_TOKEN: ${{ github.token }}
@@ -415,6 +379,100 @@ jobs:
           if [ "$(jq '.include | length' <<< "$matrix")" != 0 ]; then
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           fi
+
+  # GitHub refuses to re-run a run that is still in progress, so this job only
+  # judges the failure and CI Retry does the re-run once the run has finished.
+  # A re-run repeats this job, as a dependent of the jobs that failed, so every
+  # attempt is judged afresh and the third is never retried.
+  retry:
+    name: Retry
+    needs:
+      - linux-builds
+      - darwin-builds
+      - source-checks
+      # Only for its result: a real failure there must hold a retry back.
+      - cache-sources
+      - all-builds
+    # Not for superseded or cancelled runs, tags or a third attempt; nor when
+    # no job failed (the run then does not conclude as a failure) or nothing
+    # can be transient (no Linux flag and no job that stopped without failing).
+    # A job that never got a runner has the undocumented result abandoned.
+    if: >-
+      ${{
+        !cancelled()
+        && github.ref_type == 'branch'
+        && github.run_attempt < 3
+        && contains(needs.*.result, 'failure')
+        && (
+          needs.linux-builds.outputs.transient == 'true'
+          || contains(needs.*.result, 'abandoned')
+          || contains(needs.*.result, 'cancelled')
+        )
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Ask CI Retry to re-run transient failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINUX: ${{ needs.linux-builds.result }}
+          DARWIN: ${{ needs.darwin-builds.result }}
+          CHECKS: ${{ needs.source-checks.result }}
+          SOURCES: ${{ needs.cache-sources.result }}
+          LINUX_TRANSIENT: ${{ needs.linux-builds.outputs.transient }}
+        run: |
+          set -euo pipefail
+          # GitHub sometimes never hands a job to a hosted runner and cancels it
+          # about 15 minutes later, with no runner and no steps. Its result here
+          # is abandoned, and cancelled for a job that timed out, but only the
+          # second is documented, so the jobs listing decides: a timed-out job
+          # has a runner and steps. The listing also holds the checks the lanes
+          # publish, so it is never used to decide which lanes failed.
+          unassigned=""
+          case "$LINUX $DARWIN $CHECKS $SOURCES" in
+            *abandoned* | *cancelled*)
+              if ! unassigned="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+                --jq '.jobs[] | select(.conclusion == "cancelled" and (.runner_name // "") == "" and ((.steps // []) | length) == 0) | .name')"; then
+                echo "::warning ::Could not list this attempt's jobs; lanes that stopped count as real failures"
+                unassigned=""
+              fi
+              ;;
+          esac
+          # All Builds only relays the lanes and is re-run as their dependent.
+          # Re-running failed jobs also re-runs cancelled ones, so one lane
+          # without a transient cause would repeat a real failure.
+          transient=""
+          real=""
+          while IFS=$'\t' read -r lane result; do
+            if [ "$result" = success ]; then
+              continue
+            elif [ "$lane" = Linux ] && [ "$result" = failure ] && [ "$LINUX_TRANSIENT" = true ]; then
+              transient+="${transient:+, }$lane (nixbuild.net errors)"
+            elif [[ "$result" =~ ^(abandoned|cancelled)$ ]] && grep -Fxq -- "$lane" <<< "$unassigned"; then
+              transient+="${transient:+, }$lane (no runner)"
+            else
+              real+="${real:+, }$lane ($result)"
+            fi
+          done < <(printf '%s\t%s\n' Linux "$LINUX" Darwin "$DARWIN" Checks "$CHECKS" 'Cache sources' "$SOURCES")
+          if [ -n "$real" ] || [ -z "$transient" ]; then
+            echo "Not retrying; not transient: ${real:-no lane failed}"
+            exit 0
+          fi
+          # CI Retry always runs from master, as it did under workflow_run: the
+          # workflow that holds the bot key never comes from the branch under test.
+          for try in 1 2 3; do
+            if gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/ci-retry.yml/dispatches" --silent \
+              -f ref=master -f "inputs[run_id]=$GITHUB_RUN_ID" -f "inputs[run_attempt]=$GITHUB_RUN_ATTEMPT" \
+              -f "inputs[reason]=$GITHUB_REF_NAME: $transient"; then
+              echo "::notice ::Asked CI Retry to re-run attempt $GITHUB_RUN_ATTEMPT: $transient"
+              exit 0
+            fi
+            [ "$try" = 3 ] || sleep $((try * 5))
+          done
+          echo "::error ::Could not start CI Retry"
+          exit 1
 
   deploy:
     name: Deploy

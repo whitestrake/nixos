@@ -1,69 +1,92 @@
 name: CI Retry
+run-name: ${{ inputs.reason && format('Retry CI on {0}', inputs.reason) || format('Retry CI run {0}', inputs.run_id) }}
 "on":
-  workflow_run:
-    workflows:
-      - CI
-    types:
-      - completed
+  # Started by CI's Retry job once it has judged a failed attempt transient, so
+  # a run exists only when there is something to retry. CI's own GITHUB_TOKEN
+  # is enough: workflow_dispatch is one of the events it may start.
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: CI run to re-run
+        required: true
+        type: string
+      run_attempt:
+        description: Attempt of that run that failed transiently
+        required: true
+        type: string
+      reason:
+        description: Branch and lanes, shown in the run name
+        type: string
+        default: ""
 permissions:
   contents: read
-# A newer attempt of the same run supersedes a pending retry.
+# A newer request for the same run supersedes a pending retry.
 concurrency:
-  group: ci-retry-${{ github.event.workflow_run.id }}
+  group: ci-retry-${{ inputs.run_id }}
   cancel-in-progress: true
 jobs:
   retry:
     name: Retry transient failures
-    # CI decides what counts as transient: a job that recognises a transient
-    # failure uploads a ci-transient-<source>-<attempt> artifact whose jobs file
-    # names the jobs it vouches for (nixbuild.net's opaque errors in Linux, lanes
-    # All Builds saw never get a runner). Anything unflagged stays failed.
-    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 3
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_ID: ${{ inputs.run_id }}
+      ATTEMPT: ${{ inputs.run_attempt }}
     steps:
-      - name: Check the failure is transient
-        id: check
+      # CI asks from its last job, and GitHub refuses to re-run a run that is
+      # still in progress.
+      - name: Wait for the CI run to finish
+        id: run
         run: |
           set -euo pipefail
-          dir="$RUNNER_TEMP/ci-transient"
-          # gh only creates it when there are artifacts; find on a missing
-          # directory fails the step under pipefail.
-          mkdir -p "$dir"
-          # Fails when the attempt uploaded no flags; show any other error.
-          if ! gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -p "ci-transient-*-$ATTEMPT" -D "$dir" 2> "$RUNNER_TEMP/download.err"; then
-            grep -qi 'no valid artifacts' "$RUNNER_TEMP/download.err" || cat "$RUNNER_TEMP/download.err" >&2
+          # Anyone with write access can start this by hand, so the request is
+          # checked too: a CI run, and never a re-run of its third attempt.
+          if ! [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$ATTEMPT" =~ ^[12]$ ]]; then
+            echo "::error ::Expected a run id and attempt 1 or 2: run=$RUN_ID attempt=$ATTEMPT"
+            exit 1
           fi
-          flagged="$(find "$dir" -type f -name jobs -exec cat {} + 2>/dev/null | sort -u)"
-          if [ -z "$flagged" ]; then
-            echo "No transient-failure flags for attempt $ATTEMPT"
+          deadline=$((SECONDS + 2400))
+          while :; do
+            run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+            if [ "$(jq -r .path <<< "$run")" != .github/workflows/continuous-integration.yml ]; then
+              echo "::error ::Run $RUN_ID is not a CI run"
+              exit 1
+            fi
+            attempt="$(jq -r .run_attempt <<< "$run")"
+            if [ "$attempt" != "$ATTEMPT" ]; then
+              echo "Not retrying; the run is already on attempt $attempt"
+              exit 0
+            fi
+            [ "$(jq -r .status <<< "$run")" != completed ] || break
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::warning ::Not retrying; CI run $RUN_ID has not finished"
+              exit 0
+            fi
+            sleep 20
+          done
+          # A superseded or manually cancelled run concludes as cancelled.
+          conclusion="$(jq -r .conclusion <<< "$run")"
+          if [ "$conclusion" != failure ]; then
+            echo "Not retrying; attempt $ATTEMPT concluded as $conclusion"
             exit 0
           fi
-          # All Builds only reports the lanes. Re-running failed jobs also re-runs
-          # cancelled ones, so an unflagged job would repeat a real failure.
-          failed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs" \
-            --jq '.jobs[] | select((.conclusion == "failure" or .conclusion == "cancelled") and .name != "All Builds") | .name' | sort -u)"
-          unflagged="$(comm -23 <(printf '%s\n' "$failed") <(printf '%s\n' "$flagged") | sed '/^$/d')"
-          if [ -n "$unflagged" ]; then
-            echo "Not retrying; failed without a transient flag: $(paste -sd ',' <<< "$unflagged")"
-            exit 0
-          fi
-          echo "Transient: $(paste -sd ',' <<< "$flagged")"
-          echo "retry=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "head_branch=$(jq -r .head_branch <<< "$run")"
+            echo "head_sha=$(jq -r .head_sha <<< "$run")"
+            echo "retry=true"
+          } >> "$GITHUB_OUTPUT"
       - name: Wait before retrying
-        if: steps.check.outputs.retry == 'true'
+        if: steps.run.outputs.retry == 'true'
         run: sleep $((ATTEMPT * 300))
       - name: Confirm the run is still current
         id: current
-        if: steps.check.outputs.retry == 'true'
+        if: steps.run.outputs.retry == 'true'
+        env:
+          HEAD_BRANCH: ${{ steps.run.outputs.head_branch }}
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
         run: |
           set -euo pipefail
           attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .run_attempt)"
@@ -78,7 +101,7 @@ jobs:
           fi
           echo "current=true" >> "$GITHUB_OUTPUT"
       # Events caused by GITHUB_TOKEN start no workflow_run workflows, so a re-run
-      # under it would never reach Cache Maintenance or the next retry.
+      # under it would never reach Cache Maintenance.
       - name: Create GitHub App token
         id: app-token
         if: steps.current.outputs.current == 'true'
