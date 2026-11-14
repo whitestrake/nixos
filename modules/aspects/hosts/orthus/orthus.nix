@@ -15,6 +15,11 @@
 
       boot.loader.grub.enable = true;
       boot.loader.grub.device = "/dev/vda";
+
+      # Ahead of the move to a ZFS root: the running system needs ZFS support,
+      # and the pool records the hostId that last imported it.
+      boot.supportedFilesystems.zfs = true;
+      networking.hostId = "a6a42606";
       boot.kernel.sysctl = {
         "net.ipv4.ip_forward" = 1;
         "net.ipv6.conf.all.forwarding" = 1;
