@@ -1,7 +1,6 @@
 {den, ...}: {
   den.aspects.docker = {
     includes = [
-      den.aspects.rsyncd-docker-export
       den.aspects.komodo-periphery
     ];
 
