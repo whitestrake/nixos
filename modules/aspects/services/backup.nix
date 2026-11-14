@@ -27,10 +27,6 @@
     sortie = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILQ8dN9LDgcgBgXVqZj18EelVapPLcpWn80HgeC87Fg9";
   };
 
-  # Hosts the hub pulls from. Every host snapshots its own datasets either
-  # way; only these are copied to the hub.
-  pulled = ["jaeger" "legion" "oculus" "onager" "orthus" "pascal" "rapier" "sortie"];
-
   # Retention where the data lives and on the hub's copy. Long history is
   # the NAS's job.
   history = {
@@ -164,7 +160,7 @@ in {
     pkgs,
     ...
   }: let
-    hosts = lib.filter (h: h.name == hub || lib.elem h.name pulled) (lib.unique (map (r: r.source.host) backup-roster));
+    hosts = lib.unique (map (r: r.source.host) backup-roster);
     jobs = lib.sort (a: b: a.unit < b.unit) (lib.concatMap (h:
       map (d:
         d
