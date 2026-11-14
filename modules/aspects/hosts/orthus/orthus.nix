@@ -1,4 +1,8 @@
-{den, ...}: {
+{
+  den,
+  inputs,
+  ...
+}: {
   den.aspects.orthus = {
     includes = [
       den.aspects.server
@@ -7,18 +11,33 @@
       den.aspects.crowdsec.edge
     ];
 
-    nixos = {lib, ...}: {
+    nixos = {
+      config,
+      lib,
+      ...
+    }: {
       imports = [
+        inputs.disko.nixosModules.disko
+        (import ../_disko.bios.default.nix {
+          disks = ["/dev/vda"];
+          zpoolName = config.networking.hostName;
+        })
         ./_hardware.nix
       ];
       system.stateVersion = "24.11";
 
-      boot.loader.grub.enable = true;
-      boot.loader.grub.device = "/dev/vda";
+      # Use grub boot loader; disko points it at the EF02 partition on /dev/vda
+      boot.loader.grub = {
+        enable = true;
+        copyKernels = true;
+        zfsSupport = true;
+      };
+      boot.initrd.supportedFilesystems = ["zfs"];
+      boot.zfs.devNodes = "/dev/disk/by-partuuid";
+      services.zfs.autoScrub.enable = true;
+      zramSwap.enable = true;
 
-      # Ahead of the move to a ZFS root: the running system needs ZFS support,
-      # and the pool records the hostId that last imported it.
-      boot.supportedFilesystems.zfs = true;
+      # The pool records the hostId that last imported it; keep this fixed.
       networking.hostId = "a6a42606";
       boot.kernel.sysctl = {
         "net.ipv4.ip_forward" = 1;
