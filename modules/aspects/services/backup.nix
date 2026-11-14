@@ -133,7 +133,9 @@ in {
 
       den.deploy.health = {
         requiredSystemdUnits = ["sanoid.timer" "backup-zfs-allow.service"];
-        requiredCommands.sanoid-datasets = "${zfs} list ${lib.escapeShellArgs (lib.attrNames config.services.sanoid.datasets)} >/dev/null";
+        # Only the host's own datasets: on the hub, sanoid also lists received
+        # copies, which do not exist until their first pull.
+        requiredCommands.backup-datasets = "${zfs} list ${lib.escapeShellArgs datasets} >/dev/null";
       };
     };
 
