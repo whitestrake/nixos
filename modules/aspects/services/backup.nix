@@ -9,8 +9,8 @@
   sshPort = 2222;
   hubPool = "storage/backups";
 
-  # Public half of the hub's pull key. The private half is backupHubSshKey in
-  # secrets/backup-hub.yaml, readable by the hub only.
+  # Public half of the hub's pull key. The private half is the sops secret
+  # backupHubSshKey, used on the hub only.
   hubKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkuhamEZxf1cBneOeKSnpKQxxscay4RlsMbQXclee5c backup-hub";
 
   # Each host's sshd key (/etc/ssh/ssh_host_ed25519_key.pub). The hub refuses
@@ -181,10 +181,7 @@ in {
     # re-spaced whenever a job is added or removed.
     minute = i: 5 + (i * 50) / (lib.length jobs);
   in {
-    sops.secrets.backupHubSshKey = {
-      sopsFile = ../../secrets/backup-hub.yaml;
-      owner = "syncoid";
-    };
+    sops.secrets.backupHubSshKey.owner = "syncoid";
 
     programs.ssh.knownHosts = lib.listToAttrs (map (h:
       lib.nameValuePair "backup-${h.name}" {

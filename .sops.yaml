@@ -25,8 +25,3 @@ creation_rules:
           - *server_kronos
           - *server_onager
           - *server_legion
-  - path_regex: modules/secrets/backup-hub\.yaml$
-    key_groups:
-      - age:
-          - *whitestrake
-          - *server_omnius
