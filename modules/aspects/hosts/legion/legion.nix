@@ -9,6 +9,14 @@
       den.aspects.server.lab
     ];
 
+    # AMP's tree holds tens of GB of Workshop mods that churn wholesale, so
+    # keep a recovery copy without history.
+    backup-datasets = {host, ...}: {
+      name = "amp";
+      dataset = "${host.name}/user/home/amp";
+      latest = true;
+    };
+
     nixos = {config, ...}: {
       imports = [
         inputs.disko.nixosModules.disko
