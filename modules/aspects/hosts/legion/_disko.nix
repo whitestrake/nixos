@@ -101,14 +101,6 @@
             mountpoint = "/home/amp";
             options.mountpoint = "legacy";
           };
-          "user/docker" = {
-            type = "zfs_fs";
-            mountpoint = "/opt/docker";
-            options = {
-              mountpoint = "legacy";
-              recordsize = "16K";
-            };
-          };
         };
       };
     };
