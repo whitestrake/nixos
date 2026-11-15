@@ -1,3 +1,22 @@
+# Pull-based ZFS backups.
+#
+# Each host that includes den.aspects.backup snapshots its datasets with
+# sanoid and lets a hub pull them. A hub pulls every such host with syncoid
+# over sshd on port 2222 across the tailnet (tag:backup -> tag:server), into
+# <pool>/hosts/<host>/<name>, or <pool>/latest/<host>/<name> for
+# recovery-only copies. The NAS then pulls both trees recursively and keeps
+# the long history. Hosts and the hub keep a day of hourlies and a week of
+# dailies.
+#
+# Opting in:
+#   (den.aspects.backup { hostKey = "ssh-ed25519 ..."; })
+#   (den.aspects.backup { hostKey = ...; hub.key = ...; hub.pool = ...; })
+# Datasets come from the aspects that own them via backup.datasets
+# (docker offers /opt/docker, amp offers /home/amp); a host can add its own.
+#
+# The hub reports each copy's newest snapshot to telegraf as
+# zfs_backup_newest_snapshot_ts, which the stale and missing-copy alerts
+# in the observability repo watch.
 {
   den,
   lib,
@@ -78,13 +97,9 @@ in {
   ];
   den.schema.host.includes = [den.policies.backup-fleet];
 
-  # Opt a host in:
-  #   (den.aspects.backup { hostKey = "ssh-ed25519 ..."; })
-  # hostKey is its sshd key (/etc/ssh/ssh_host_ed25519_key.pub); hubs refuse a
-  # host that presents another. A hub also passes
-  #   hub = { key; pool; }
-  # and pulls every opted-in host into pool. key is the public half of its
-  # pull key, whose private half is the sops secret backupHubSshKey.
+  # hostKey is the host's sshd key (/etc/ssh/ssh_host_ed25519_key.pub); hubs
+  # refuse a host that presents another. A hub's key is the public half of
+  # its pull key, whose private half is the sops secret backupHubSshKey.
   den.aspects.backup = {
     hostKey ? throw "backup: den.aspects.backup was included without a hostKey; pass the host's sshd public key as { hostKey = \"ssh-ed25519 ...\"; }",
     hub ? null,
