@@ -1,8 +1,23 @@
-{den, ...}: {
+{
+  den,
+  lib,
+  ...
+}: {
   den.aspects.docker = {
     includes = [
       den.aspects.komodo-periphery
     ];
+
+    # Offer /opt/docker to backups when it is a ZFS dataset. It is only pulled
+    # if the host also includes den.aspects.backup.
+    backup = {config, ...}: let
+      fs = config.fileSystems."/opt/docker" or {};
+    in {
+      datasets = lib.optional (fs.fsType or null == "zfs") {
+        name = "docker";
+        dataset = fs.device;
+      };
+    };
 
     nixos = {
       config,

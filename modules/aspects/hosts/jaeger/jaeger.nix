@@ -8,6 +8,7 @@
       den.aspects.server
       den.aspects.docker
       den.aspects.crowdsec.edge
+      (den.aspects.backup {hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGf2XboT4/Cw/bVx7UJFDeWlV3gERPexJshACHRe9jcv";})
     ];
 
     nixos = {config, ...}: {

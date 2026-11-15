@@ -8,6 +8,7 @@
       den.aspects.server.lab
       den.aspects.docker
       den.aspects.dev-tools
+      (den.aspects.backup {hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICjab5VQJMOExAY9c4raC+tL9S5hYoGs/7cxUpG88oyn";})
     ];
 
     nixos = {config, ...}: {

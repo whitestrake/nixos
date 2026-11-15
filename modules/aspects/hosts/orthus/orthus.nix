@@ -9,6 +9,7 @@
       den.aspects.docker
       den.aspects.komodo-core
       den.aspects.crowdsec.edge
+      (den.aspects.backup {hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB4b2cazWukt8vr4EtkRxooRBHka+0UuMI9Rz9iykwtW";})
     ];
 
     nixos = {

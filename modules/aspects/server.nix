@@ -5,7 +5,6 @@
       den.aspects.monitoring
       den.aspects.cachix-agent
       den.aspects.crowdsec
-      den.aspects.backup
     ];
 
     # Don't need man pages on headless servers
