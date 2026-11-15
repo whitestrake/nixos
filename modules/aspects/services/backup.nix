@@ -56,7 +56,7 @@
 
   # One host's backup emissions, folded into { name, hostKey, hub, datasets }.
   # name, hostKey and hub come only from the include below, which den applies
-  # once per host.
+  # once per host (the first, if a host includes it twice).
   merge = emissions: let
     first = field: lib.findFirst (v: v != null) null (map (e: e.${field} or null) emissions);
     name = first "name";
@@ -104,9 +104,10 @@ in {
     hostKey ? throw "backup: den.aspects.backup was included without a hostKey; pass the host's sshd public key as { hostKey = \"ssh-ed25519 ...\"; }",
     hub ? null,
   }: {
-    # Distinct from the bare aspect's name, so den doesn't treat a bare include
-    # as the same aspect and drop one of them; forcing hostKey makes a bare
-    # include fail.
+    # Forces hostKey, so a bare include fails on the host that made it rather
+    # than later on the hub. A bare include after this one is deduped unseen,
+    # which is harmless. Every include shares this name, so if a host includes
+    # backup twice, the first include wins.
     name = builtins.seq hostKey "backup (included)";
     backup = {host, ...}: {
       inherit (host) name;
@@ -151,7 +152,7 @@ in {
           })
         h.datasets)
       sources);
-      remote = lib.filter (j: j.host.name != name) jobs;
+      remote = lib.filter (h: h.host.name != name) sources;
       target = j: "${j.tree}/${j.host.name}/${j.name}";
       parents = lib.unique (lib.concatMap (j: [j.tree "${j.tree}/${j.host.name}"]) jobs);
       fqdn = h: "${h.name}.${h.tailnetSuffix}";
@@ -240,10 +241,10 @@ in {
           # the hub offers datasets of its own.
           services.sanoid.enable = true;
 
-          programs.ssh.knownHosts = lib.listToAttrs (map (j:
-            lib.nameValuePair "backup-${j.host.name}" {
-              hostNames = ["[${fqdn j.host}]:${toString sshPort}"];
-              publicKey = j.hostKey;
+          programs.ssh.knownHosts = lib.listToAttrs (map (h:
+            lib.nameValuePair "backup-${h.host.name}" {
+              hostNames = ["[${fqdn h.host}]:${toString sshPort}"];
+              publicKey = h.hostKey;
             })
           remote);
 
