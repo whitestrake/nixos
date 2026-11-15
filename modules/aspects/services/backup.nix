@@ -77,6 +77,7 @@ in {
     backup,
     backup-fleet,
     config,
+    options,
     lib,
     pkgs,
     ...
@@ -149,12 +150,13 @@ in {
         };
 
         # sshd also answers on a second port. Tailscale SSH owns port 22 on the
-        # tailnet address, so this is how the hub reaches the real sshd. Only
-        # 22 is opened in the firewall; traffic arriving over the tailnet is
-        # governed by the tailnet policy instead.
-        services.openssh.ports = [22 sshPort];
+        # tailnet address, so this is how the hub reaches the real sshd. The
+        # firewall opens what openFirewall would have, minus this port;
+        # traffic arriving over the tailnet is governed by the tailnet policy
+        # instead.
+        services.openssh.ports = options.services.openssh.ports.default ++ [sshPort];
         services.openssh.openFirewall = false;
-        networking.firewall.allowedTCPPorts = [22];
+        networking.firewall.allowedTCPPorts = lib.remove sshPort config.services.openssh.ports;
 
         # syncoid compresses and buffers the stream on both ends when these
         # are on the source's PATH; without them it sends uncompressed.
