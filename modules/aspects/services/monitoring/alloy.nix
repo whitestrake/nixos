@@ -33,6 +33,10 @@
             omit_hostname = true;
             skip_processors_after_aggregators = true;
           };
+          # No SMART input: every host using this aspect is a VM or VPS, whose
+          # virtual disks have no SMART data. A bare-metal host would add the
+          # input back in its own aspect (the old block is in the commit that
+          # removed it).
           inputs = lib.filterAttrs (_: inputs: inputs != []) {
             docker = lib.optionals config.virtualisation.docker.enable [
               {
@@ -46,18 +50,6 @@
                 namepass = ["docker_container_cpu" "docker_container_mem" "docker_container_net" "docker_container_status" "docker_container_health"];
                 fieldinclude = ["usage_total" "usage" "limit" "rx_bytes" "tx_bytes" "rx_errors" "tx_errors" "rx_dropped" "tx_dropped" "uptime_ns" "health_status" "failing_streak"];
                 taginclude = ["container_name" "source" "cpu" "network"];
-              }
-            ];
-            smart = [
-              {
-                path_smartctl = "${lib.getExe pkgs.smartmontools}";
-                timeout = "20s";
-                attributes = false;
-                namepass = ["smart_device"];
-                fieldinclude = ["health_ok" "exit_status" "critical_warning" "media_errors" "available_spare" "available_spare_threshold" "percentage_used" "temp_c"];
-                taginclude = ["device"];
-                path_nvme = "${lib.getExe pkgs.nvme-cli}";
-                enable_extensions = [];
               }
             ];
             exec = lib.optionals config.boot.zfs.enabled [
@@ -116,17 +108,11 @@
                 tagexclude = ["source"];
               }
             ];
-            converter = [
-              {
-                namepass = ["smart_device"];
-                fields = {integer = ["health_ok"];};
-              }
-            ];
           };
         };
       };
       systemd.services.telegraf.serviceConfig = {
-        # smartctl ioctls and Docker access require privileged collection.
+        # Docker access requires privileged collection.
         User = lib.mkForce "root";
         Group = lib.mkForce "root";
         AmbientCapabilities = lib.mkForce [];
