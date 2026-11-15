@@ -7,16 +7,15 @@
     includes = [
       den.aspects.server
       den.aspects.docker
+      (den.aspects.backup {
+        hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPjti19Yeb+Prh7vD76uagd/EwqPitzBufz1y2mOX8+0";
+        hub = {
+          # Private half: the sops secret backupHubSshKey.
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkuhamEZxf1cBneOeKSnpKQxxscay4RlsMbQXclee5c backup-hub";
+          pool = "storage/backups";
+        };
+      })
     ];
-
-    backup = {
-      source.hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPjti19Yeb+Prh7vD76uagd/EwqPitzBufz1y2mOX8+0";
-      hub = {
-        # Private half: the sops secret backupHubSshKey.
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkuhamEZxf1cBneOeKSnpKQxxscay4RlsMbQXclee5c backup-hub";
-        pool = "storage/backups";
-      };
-    };
 
     nixos = {
       config,

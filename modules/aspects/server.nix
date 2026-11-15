@@ -9,7 +9,6 @@
       den.aspects.monitoring
       den.aspects.cachix-agent
       den.aspects.crowdsec
-      den.aspects.backup
     ];
 
     # Every docker server offers /opt/docker when it is a ZFS dataset.
