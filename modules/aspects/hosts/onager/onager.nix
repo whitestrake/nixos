@@ -10,6 +10,8 @@
       den.aspects.dev-tools
     ];
 
+    backup.source.hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICjab5VQJMOExAY9c4raC+tL9S5hYoGs/7cxUpG88oyn";
+
     nixos = {config, ...}: {
       imports = [
         inputs.disko.nixosModules.disko

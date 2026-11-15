@@ -11,6 +11,8 @@
       den.aspects.crowdsec.edge
     ];
 
+    backup.source.hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB4b2cazWukt8vr4EtkRxooRBHka+0UuMI9Rz9iykwtW";
+
     nixos = {
       config,
       lib,

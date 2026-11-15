@@ -9,6 +9,8 @@
       den.aspects.docker
     ];
 
+    backup.source.hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA8dULaxAaqFw4Jo3kaRykz7GyZ7zZS2qwrmo+623kfb";
+
     nixos = {config, ...}: {
       imports = [
         inputs.disko.nixosModules.disko
