@@ -34,8 +34,9 @@
             skip_processors_after_aggregators = true;
           };
           # No SMART input: every host using this aspect is a VM or VPS, whose
-          # virtual disks have no SMART data, and the guest's device names
-          # change with its disk layout.
+          # virtual disks have no SMART data. A bare-metal host would add the
+          # input back in its own aspect (the old block is in the commit that
+          # removed it).
           inputs = lib.filterAttrs (_: inputs: inputs != []) {
             docker = lib.optionals config.virtualisation.docker.enable [
               {
