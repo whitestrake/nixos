@@ -10,18 +10,6 @@
       (den.aspects.backup {hostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJRNcVR6nToY6BaV7oAWgnQlny4QBQvhO7g/Moy2Zusk";})
     ];
 
-    backup = {host, ...}: {
-      datasets = [
-        # AMP's tree holds tens of GB of Workshop mods that churn wholesale,
-        # so keep a recovery copy without history.
-        {
-          name = "amp";
-          dataset = "${host.name}/user/home/amp";
-          latest = true;
-        }
-      ];
-    };
-
     nixos = {config, ...}: {
       imports = [
         inputs.disko.nixosModules.disko

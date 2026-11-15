@@ -36,20 +36,15 @@
     records));
 
   # One host's backup emissions, folded into { name, hostKey, hub, datasets }.
-  # Only the include below sets name, hostKey and hub, so a host has at most
-  # one of each unless it includes backup twice with different arguments.
+  # name, hostKey and hub come only from the include below, which den applies
+  # once per host.
   merge = emissions: let
-    one = what: field: let
-      vs = lib.unique (lib.concatMap (e: lib.optional (e ? source && e.source ? ${field}) e.source.${field}) emissions);
-    in
-      if lib.length vs > 1
-      then throw "backup: conflicting ${what}: ${lib.concatStringsSep ", " (map builtins.toJSON vs)}"
-      else lib.findFirst (_: true) null vs;
-    name = one "host names" "name";
-    hub = one "hub declarations for ${name}" "hub";
+    first = field: lib.findFirst (v: v != null) null (map (e: e.${field} or null) emissions);
+    name = first "name";
+    hub = first "hub";
   in {
     inherit name;
-    hostKey = one "host keys for ${name}" "hostKey";
+    hostKey = first "hostKey";
     hub =
       if hub == null || (hub ? key && hub ? pool)
       then hub
@@ -74,7 +69,7 @@ in {
 
   # Sources need the hubs' keys and hubs need the sources, so every host sees
   # the whole fleet.
-  den.policies.backup-fleet = {host, ...}: [
+  den.policies.backup-fleet = _: [
     (pipe.from "backup" [
       (pipe.collectAll ({host, ...}: true))
       pipe.withProvenance
@@ -91,16 +86,16 @@ in {
   # and pulls every opted-in host into pool. key is the public half of its
   # pull key, whose private half is the sops secret backupHubSshKey.
   den.aspects.backup = {
-    hostKey,
+    hostKey ? throw "backup: den.aspects.backup was included without a hostKey; pass the host's sshd public key as { hostKey = \"ssh-ed25519 ...\"; }",
     hub ? null,
   }: {
+    # Distinct from the bare aspect's name, so den doesn't treat a bare include
+    # as the same aspect and drop one of them; forcing hostKey makes a bare
+    # include fail.
+    name = builtins.seq hostKey "backup (included)";
     backup = {host, ...}: {
-      source =
-        {
-          inherit (host) name;
-          inherit hostKey;
-        }
-        // lib.optionalAttrs (hub != null) {inherit hub;};
+      inherit (host) name;
+      inherit hostKey hub;
     };
     nixos = {
       backup,
@@ -117,7 +112,9 @@ in {
       datasets = map (d: d.dataset) records;
       zfs = lib.getExe config.boot.zfs.package;
 
-      fleet = lib.mapAttrsToList (_: rs: merge (map (r: r.value) rs) // {host = (lib.head rs).source.host;}) (lib.groupBy (r: r.source.host.name) backup-fleet);
+      # Every host's emissions, merged per host.
+      byHost = lib.groupBy (r: r.source.host.name) backup-fleet;
+      fleet = lib.mapAttrsToList (_: rs: merge (map (r: r.value) rs) // {inherit ((lib.head rs).source) host;}) byHost;
       hubs = lib.filter (h: h.hub != null) fleet;
       sources = lib.filter (h: h.hostKey != null && h.datasets != []) fleet;
 

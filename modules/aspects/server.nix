@@ -1,8 +1,4 @@
-{
-  den,
-  lib,
-  ...
-}: {
+{den, ...}: {
   # Server aspect wires in monitoring, deployment, health, and Tailscale networking
   den.aspects.server = {
     includes = [
@@ -10,16 +6,6 @@
       den.aspects.cachix-agent
       den.aspects.crowdsec
     ];
-
-    # Every docker server offers /opt/docker when it is a ZFS dataset.
-    backup = {config, ...}: let
-      fs = config.fileSystems."/opt/docker" or {};
-    in {
-      datasets = lib.optional (config.virtualisation.docker.enable && fs.fsType or null == "zfs") {
-        name = "docker";
-        dataset = fs.device;
-      };
-    };
 
     # Don't need man pages on headless servers
     os.documentation.enable = false;
