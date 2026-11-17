@@ -40,6 +40,7 @@ va=(-init_hw_device "vaapi=va:$device" -filter_hw_device va)
 vadec=(-hwaccel vaapi -hwaccel_device va -hwaccel_output_format vaapi)
 qsv=(-init_hw_device "vaapi=va:$device" -init_hw_device qsv=qs@va -filter_hw_device qs)
 hdr10='setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc'
+mastering='master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400'
 
 frames() { ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$1"; }
 
@@ -89,10 +90,14 @@ quick() {
     failed=1
   fi
 
+  # The source comes from the CPU encoder because VAAPI tone mapping needs the HDR10 mastering
+  # metadata that hevc_vaapi does not write.
   local src=$work/hdr10.mkv
-  step hevc10-encode "$src" 300 "${va[@]}" -f lavfi -i testsrc2=size=1920x1080:rate=30 -frames:v 300 \
-    -vf "$hdr10,format=p010,hwupload" -c:v hevc_vaapi -profile:v main10 -b:v 20M
-  [ -s "$src" ] || { echo "FAIL  no source clip, stopping"; exit 1; }
+  ff -f lavfi -i testsrc2=size=1920x1080:rate=30 -frames:v 300 -vf "$hdr10,format=yuv420p10le" \
+    -c:v libx265 -preset ultrafast -x265-params "log-level=error:hdr10=1:$mastering" "$src" ||
+    { echo "FAIL  could not make the source clip"; exit 1; }
+  step hevc10-encode "$work/hevc10.mkv" 300 "${va[@]}" "${vadec[@]}" -i "$src" \
+    -vf scale_vaapi=format=p010 -c:v hevc_vaapi -profile:v main10 -b:v 20M
   step h264 "$work/h264.mkv" 300 "${va[@]}" "${vadec[@]}" -i "$src" \
     -vf scale_vaapi=w=1280:h=720:format=nv12 -c:v h264_vaapi -b:v 4M
   step h264-lowpower "$work/h264lp.mkv" 300 "${va[@]}" "${vadec[@]}" -i "$src" \
