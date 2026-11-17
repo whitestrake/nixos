@@ -2,6 +2,7 @@
 # Exercise an Intel iGPU, usually an SR-IOV VF, through the paths Plex and Jellyfin use:
 # VAAPI decode, scale and encode (including low power), 10-bit HEVC, VAAPI and QSV tone
 # mapping. Fails if any step fails or the driver logs a hang, reset or error meanwhile.
+# Passes with a skip when no Intel GPU is on the PCI bus at all.
 #
 #   quick  (default, about 20 s) one pass of every path on a generated 1080p HDR10 clip
 #   full   quick, then a benchmark and a soak of parallel lanes
@@ -166,6 +167,16 @@ full() {
 }
 
 echo "vf-exercise $mode on $(hostname) $(uname -r), $device"
+# No Intel display device on the PCI bus means no VF is passed through at the moment, which is
+# not a failure. One that is present without a working render node is.
+intel_gpu() {
+  local d
+  for d in /sys/bus/pci/devices/*; do
+    [[ "$(cat "$d/vendor")" = 0x8086 && "$(cat "$d/class")" = 0x03* ]] && return 0
+  done
+  return 1
+}
+if ! intel_gpu; then echo "skip  no Intel GPU passed through"; exit 0; fi
 quick
 [ "$mode" = quick ] || full
 check_log
