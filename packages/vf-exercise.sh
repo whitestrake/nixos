@@ -42,7 +42,10 @@ qsv=(-init_hw_device "vaapi=va:$device" -init_hw_device qsv=qs@va -filter_hw_dev
 hdr10='setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc'
 mastering='master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1000,400'
 
-frames() { ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$1"; }
+frames() {
+  ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets \
+    -of default=noprint_wrappers=1:nokey=1 "$1" | head -1
+}
 
 # step NAME OUTPUT FRAMES ffmpeg-args...: run, check the frame count, print fps.
 step() {
