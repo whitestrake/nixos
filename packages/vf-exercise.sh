@@ -166,7 +166,7 @@ full() {
   fi
 }
 
-echo "vf-exercise $mode on $(hostname) $(uname -r), $device"
+echo "vf-exercise $mode on $(uname -n) $(uname -r), $device"
 # No Intel display device on the PCI bus means no VF is passed through at the moment, which is
 # not a failure. One that is present without a working render node is.
 intel_gpu() {
