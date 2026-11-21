@@ -172,8 +172,12 @@ in {
       # Alloy's MongoDB exporter connects as the read-only monitoring user.
       # Before Alloy 1.17 the exporter believes debug logging is on and dumps
       # every command result to stderr as indented JSON, about 300 MB of
-      # journal a day here. Back to the stable package once it is 1.17 or later.
-      services.alloy.package = pkgs.unstable.grafana-alloy;
+      # journal a day here. Falls back to stable by itself once it is 1.17 or
+      # later, with a warning to remove this override.
+      services.alloy.package =
+        if lib.versionAtLeast pkgs.grafana-alloy.version "1.17"
+        then lib.warn "komodo-core: stable grafana-alloy is ${pkgs.grafana-alloy.version}; remove the unstable Alloy override" pkgs.grafana-alloy
+        else pkgs.unstable.grafana-alloy;
       systemd.services.alloy.serviceConfig.EnvironmentFile = [
         config.sops.templates."alloy-komodo.env".path
       ];
