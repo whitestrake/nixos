@@ -33,9 +33,14 @@ in {
         bind_ip = "127.0.0.1";
         dbpath = "/var/lib/mongodb";
         quiet = true;
+        # The latency histograms in diagnostic data flatten into duplicate
+        # series in Alloy's MongoDB exporter, which fails 64 of them on every
+        # scrape and logs each failure. setParameter only parses nested.
         extraConfig = ''
           security.authorization: enabled
           storage.wiredTiger.engineConfig.cacheSizeGB: 0.25
+          setParameter:
+            diagnosticDataCollectionEnableLatencyHistograms: false
         '';
       };
       systemd.services.mongodb = {
@@ -165,6 +170,10 @@ in {
       networking.firewall.interfaces."br-+".allowedTCPPorts = [9120];
 
       # Alloy's MongoDB exporter connects as the read-only monitoring user.
+      # Before Alloy 1.17 the exporter believes debug logging is on and dumps
+      # every command result to stderr as indented JSON, about 300 MB of
+      # journal a day here. Back to the stable package once it is 1.17 or later.
+      services.alloy.package = pkgs.unstable.grafana-alloy;
       systemd.services.alloy.serviceConfig.EnvironmentFile = [
         config.sops.templates."alloy-komodo.env".path
       ];
