@@ -34,6 +34,12 @@
         path = ["x86_64-linux" "checks" "komodo-alerts"];
         output = self.checks.x86_64-linux.komodo-alerts;
       }
+      # Cache Maintenance builds this from the flake; CI otherwise reuses the
+      # copy from the cache generation, so a broken override would go unseen.
+      {
+        path = ["x86_64-linux" "checks" "nix-fast-build"];
+        output = self.packages.x86_64-linux.nix-fast-build;
+      }
     ];
 
   systemRoots =
