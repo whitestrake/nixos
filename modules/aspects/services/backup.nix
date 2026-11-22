@@ -284,17 +284,25 @@ in {
                 serviceConfig = {
                   Nice = 10;
                   IOSchedulingClass = "idle";
-                  # syncoid receives unmounted (-u) as an unprivileged user,
-                  # which cannot mount. Mount a new copy as root ("+") straight
-                  # after its first pull, instead of at the next boot or switch.
-                  ExecStartPost = "+${pkgs.writeShellScript "backup-mount-${j.unit}" ''
-                    [ "$(${zfs} get -H -o value mounted ${lib.escapeShellArg (target j)})" = yes ] ||
-                      ${zfs} mount ${lib.escapeShellArg (target j)}
-                  ''}";
                 };
+                onSuccess = ["backup-hub-mount.service"];
               })
             jobs)
             // {
+              # syncoid receives unmounted (-u) as an unprivileged user, which
+              # cannot mount, and anything it ran as root would mount inside the
+              # unit's private mount namespace. So a separate unit mounts any copy
+              # that is not mounted yet after each pull, and a new host's copy
+              # appears straight away rather than at the next boot or switch.
+              backup-hub-mount = {
+                description = "Mount received backup copies";
+                path = [config.boot.zfs.package];
+                serviceConfig.Type = "oneshot";
+                script = lib.concatMapStringsSep "\n" (j: let
+                  t = lib.escapeShellArg (target j);
+                in "if zfs list ${t} >/dev/null 2>&1 && [ \"$(zfs get -H -o value mounted ${t})\" != yes ]; then zfs mount ${t}; fi")
+                jobs;
+              };
               backup-hub-datasets = {
                 description = "Create the parent datasets for received backups";
                 wantedBy = ["multi-user.target"];
