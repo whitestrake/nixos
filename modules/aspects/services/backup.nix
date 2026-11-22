@@ -155,6 +155,7 @@ in {
       remote = lib.filter (h: h.host.name != name) sources;
       target = j: "${j.tree}/${j.host.name}/${j.name}";
       parents = lib.unique (lib.concatMap (j: [j.tree "${j.tree}/${j.host.name}"]) jobs);
+      trees = lib.unique (map (j: j.tree) jobs);
       fqdn = h: "${h.name}.${h.tailnetSuffix}";
       # Spread the pulls across the hour: after sanoid's run on the hour, and
       # re-spaced whenever a job is added or removed.
@@ -283,6 +284,13 @@ in {
                 serviceConfig = {
                   Nice = 10;
                   IOSchedulingClass = "idle";
+                  # syncoid receives unmounted (-u) as an unprivileged user,
+                  # which cannot mount. Mount a new copy as root ("+") straight
+                  # after its first pull, instead of at the next boot or switch.
+                  ExecStartPost = "+${pkgs.writeShellScript "backup-mount-${j.unit}" ''
+                    [ "$(${zfs} get -H -o value mounted ${lib.escapeShellArg (target j)})" = yes ] ||
+                      ${zfs} mount ${lib.escapeShellArg (target j)}
+                  ''}";
                 };
               })
             jobs)
@@ -297,9 +305,26 @@ in {
                   Type = "oneshot";
                   RemainAfterExit = true;
                 };
-                script = lib.concatMapStringsSep "\n" (p: "zfs list ${p} >/dev/null 2>&1 || zfs create -o canmount=off ${p}") parents;
+                # The copies inherit these from their tree, so they mount
+                # read-only and can be browsed but never modified between pulls.
+                # A read-write mount lets ZFS finish deleting files that were
+                # still open at snapshot time, which changes the copy and fails
+                # the next incremental pull.
+                script =
+                  lib.concatMapStringsSep "\n" (p: "zfs list ${p} >/dev/null 2>&1 || zfs create -o canmount=off ${p}") parents
+                  + "\n"
+                  + lib.concatMapStringsSep "\n" (t: "zfs set readonly=on exec=off setuid=off ${t}") trees;
               };
             };
+
+          # The copies keep their source hosts' owners and modes, so only root
+          # gets into the hub's pool, at its default mountpoint. Not recursive:
+          # this sets the one directory.
+          systemd.tmpfiles.settings.backup-hub."/${pool}".d = {
+            mode = "0700";
+            user = "root";
+            group = "root";
+          };
 
           services.sanoid = {
             # Received copies: prune only. A recovery-only copy keeps two dailies,
