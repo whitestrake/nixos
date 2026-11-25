@@ -2,6 +2,8 @@ self-hosted-runner:
   labels:
     - namespace-profile-aarch64-darwin
     - namespace-profile-aarch64-darwin-no-cache
+    # GitHub-hosted, but newer than actionlint 1.7.12 knows. Pending rhysd/actionlint#682.
+    - ubuntu-26.04
 
 config-variables: null
 paths:
