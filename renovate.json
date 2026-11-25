@@ -8,9 +8,6 @@
     "github-actions"
   ],
   "timezone": "Australia/Brisbane",
-  "reviewers": [
-    "whitestrake"
-  ],
   "packageRules": [
     {
       "description": "Minor, patch and digest updates to GitHub Actions merge on their own once CI passes on the branch, without a pull request. Majors stay reviewed.",
