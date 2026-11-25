@@ -23,7 +23,7 @@ concurrency:
 jobs:
   linux-builds:
     name: Linux
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 355
     permissions:
       checks: write
@@ -79,7 +79,7 @@ jobs:
         run: echo "records=$(cat "$RUNNER_TEMP/ci-results/records.json")" >> "$GITHUB_OUTPUT"
   source-checks:
     name: Checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       checks: write
@@ -136,7 +136,7 @@ jobs:
   # (such as a Claude cloud session) evaluate this flake. Off the critical path.
   cache-sources:
     name: Cache sources
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -259,7 +259,7 @@ jobs:
       - source-checks
     # Still runs after a lane fails, to report it, but not for superseded runs.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       actions: read
@@ -409,7 +409,7 @@ jobs:
           || contains(needs.*.result, 'cancelled')
         )
       }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       actions: write
@@ -495,7 +495,7 @@ jobs:
       - darwin-builds
     if: ${{ needs.source-checks.outputs.lock-changed == 'true' }}
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       actions: read
