@@ -158,7 +158,7 @@ runs:
 
     - name: Install Nix when no compatible cached runtime is available
       if: steps.prepare.outputs.activated != 'true'
-      uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+      uses: nixbuild/nix-quick-install-action@e0ea8f6061c766e5c1d927cea8be769a1c5108a9 # v36
       with:
         nix_version: ${{ steps.prepare.outputs.nix-version }}
         nix_conf: ${{ steps.prepare.outputs.nix-conf }}
